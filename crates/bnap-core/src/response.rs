@@ -88,7 +88,7 @@ pub struct ResponseFields {
 }
 
 impl ResponseFields {
-    fn to_stream(&self) -> Result<TlvStream, Error> {
+    pub(crate) fn to_stream(&self) -> Result<TlvStream, Error> {
         use types as t;
         let m = Error::malformed(Object::Response);
         let mut s = TlvStream::new();

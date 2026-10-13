@@ -492,7 +492,7 @@ impl OfferFields {
         }
     }
 
-    fn to_stream(&self, with_native: bool) -> Result<TlvStream, Error> {
+    pub(crate) fn to_stream(&self, with_native: bool) -> Result<TlvStream, Error> {
         use types as t;
         self.validate()?;
         let m = Error::malformed(Object::Offer);
