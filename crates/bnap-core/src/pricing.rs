@@ -35,8 +35,11 @@
 //! claimed and what its [`Backing`] adds up to, in the pay entry's unit.
 //! Backing is a payment a rail confirmed as final, or a note the signer
 //! verified; each counts once, and every one is committed as a single use
-//! with the request ([`crate::store::CommitPlan::build`]). A payment in a
-//! unit that does not convert to the entry's is refused (ERRATA N3b-15).
+//! with the request ([`crate::store::CommitPlan::build`]), under an ID that
+//! does not depend on the scheme: its `RailId`, or [`note_id`] for a note,
+//! so one note or payment admits one action whichever scheme carries it
+//! (ERRATA N3b-19). A payment in a unit that does not convert to the
+//! entry's is refused (ERRATA N3b-15).
 //!
 //! [`admit`] makes the attestation and quota decision once, at admission,
 //! and returns it inside the [`Admission`]. [`Admission::settle`] reuses
@@ -266,9 +269,40 @@ pub enum BackingSource {
     /// A payment a rail confirmed as final, by the `RailId` bnap-core
     /// computed from the rail's own kind and canonical bytes.
     Rail(RailId),
-    /// A note the signer verified, by its local ID (its `Y`) under the pay
-    /// scheme.
+    /// A note the signer verified, by its `Y` (the 33-byte compressed
+    /// point). The note is the operator's, not the scheme's: every value
+    /// scheme on a gate checks notes through the same signer, so the note
+    /// is consumed under [`note_id`], whichever scheme carried it.
     Note(Vec<u8>),
+}
+
+/// The tag of a signer-verified note's single use (ERRATA N3b-19).
+pub const NOTE_TAG: &str = "bnap/note";
+
+/// `H_"bnap/note"(Y)`: the single use a note the operator's signer verified
+/// is consumed under (ERRATA N3b-19).
+///
+/// Unlike a `UseId`, it does not depend on the scheme: the signer and its
+/// keysets are shared by every value scheme on the gate, so one note
+/// accepted under `bnap:notes` and again under a Cashu adapter is one note,
+/// spent once, the way a `RailId` makes one payment count once (6.1). Cashu
+/// keys its own spent state by `Y` alone, for the same reason.
+#[must_use]
+pub fn note_id(y: &[u8]) -> [u8; 32] {
+    crate::hash::tagged_hash(NOTE_TAG, y)
+}
+
+impl BackingSource {
+    /// The single use the commit consumes this backing under: a payment's
+    /// `RailId`, or a note's [`note_id`]. Neither depends on the scheme
+    /// that named it.
+    #[must_use]
+    pub fn single_id(&self) -> [u8; 32] {
+        match self {
+            Self::Rail(r) => r.0,
+            Self::Note(y) => note_id(y),
+        }
+    }
 }
 
 /// What an operator-trusted plug confirmed a pay part is worth: a rail's

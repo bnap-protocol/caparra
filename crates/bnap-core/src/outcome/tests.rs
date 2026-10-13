@@ -912,7 +912,7 @@ fn every_payment_and_note_counted_as_value_is_consumed() {
         .unwrap()
     };
     let p1 = plan(1, &first);
-    let y1 = ids::use_id("bnap:notes", b"Y1").0;
+    let y1 = pricing::note_id(b"Y1");
     let mut want = [y1, [4; 32]];
     want.sort_unstable();
     assert_eq!(p1.singles(), &want[..]);
@@ -929,6 +929,63 @@ fn every_payment_and_note_counted_as_value_is_consumed() {
         block_on(commit(&store, &plan(3, &again), &limits())),
         Err(CommitError::Spent)
     );
+}
+
+#[test]
+fn one_signer_verified_note_is_spent_once_across_value_schemes() {
+    // The review's probe: an offer lists bnap:notes and a Cashu adapter at
+    // 50 sat each, and both check notes through the gate's one signer. One
+    // note worth 64 sat is admitted under one scheme, then presented under
+    // the other. Each scheme names the note in its own UseId space, so only
+    // the scheme-free note ID can catch it (ERRATA N3b-19). Either order.
+    let mut o = OfferFields::new(Scope([1; 32]), T0 + 300, Key([9; 32]), [0; 16]);
+    o.pay.push(PayEntry::new("bnap:notes", 50, "sat"));
+    o.pay.push(PayEntry::new("cashu:nut24", 50, "sat"));
+    let y = [7u8; 33];
+    let local = [y.to_vec()];
+    let attempt = |store: &MemoryStore, scheme: &str, c: u8| {
+        let input = AdmitInput {
+            offer: &o,
+            pay: Some(PayValue {
+                scheme,
+                claimed: 64,
+                backing: vec![Backing {
+                    source: BackingSource::Note(y.to_vec()),
+                    amount: 64,
+                    unit: "sat".into(),
+                }],
+            }),
+            attest: &[],
+            now: T0,
+        };
+        let admission = pricing::admit(&input, |_| 0).unwrap();
+        let plan = CommitPlan::build(&PlanInput {
+            context: &ctx(c),
+            pay_body: b"one note",
+            attest_bodies: &[],
+            schemes: &[SchemeUses {
+                scheme,
+                model: UseModel::Single,
+                local_ids: &local,
+            }],
+            rail_ids: &[],
+            admission: &admission,
+            offer_expires: o.expires,
+            now: T0,
+            replay_window: limits().replay_window,
+        })
+        .unwrap();
+        // The scheme's own UseId stays a single, next to the note ID.
+        assert!(plan.singles().contains(&ids::use_id(scheme, &y).0));
+        assert!(plan.singles().contains(&pricing::note_id(&y)));
+        block_on(commit(store, &plan, &limits()))
+    };
+    for (first, second) in [("bnap:notes", "cashu:nut24"), ("cashu:nut24", "bnap:notes")] {
+        let store = MemoryStore::new();
+        assert_eq!(attempt(&store, first, 1), Ok(Admitted::New));
+        assert_eq!(attempt(&store, second, 2), Err(CommitError::Spent));
+        store.inspect(|t| assert_eq!(t.outcomes_len(), 1, "one note, one action"));
+    }
 }
 
 #[test]

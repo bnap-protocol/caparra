@@ -569,8 +569,11 @@ fn mpp() -> Arc<dyn CredentialScheme> {
 /// each checked through the verify-only view. It reports `claim` as its
 /// value, which may be more than the notes are worth. Its `settle` returns
 /// the cap it was given; a greedy one also tries to sign the whole cap
-/// twice and keeps a clone of its signer for later.
+/// twice and keeps a clone of its signer for later. `id` is `bnap:notes`,
+/// or another value scheme over the same operator notes, such as a Cashu
+/// NUT-24 adapter.
 struct Notes {
+    id: &'static str,
     claim: u64,
     greedy: bool,
     kept: Mutex<Option<CappedSigner>>,
@@ -579,6 +582,7 @@ struct Notes {
 impl Notes {
     fn claiming(claim: u64) -> Self {
         Self {
+            id: "bnap:notes",
             claim,
             greedy: false,
             kept: Mutex::new(None),
@@ -599,7 +603,7 @@ fn notes_body(notes: &[(u64, u8)]) -> Vec<u8> {
 #[async_trait::async_trait]
 impl CredentialScheme for Notes {
     fn id(&self) -> &'static str {
-        "bnap:notes"
+        self.id
     }
 
     async fn offer(&self, _cx: &OfferCtx<'_>) -> Result<SchemeOffer, SchemeError> {
@@ -618,7 +622,7 @@ impl CredentialScheme for Notes {
                 .await
                 .unwrap()
             {
-                return Err(SchemeError::rejected("bnap:notes", "BAD_NOTE", "C != kY"));
+                return Err(SchemeError::rejected(self.id, "BAD_NOTE", "C != kY"));
             }
             ys.push(y.0.to_vec());
         }
@@ -722,6 +726,7 @@ impl Gate {
             PayEntry::new("httpauth:L402", 21, "sat"),
             PayEntry::new("payment:lightning/charge", 21, "sat"),
             PayEntry::new("bnap:notes", 50, "sat"),
+            PayEntry::new("cashu:nut24", 50, "sat"),
         ];
         let unsigned = UnsignedOffer::new(&f, Some(&[7; 32])).unwrap();
         let sig = block_on(signer.schnorr(unsigned.message())).unwrap();
@@ -1006,6 +1011,47 @@ fn a_notes_value_larger_than_the_verified_notes_is_cut_to_them() {
     let mut cred = Credential::new(OfferRef::Id(gate.offer.offer_id()));
     cred.pay = Some(SchemePart::new("bnap:notes", notes_body(&[(32, 5)])));
     assert_eq!(gate.handle(&liar, &cred, NOW), Err(ErrorCode::Underpaid));
+}
+
+#[test]
+fn one_note_is_spent_once_whichever_value_scheme_carries_it() {
+    // The review's probe: bnap:notes and a Cashu adapter both check notes
+    // through the gate's one signer. One note Y = [7; 33] worth 64 sat is
+    // admitted under bnap:notes; the same note under cashu:nut24 is SPENT,
+    // although the adapter's own UseId for it is new (ERRATA N3b-19).
+    for (first, second) in [("bnap:notes", "cashu:nut24"), ("cashu:nut24", "bnap:notes")] {
+        let gate = Gate::new([0; 32]);
+        let (a, b) = (
+            Notes {
+                id: first,
+                ..Notes::claiming(64)
+            },
+            Notes {
+                id: second,
+                ..Notes::claiming(64)
+            },
+        );
+        let note = |scheme: &str| {
+            let mut c = Credential::new(OfferRef::Id(gate.offer.offer_id()));
+            c.pay = Some(SchemePart::new(scheme, notes_body(&[(64, 7)])));
+            c
+        };
+        let r = gate.handle(&a, &note(first), NOW).unwrap();
+        assert_eq!((r.fields().status, r.fields().charged), (Status::Ok, 50));
+        assert_eq!(
+            gate.handle(&b, &note(second), NOW + 1),
+            Err(ErrorCode::Spent)
+        );
+        gate.store
+            .inspect(|t| assert_eq!(t.outcomes_len(), 1, "one note, one action"));
+        // The first credential is still a replay of its own outcome.
+        assert!(
+            gate.handle(&a, &note(first), NOW + 2)
+                .unwrap()
+                .fields()
+                .replayed
+        );
+    }
 }
 
 #[test]

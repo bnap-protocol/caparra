@@ -34,7 +34,11 @@
 //!   signer accepted, each once, in the view's unit
 //!   ([`CappedSigner::notes`]). The gate passes them to admission as
 //!   backing, so a notes scheme's value is never more than the notes the
-//!   signer checked.
+//!   signer checked. The commit consumes each one under
+//!   `H_"bnap/note"(Y)`, an ID that does not depend on the scheme
+//!   ([`bnap_core::pricing::note_id`]): the signer's keysets are shared by
+//!   every value scheme on the gate, so a note admitted under one scheme is
+//!   SPENT under any other.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -481,8 +485,9 @@ impl CappedSigner {
     }
 
     /// The notes this verify-only view accepted, each once, as admission's
-    /// backing ([`bnap_core::pricing::PayValue`]); the local ID of a note is
-    /// its 33-byte `Y`. Empty for a change view.
+    /// backing ([`bnap_core::pricing::PayValue`]), named by their 33-byte
+    /// `Y`. The commit consumes each under `H_"bnap/note"(Y)`, whichever
+    /// scheme's view accepted it. Empty for a change view.
     #[must_use]
     pub fn notes(&self) -> Vec<Backing> {
         let Mode::Verify(tally) = &self.mode else {
