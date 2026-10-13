@@ -8,7 +8,7 @@
 //! sighash or a note key challenge, and every signature it makes is domain
 //! separated by a socket tag:
 //!
-//! ```compile_fail
+//! ```compile_fail,E0451
 //! use bnap_core::sign::CoreMessage;
 //! // Private fields: no code outside bnap-core can build one.
 //! let m = CoreMessage { purpose: todo!(), key: todo!(), digest: [0u8; 32] };

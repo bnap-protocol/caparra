@@ -7,7 +7,7 @@
 //! - [`Signer::schnorr`] takes a [`CoreMessage`], which only bnap-core can
 //!   build, so the signer never signs raw bytes:
 //!
-//!   ```compile_fail
+//!   ```compile_fail,E0308
 //!   async fn forge(s: &dyn bnap_plug::Signer) {
 //!       // A plug cannot pass its own 32 bytes.
 //!       let _ = s.schnorr(&[0u8; 32]).await;
