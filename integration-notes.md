@@ -59,6 +59,10 @@ Every check returns `bnap_core::Error`; `err.code()` is the draft-00 code and
 - **Received bytes are kept.** `Offer` and `Response` keep the bytes as
   received; OfferID, `S`, the MAC input and the ack input are computed from
   the received records, unknown odd records included.
+- **`S` is every record outside 240 to 1000**, so records above 1,000 (GREASE
+  included) are under `offer_sig`, the MAC and the ack, as draft-00 4.2 and
+  8.1 say and the vectors prove (ERRATA row 7). "Below the signature range"
+  is the v0.5 wording and is not what the build does.
 - **Version is checked first.** Parsers read `version` right after framing;
   a version other than 1 is VERSION before any other record rule runs.
 - **K_mac is 32 bytes** (`[u8; 32]`), as in the vectors. Draft-00 does not
