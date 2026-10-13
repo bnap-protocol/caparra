@@ -255,7 +255,11 @@ fn zero_amount_outputs_and_empty_batches_are_refused() {
         Err(SignerError::Refused(_))
     ));
     assert_eq!(capped.remaining(), Some(29), "the budget was not touched");
-    assert_eq!(inner.calls(), Vec::<u64>::new(), "the signer was not called");
+    assert_eq!(
+        inner.calls(),
+        Vec::<u64>::new(),
+        "the signer was not called"
+    );
     guard.close();
 
     // An out-of-process signer gets the same answer from its ledger, whoever
@@ -276,7 +280,9 @@ fn zero_amount_outputs_and_empty_batches_are_refused() {
         Err(SignerError::Refused(_))
     ));
     assert_eq!(ledger.total(&rk(2), Status::Ok), 0);
-    ledger.reserve(&ks(), &outputs(3, &[16, 8]), &limit).unwrap();
+    ledger
+        .reserve(&ks(), &outputs(3, &[16, 8]), &limit)
+        .unwrap();
     assert_eq!(ledger.total(&rk(2), Status::Ok), 24);
 }
 
