@@ -276,8 +276,7 @@ pub trait CredentialScheme: Send + Sync {
 
     /// Checks the scheme's part of a credential and returns its local IDs,
     /// rail references and value.
-    async fn verify(&self, part: &SchemePart, cx: &VerifyCtx<'_>)
-    -> Result<Verified, SchemeError>;
+    async fn verify(&self, part: &SchemePart, cx: &VerifyCtx<'_>) -> Result<Verified, SchemeError>;
 
     /// Settles a value scheme: change or refund, within the signer's cap.
     /// Returns the `scheme_result` bytes. The default returns none.

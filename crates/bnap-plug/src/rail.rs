@@ -96,8 +96,12 @@ pub trait FundingRail: Send + Sync {
 
     /// Creates a payment request; `memo` is 32 bytes the request commits
     /// to, such as an invoice description hash.
-    async fn request(&self, amount: u64, unit: &str, memo: [u8; 32])
-    -> Result<PayRequest, RailError>;
+    async fn request(
+        &self,
+        amount: u64,
+        unit: &str,
+        memo: [u8; 32],
+    ) -> Result<PayRequest, RailError>;
 
     /// The state of a request this rail made.
     async fn status(&self, id: &PayId) -> Result<PayState, RailError>;
