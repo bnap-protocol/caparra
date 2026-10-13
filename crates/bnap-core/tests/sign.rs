@@ -54,11 +54,11 @@ fn the_offer_vector_through_a_core_message() {
     assert_eq!(msg.key(), &key.public_key());
     let sig = msg.sign_with(&key, &AUX0).unwrap();
     let offer = unsigned.finish(&sig).unwrap();
-    assert_eq!(hex::encode(offer.bytes()), v["offer"]["bytes"].as_str().unwrap());
     assert_eq!(
-        offer.offer_id(),
-        OfferId(hex32(&v["offer"]["offer_id"]))
+        hex::encode(offer.bytes()),
+        v["offer"]["bytes"].as_str().unwrap()
     );
+    assert_eq!(offer.offer_id(), OfferId(hex32(&v["offer"]["offer_id"])));
 }
 
 #[test]
@@ -83,8 +83,14 @@ fn the_response_vector_through_a_core_message() {
     assert_eq!(unsigned.message().purpose().key_use(), KeyUse::Receipt);
     let sig = unsigned.message().sign_with(&key, &AUX0).unwrap();
     let resp = unsigned.finish(&sig).unwrap();
-    assert_eq!(hex::encode(resp.bytes()), v["response"]["bytes"].as_str().unwrap());
-    assert_eq!(hex::encode(resp.ack().0), v["response"]["ack"].as_str().unwrap());
+    assert_eq!(
+        hex::encode(resp.bytes()),
+        v["response"]["bytes"].as_str().unwrap()
+    );
+    assert_eq!(
+        hex::encode(resp.ack().0),
+        v["response"]["ack"].as_str().unwrap()
+    );
     // Same bytes as the local-key path of part A.
     assert_eq!(resp, fields.sign(&key, &AUX0).unwrap());
 }
@@ -103,7 +109,10 @@ fn a_bad_signature_or_a_wrong_key_is_refused() {
     );
     // A signer that signs with the wrong key, or returns garbage.
     let wrong = other.sign(unsigned.message().digest(), &AUX0);
-    assert_eq!(unsigned.finish(&wrong).unwrap_err(), SignError::BadSignature);
+    assert_eq!(
+        unsigned.finish(&wrong).unwrap_err(),
+        SignError::BadSignature
+    );
 
     let unsigned = UnsignedOffer::new(&fields, Some(&mac)).unwrap();
     let mut sig = unsigned.message().sign_with(&key, &AUX0).unwrap();

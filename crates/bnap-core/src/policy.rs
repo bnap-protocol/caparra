@@ -359,7 +359,11 @@ impl RoutePolicy {
     /// The gate never lists a scheme that fails the policy, and refuses to
     /// start when no value scheme passes and no passing attestation waives,
     /// or when a required attestation fails.
-    pub fn select(&self, pay: &[Candidate], attest: &[Candidate]) -> Result<Selection, PolicyError> {
+    pub fn select(
+        &self,
+        pay: &[Candidate],
+        attest: &[Candidate],
+    ) -> Result<Selection, PolicyError> {
         let mut sel = Selection::default();
         for c in pay.iter().filter(|c| self.admits(&c.vector)) {
             sel.pay.push(c.scheme.clone());

@@ -31,7 +31,7 @@
 use crate::error::{ErrorCode, ErrorObject};
 use crate::hash::{CounterKey, Digest, OfferId, ReplayKey};
 use crate::limits::Limits;
-use crate::pricing::{self, AdmitInput, Admission, PriceError};
+use crate::pricing::{self, Admission, AdmitInput, PriceError};
 use crate::response::ResponseFields;
 use crate::schnorr::Key;
 use crate::store::{
@@ -79,9 +79,7 @@ impl CommitError {
     #[must_use]
     pub fn retry_after(&self) -> Option<u64> {
         match self {
-            Self::Pending { retry_after } | Self::RateLimited { retry_after } => {
-                Some(*retry_after)
-            }
+            Self::Pending { retry_after } | Self::RateLimited { retry_after } => Some(*retry_after),
             Self::Spent | Self::Store(_) => None,
         }
     }

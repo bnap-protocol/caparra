@@ -59,10 +59,12 @@ pub use offer::{AttestEntry, Effect, GateOfferCheck, NativeEntry, Offer, OfferFi
 pub use outcome::{Admitted, CommitError, SettleError};
 pub use policy::{EffectiveVector, Require, RoutePolicy};
 pub use pricing::{Admission, Charge, PriceDecision, PriceError, VerifiedAttest};
-pub use sign::{CoreMessage, Purpose, UnsignedOffer, UnsignedResponse};
-pub use store::{CommitPlan, OutcomeRecord, OutcomeStatus, Settlement, StoreError, UseModel, UseStore};
 pub use response::{Response, ResponseFields, Status};
 pub use schnorr::{Key, Signature, SigningKey};
+pub use sign::{CoreMessage, Purpose, UnsignedOffer, UnsignedResponse};
+pub use store::{
+    CommitPlan, OutcomeRecord, OutcomeStatus, Settlement, StoreError, UseModel, UseStore,
+};
 
 /// The `bitcoin` crate's re-export of secp256k1, the only secp256k1 in the
 /// tree.

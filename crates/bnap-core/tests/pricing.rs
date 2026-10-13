@@ -33,13 +33,22 @@ fn price(o: &OfferFields, verified: &[VerifiedAttest]) -> u64 {
     decide(o, verified, o.pay[0].amount, NOW, empty).price(o.pay[0].amount)
 }
 
+/// One pricing row: name, amount, offer attestations, verified ones, price.
+type Row = (
+    &'static str,
+    u64,
+    Vec<AttestEntry>,
+    Vec<VerifiedAttest>,
+    u64,
+);
+
 /// Section 7, as a table: offer attestations, which verified, and the price.
 #[test]
 fn price_table() {
     use BindingClass::{A, None as Bearer, O, S};
     let d = |s: &str, bp| AttestEntry::discount(s, bp);
     let w = |s: &str| AttestEntry::new(s, Effect::Waive);
-    let rows: Vec<(&str, u64, Vec<AttestEntry>, Vec<VerifiedAttest>, u64)> = vec![
+    let rows: Vec<Row> = vec![
         ("no attestations", 10_000, vec![], vec![], 10_000),
         (
             "one 20% discount",
@@ -128,15 +137,9 @@ fn price_table() {
 #[test]
 fn ignored_price_effects_are_reported() {
     let o = offer(100, vec![AttestEntry::discount("bearer", 5000)]);
-    let d = decide(
-        &o,
-        &[att("bearer", BindingClass::None)],
-        100,
-        NOW,
-        empty,
-    );
+    let d = decide(&o, &[att("bearer", BindingClass::None)], 100, NOW, empty);
     assert_eq!(d.ignored, vec!["bearer".to_owned()]);
-    assert!(d.discounts.is_empty());
+    assert_eq!(d.discounts, Vec::<(String, u64)>::new());
 }
 
 fn input<'a>(
@@ -221,7 +224,10 @@ fn no_pay_with_only_a_discount_is_never_free() {
     // The bypass the literal "or 0" base opens: an offer with a priced pay
     // entry and a discount attestation, and a credential carrying only the
     // attestation.
-    let o = offer(21, vec![AttestEntry::discount("httpsig:web-bot-auth", 2000)]);
+    let o = offer(
+        21,
+        vec![AttestEntry::discount("httpsig:web-bot-auth", 2000)],
+    );
     let v = [att("httpsig:web-bot-auth", BindingClass::A)];
     assert!(matches!(
         admit(&input(&o, None, &v), empty),
@@ -271,9 +277,23 @@ fn quotas_pick_the_first_with_room_in_offer_order() {
     let a = admit(&input(&o, Some(0), &v), full_a).unwrap();
     assert_eq!(a.decision.quota.as_ref().unwrap().scheme, "q:b");
     // Both full: the full price.
-    let full = |k: &CounterKey| if *k == ka { 2 } else if *k == kb { 5 } else { 0 };
+    let full = |k: &CounterKey| {
+        if *k == ka {
+            2
+        } else if *k == kb {
+            5
+        } else {
+            0
+        }
+    };
     let e = admit(&input(&o, Some(0), &v), full).unwrap_err();
-    assert_eq!(e, PriceError::Underpaid { price: 50, value: 0 });
+    assert_eq!(
+        e,
+        PriceError::Underpaid {
+            price: 50,
+            value: 0
+        }
+    );
 }
 
 #[test]
@@ -300,9 +320,12 @@ fn quotas_need_a_class_and_an_identity() {
     let o = offer(50, vec![AttestEntry::quota("q", 1, 60)]);
     // Bearer: no quota.
     let bearer = [att("q", BindingClass::None).with_quota_id(use_id("q", b"x"))];
-    assert!(quota_candidates(&o, &bearer, NOW).is_empty());
+    assert_eq!(quota_candidates(&o, &bearer, NOW).len(), 0);
     // No stable identity: no quota.
-    assert!(quota_candidates(&o, &[att("q", BindingClass::S)], NOW).is_empty());
+    assert_eq!(
+        quota_candidates(&o, &[att("q", BindingClass::S)], NOW).len(),
+        0
+    );
 }
 
 #[test]
@@ -318,31 +341,41 @@ fn quota_counters_follow_the_epoch() {
 
 #[test]
 fn metered_charge_matches_the_10_3_example() {
-    let mut o = offer(2_100, vec![AttestEntry::discount("httpsig:web-bot-auth", 2000)]);
-    o.metered = true;
-    o.pay[0].rate = Some(500);
-    let v = [att("httpsig:web-bot-auth", BindingClass::A)];
-    let a = admit(&input(&o, Some(1_680), &v), empty).unwrap();
-    assert_eq!(a.price, 1_680, "the client sends price(ceiling)");
+    let mut route = offer(
+        2_100,
+        vec![AttestEntry::discount("httpsig:web-bot-auth", 2000)],
+    );
+    route.metered = true;
+    route.pay[0].rate = Some(500);
+    let verified = [att("httpsig:web-bot-auth", BindingClass::A)];
+    let adm = admit(&input(&route, Some(1_680), &verified), empty).unwrap();
+    assert_eq!(adm.price, 1_680, "the client sends price(ceiling)");
     // 850 tokens: ⌈850 × 500 / 1000⌉ = 425 before the discount, 340 after.
-    let c = a.settle(Status::Ok, 850);
-    assert_eq!(c.charged, 340);
-    assert_eq!(c.metered_units, Some(850));
-    assert_eq!(c.cap.get(), 1_340, "the notes scheme signs 1,340 sat of change");
-    // Rounding up the metered amount: 1 token at 500/1000 is 1 sat, 0 after
-    // a 20% discount takes off ⌊1 × 0.2⌋ = 0.
-    assert_eq!(a.settle(Status::Ok, 1).charged, 1);
-    assert_eq!(a.settle(Status::Ok, 0).charged, 0);
+    let charge = adm.settle(Status::Ok, 850);
+    assert_eq!(charge.charged, 340);
+    assert_eq!(charge.metered_units, Some(850));
+    assert_eq!(
+        charge.cap.get(),
+        1_340,
+        "the notes scheme signs 1,340 sat of change"
+    );
+    // Rounding up the metered amount: 1 token at 500/1000 is 1 sat, and a
+    // 20% discount takes off ⌊1 × 0.2⌋ = 0.
+    assert_eq!(adm.settle(Status::Ok, 1).charged, 1);
+    assert_eq!(adm.settle(Status::Ok, 0).charged, 0);
     // Beyond the ceiling: price(amount).
-    assert_eq!(a.settle(Status::Ok, 10_000).charged, 1_680);
+    assert_eq!(adm.settle(Status::Ok, 10_000).charged, 1_680);
     // A product beyond 2^64 yields the ceiling.
-    let mut huge = o.clone();
+    let mut huge = route.clone();
     huge.pay[0].rate = Some(u64::MAX);
-    let a = admit(&input(&huge, Some(1_680), &v), empty).unwrap();
-    assert_eq!(a.settle(Status::Ok, u64::MAX).charged, 1_680);
+    let adm = admit(&input(&huge, Some(1_680), &verified), empty).unwrap();
+    assert_eq!(adm.settle(Status::Ok, u64::MAX).charged, 1_680);
     // Metered FAILED: nothing charged, the count still reported.
-    let f = a.settle(Status::Failed, 850);
-    assert_eq!((f.charged, f.metered_units, f.cap.get()), (0, Some(850), 1_680));
+    let failed = adm.settle(Status::Failed, 850);
+    assert_eq!(
+        (failed.charged, failed.metered_units, failed.cap.get()),
+        (0, Some(850), 1_680)
+    );
 }
 
 #[test]
@@ -362,7 +395,10 @@ fn overpayment_and_failure() {
     let o = offer(100, vec![]);
     let a = admit(&input(&o, Some(150), &[]), empty).unwrap();
     let ok = a.settle(Status::Ok, 0);
-    assert_eq!((ok.charged, ok.cap.get(), ok.metered_units), (100, 50, None));
+    assert_eq!(
+        (ok.charged, ok.cap.get(), ok.metered_units),
+        (100, 50, None)
+    );
     let failed = a.settle(Status::Failed, 0);
     assert_eq!((failed.charged, failed.cap.get()), (0, 150));
 }

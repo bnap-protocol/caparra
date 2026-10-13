@@ -119,7 +119,11 @@ fn custodial_facilitator() -> PropertyVector {
     ])
 }
 
-fn pay_vector(scheme: &PropertyVector, rails: &[&PropertyVector], verifier: &PropertyVector) -> EffectiveVector {
+fn pay_vector(
+    scheme: &PropertyVector,
+    rails: &[&PropertyVector],
+    verifier: &PropertyVector,
+) -> EffectiveVector {
     let mut parts = vec![Part::known(PartKind::Credential, scheme)];
     parts.extend(rails.iter().map(|r| Part::known(PartKind::Rail, r)));
     parts.push(Part::known(PartKind::Verifier, verifier));
@@ -181,7 +185,10 @@ fn the_overview_route_example() {
             "payment:lightning/charge",
             pay_vector(&ln_class_o(), &[&phoenixd()], &local()),
         ),
-        pay("httpauth:L402", pay_vector(&ln_class_o(), &[&phoenixd()], &local())),
+        pay(
+            "httpauth:L402",
+            pay_vector(&ln_class_o(), &[&phoenixd()], &local()),
+        ),
     ];
     let attestations = [
         attest("httpauth:Bearer", Effect::Waive, attest_vector(&bearer())),
@@ -192,7 +199,11 @@ fn the_overview_route_example() {
         ),
     ];
     let r = route(
-        &[("use", "single"), ("binding", "O"), ("link-actions", "unlinkable")],
+        &[
+            ("use", "single"),
+            ("binding", "O"),
+            ("link-actions", "unlinkable"),
+        ],
         true,
     );
     let sel = r.select(&candidates, &attestations).unwrap();
@@ -203,7 +214,11 @@ fn the_overview_route_example() {
     assert!(sel.attest.is_empty(), "both attestations are reusable");
 
     let r = route(
-        &[("use", "single"), ("binding", "A"), ("link-actions", "unlinkable")],
+        &[
+            ("use", "single"),
+            ("binding", "A"),
+            ("link-actions", "unlinkable"),
+        ],
         true,
     );
     assert_eq!(r.select(&candidates, &[]).unwrap().pay, vec!["bnap:notes"]);
@@ -255,13 +270,19 @@ fn unknown_counts_as_weakest() {
 
 #[test]
 fn credential_only_properties_do_not_constrain_attestations() {
-    let r = route(&[("refund", "atomic"), ("finality", "final-on-verification")], true);
+    let r = route(
+        &[("refund", "atomic"), ("finality", "final-on-verification")],
+        true,
+    );
     let v = attest_vector(&web_bot_auth());
     assert_eq!(v.rank("refund"), None);
     assert!(r.admits(&v));
     let sel = r
         .select(
-            &[pay("bnap:notes", pay_vector(&notes(), &[&phoenixd()], &local()))],
+            &[pay(
+                "bnap:notes",
+                pay_vector(&notes(), &[&phoenixd()], &local()),
+            )],
             &[attest("httpsig:web-bot-auth", Effect::Discount, v)],
         )
         .unwrap();
@@ -281,7 +302,10 @@ fn an_unsatisfiable_route_is_refused() {
     );
     // Experimental entries need allow_experimental.
     let r = route(&[], false);
-    let notes_only = [pay("bnap:notes", pay_vector(&notes(), &[&phoenixd()], &local()))];
+    let notes_only = [pay(
+        "bnap:notes",
+        pay_vector(&notes(), &[&phoenixd()], &local()),
+    )];
     assert_eq!(
         r.select(&notes_only, &[]),
         Err(PolicyError::Unsatisfiable("chat".into()))
@@ -303,12 +327,22 @@ fn an_attestation_waive_can_satisfy_a_route_without_pay() {
     ]);
     let r = route(&[("binding", "A")], false);
     let sel = r
-        .select(&[], &[attest("httpauth:DPoP", Effect::Waive, attest_vector(&dpop))])
+        .select(
+            &[],
+            &[attest("httpauth:DPoP", Effect::Waive, attest_vector(&dpop))],
+        )
         .unwrap();
     assert_eq!(sel.attest, vec!["httpauth:DPoP"]);
     // A discount alone cannot.
     assert!(matches!(
-        r.select(&[], &[attest("httpauth:DPoP", Effect::Discount, attest_vector(&dpop))]),
+        r.select(
+            &[],
+            &[attest(
+                "httpauth:DPoP",
+                Effect::Discount,
+                attest_vector(&dpop)
+            )]
+        ),
         Err(PolicyError::Unsatisfiable(_))
     ));
 }
@@ -316,11 +350,18 @@ fn an_attestation_waive_can_satisfy_a_route_without_pay() {
 #[test]
 fn a_required_attestation_that_fails_the_policy_is_refused() {
     let r = route(&[("binding", "O")], true);
-    let notes_only = [pay("bnap:notes", pay_vector(&notes(), &[&phoenixd()], &local()))];
+    let notes_only = [pay(
+        "bnap:notes",
+        pay_vector(&notes(), &[&phoenixd()], &local()),
+    )];
     let err = r
         .select(
             &notes_only,
-            &[attest("httpauth:Bearer", Effect::Required, attest_vector(&bearer()))],
+            &[attest(
+                "httpauth:Bearer",
+                Effect::Required,
+                attest_vector(&bearer()),
+            )],
         )
         .unwrap_err();
     assert_eq!(

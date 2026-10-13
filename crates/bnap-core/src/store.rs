@@ -265,12 +265,8 @@ impl CommitPlan {
         {
             return Err(PlanError::OutlivesRecord);
         }
-        let replay_key = crate::ids::replay_key(
-            input.context,
-            input.pay_body,
-            input.attest_bodies,
-            &ids,
-        );
+        let replay_key =
+            crate::ids::replay_key(input.context, input.pay_body, input.attest_bodies, &ids);
         ids.sort_unstable();
         Ok(Self {
             replay_key,

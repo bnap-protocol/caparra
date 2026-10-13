@@ -112,7 +112,10 @@ impl MemoryStore {
     ///
     /// If a thread panicked while holding the lock.
     pub fn inspect<R>(&self, f: impl FnOnce(&MemoryTable) -> R) -> R {
-        f(&self.table.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+        f(&self
+            .table
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
     }
 
     fn tx(&self) -> Result<MutexGuard<'_, MemoryTable>, StoreError> {

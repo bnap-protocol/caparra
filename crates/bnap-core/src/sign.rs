@@ -178,7 +178,9 @@ impl UnsignedOffer {
             .verify(sig)
             .map_err(|_| SignError::BadSignature)?;
         let m = Error::malformed(crate::error::Object::Offer);
-        self.stream.insert(offer_types::OFFER_SIG, sig.0).map_err(&m)?;
+        self.stream
+            .insert(offer_types::OFFER_SIG, sig.0)
+            .map_err(&m)?;
         if let Some(mac) = self.mac {
             self.stream.insert(offer_types::MAC, mac).map_err(&m)?;
         }

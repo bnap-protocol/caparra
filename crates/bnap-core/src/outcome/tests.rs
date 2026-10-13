@@ -87,7 +87,10 @@ fn receipt_input(digest: Digest) -> ReceiptInput {
 fn commit_is_new_then_a_retry_is_pending() {
     let store = MemoryStore::new();
     let plan = note_plan(&ctx(1), b"Y1", T0);
-    assert_eq!(block_on(commit(&store, &plan, &limits())), Ok(Admitted::New));
+    assert_eq!(
+        block_on(commit(&store, &plan, &limits())),
+        Ok(Admitted::New)
+    );
     let rec = block_on(store.outcome(plan.replay_key())).unwrap().unwrap();
     assert_eq!(rec.status, OutcomeStatus::Pending);
     assert_eq!(rec.created, T0);
@@ -113,15 +116,29 @@ fn replay_returns_the_recorded_outcome_with_replayed() {
         panic!("expected a replay");
     };
     assert!(!r.needs_refund());
-    assert_eq!(r.record().response.as_deref(), Some(&b"stored response"[..]));
+    assert_eq!(
+        r.record().response.as_deref(),
+        Some(&b"stored response"[..])
+    );
     let fields = r.receipt(&receipt_input(Digest([9; 32]))).unwrap();
     assert!(fields.replayed);
     assert_eq!(fields.status, Status::Ok);
     assert_eq!(fields.charged, 340);
     assert_eq!(fields.metered_units, Some(850));
-    assert_eq!(fields.settled_at, T0 + 5, "a replay keeps the original settled_at");
-    assert_eq!(fields.scheme_result.as_deref(), Some(&b"change signatures"[..]));
-    assert_eq!(fields.digest, Digest([9; 32]), "signed over the replaying request");
+    assert_eq!(
+        fields.settled_at,
+        T0 + 5,
+        "a replay keeps the original settled_at"
+    );
+    assert_eq!(
+        fields.scheme_result.as_deref(),
+        Some(&b"change signatures"[..])
+    );
+    assert_eq!(
+        fields.digest,
+        Digest([9; 32]),
+        "signed over the replaying request"
+    );
     // The replay wrote nothing.
     assert_eq!(
         block_on(store.outcome(plan.replay_key())).unwrap().unwrap(),
@@ -157,7 +174,7 @@ fn status_flip_on_replay_is_impossible() {
     // The timeout never touches a settled outcome, and a timed-out refund
     // is never recorded on it.
     let swept = block_on(sweep(&store, T0 + 10_000, &limits())).unwrap();
-    assert!(swept.timed_out.is_empty());
+    assert_eq!(swept.timed_out, Vec::<ReplayKey>::new());
     let after = block_on(record_refund(&store, plan.replay_key(), b"x")).unwrap();
     assert_eq!(after, ok);
     // A replay still reports OK.
@@ -217,7 +234,10 @@ fn concurrent_retries_of_one_credential_run_once() {
             .collect();
         handles.into_iter().map(|h| h.join().unwrap()).collect()
     });
-    assert_eq!(results.iter().filter(|r| **r == Ok(Admitted::New)).count(), 1);
+    assert_eq!(
+        results.iter().filter(|r| **r == Ok(Admitted::New)).count(),
+        1
+    );
     assert!(
         results
             .iter()
@@ -356,7 +376,7 @@ fn rate_counters_limit_and_failed_gives_them_back() {
     let store = MemoryStore::new();
     let now = 120 * 60 + 15;
     let first = rate_plan(&ctx(1), b"client", 1, now);
-    assert!(first.singles().is_empty());
+    assert_eq!(first.singles().len(), 0);
     assert_eq!(first.counters().len(), 1);
     assert_eq!(
         block_on(commit(&store, &first, &limits())),
@@ -448,7 +468,7 @@ fn pending_timeout_moves_to_failed_and_the_replay_collects_the_refund() {
 
     // Still inside pending_timeout: nothing happens.
     let swept = block_on(sweep(&store, T0 + l.pending_timeout, &l)).unwrap();
-    assert!(swept.timed_out.is_empty());
+    assert_eq!(swept.timed_out, Vec::<ReplayKey>::new());
     // Past it: FAILED, charge 0, counters back, single uses kept.
     let swept = block_on(sweep(&store, T0 + l.pending_timeout + 1, &l)).unwrap();
     assert_eq!(swept.timed_out, vec![*plan.replay_key()]);
@@ -532,7 +552,10 @@ fn replay_window_expiry() {
         assert_eq!(t.used_len(), 1);
     });
     let later = note_plan(&ctx(1), b"Y", T0 + l.replay_window + 2);
-    assert_eq!(block_on(commit(&store, &later, &l)), Err(CommitError::Spent));
+    assert_eq!(
+        block_on(commit(&store, &later, &l)),
+        Err(CommitError::Spent)
+    );
 }
 
 #[test]
@@ -546,7 +569,11 @@ fn the_sweep_never_purges_pending() {
     block_on(commit(&store, &plan, &l)).unwrap();
     let swept = block_on(sweep(&store, T0 + l.replay_window + 10, &l)).unwrap();
     assert_eq!(swept.purged, 0);
-    assert!(block_on(store.outcome(plan.replay_key())).unwrap().is_some());
+    assert!(
+        block_on(store.outcome(plan.replay_key()))
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]
@@ -593,8 +620,11 @@ fn reusable_ids_enter_the_replay_key_but_are_not_consumed() {
     }];
     let a = plan_at(&ctx(1), b"", &uses, &[], T0);
     let b = plan_at(&ctx(2), b"", &uses, &[], T0);
-    assert_eq!(a.ids(), &[ids::use_id("httpsig:web-bot-auth", b"bot key").0]);
-    assert!(a.singles().is_empty() && a.counters().is_empty());
+    assert_eq!(
+        a.ids(),
+        &[ids::use_id("httpsig:web-bot-auth", b"bot key").0]
+    );
+    assert_eq!((a.singles().len(), a.counters().len()), (0, 0));
     // Two requests with the same reusable attestation both run.
     assert_eq!(block_on(commit(&store, &a, &limits())), Ok(Admitted::New));
     assert_eq!(block_on(commit(&store, &b, &limits())), Ok(Admitted::New));
@@ -615,7 +645,11 @@ fn duplicate_ids_in_one_credential_commit_once() {
         T0,
     );
     assert_eq!(plan.singles().len(), 1);
-    assert_eq!(plan.ids().len(), 2, "the ReplayKey keeps both (ERRATA N3a-9)");
+    assert_eq!(
+        plan.ids().len(),
+        2,
+        "the ReplayKey keeps both (ERRATA N3a-9)"
+    );
 }
 
 #[test]

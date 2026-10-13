@@ -161,7 +161,11 @@ fn narrow(v: u128) -> u64 {
 /// [`admit`], which picks the first one with room. Only verified quota
 /// attestations of class S, A or O that name a quota identity are listed.
 #[must_use]
-pub fn quota_candidates(offer: &OfferFields, verified: &[VerifiedAttest], now: u64) -> Vec<QuotaUse> {
+pub fn quota_candidates(
+    offer: &OfferFields,
+    verified: &[VerifiedAttest],
+    now: u64,
+) -> Vec<QuotaUse> {
     offer
         .attest
         .iter()
