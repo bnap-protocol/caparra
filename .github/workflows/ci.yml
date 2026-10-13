@@ -1,0 +1,200 @@
+# Continuous integration for the Caparra workspace.
+#
+# Every job here must stay green on develop and main. The regtest job only
+# runs once devenv/regtest/compose.yml exists; until then it shows as skipped.
+
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  leak-guard:
+    name: Leak guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # Pre-push mode scans the tracked files and then every commit this run
+      # adds (added lines, file names, author, committer and message), the
+      # same way the local pre-push hook does.
+      - name: Scan tracked files and new commits
+        shell: sh
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          zero=0000000000000000000000000000000000000000
+          if [ "$EVENT" = pull_request ]; then
+            base=$PR_BASE
+            head=$PR_HEAD
+          else
+            base=${PUSH_BEFORE:-$zero}
+            head=$SHA
+          fi
+          printf 'refs/heads/ci %s refs/heads/ci %s\n' "$head" "$base" |
+            sh ops/leak-guard.sh --pre-push origin
+      - name: DCO sign-off on every non-merge commit
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.user.login != 'dependabot[bot]' &&
+          !startsWith(github.head_ref, 'release-plz-')
+        shell: sh
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          missing=0
+          for c in $(git rev-list --no-merges "$BASE..$HEAD"); do
+            if ! git log -1 --format=%B "$c" | grep -q '^Signed-off-by: '; then
+              echo "::error::commit $(git rev-parse --short "$c") has no Signed-off-by line (use git commit -s)"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # No arguments: installs the toolchain and components named in
+      # rust-toolchain.toml. Older rustup releases do the same on "rustup show".
+      - name: Install the pinned toolchain
+        run: rustup toolchain install || rustup show
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install || rustup show
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install || rustup show
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # --no-tests=warn keeps the run green while crates are still stubs.
+      - run: cargo nextest run --workspace --locked --no-tests=warn
+      # nextest does not run doctests.
+      - run: cargo test --workspace --doc --locked
+
+  msrv:
+    name: MSRV (Rust 1.94)
+    runs-on: ubuntu-latest
+    env:
+      # Overrides rust-toolchain.toml for every rustc and cargo call in this
+      # job, including the ones rust-cache makes to compute its cache key.
+      RUSTUP_TOOLCHAIN: "1.94"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust 1.94
+        run: rustup toolchain install 1.94 --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets --locked
+
+  deny:
+    name: cargo-deny (${{ matrix.checks }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        checks:
+          - advisories
+          - bans licenses sources
+    # A new RustSec advisory should be visible on every run without blocking
+    # unrelated pull requests; bans, licenses and sources always block.
+    continue-on-error: ${{ matrix.checks == 'advisories' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check ${{ matrix.checks }}
+
+  book:
+    name: Book
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook@0.5
+      - run: mdbook build book
+
+  regtest-detect:
+    name: Regtest (detect)
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.detect.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: devenv
+      - id: detect
+        shell: sh
+        run: |
+          if [ -f devenv/regtest/compose.yml ]; then
+            echo enabled=true >> "$GITHUB_OUTPUT"
+          else
+            echo "devenv/regtest/compose.yml does not exist yet: the regtest job is skipped."
+            echo enabled=false >> "$GITHUB_OUTPUT"
+          fi
+
+  regtest:
+    name: Regtest e2e
+    needs: regtest-detect
+    if: needs.regtest-detect.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install || rustup show
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Start the regtest stack
+        run: docker compose -f devenv/regtest/compose.yml up -d
+      - run: cargo nextest run -p e2e --features regtest --locked
+      - name: Show the regtest logs
+        if: failure()
+        run: docker compose -f devenv/regtest/compose.yml logs --no-color
+      - name: Stop the regtest stack
+        if: always()
+        run: docker compose -f devenv/regtest/compose.yml down -v
