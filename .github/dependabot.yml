@@ -1,0 +1,28 @@
+# Weekly dependency updates, opened against develop.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "build(deps)"
+    groups:
+      # Patch bumps arrive as one pull request per week. Minor and major
+      # bumps stay separate so each is reviewed on its own: most of the tree
+      # is 0.x, where Cargo treats a minor bump as breaking.
+      cargo-patch:
+        update-types: [patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci(deps)"
+    groups:
+      github-actions:
+        patterns: ["*"]
