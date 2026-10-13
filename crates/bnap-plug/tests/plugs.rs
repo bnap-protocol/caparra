@@ -11,20 +11,22 @@ use bnap_core::ids::{rail, rail_id};
 use bnap_core::limits::Limits;
 use bnap_core::manifest::KeyUse;
 use bnap_core::offer::{OfferFields, PayEntry};
-use bnap_core::outcome::{self, Admitted, CommitError, ReceiptInput, SettleError};
-use bnap_core::pricing::{Admission, AdmitInput, Backing, BackingSource, Charge, PayValue, Refund};
+use bnap_core::outcome::{
+    self, Admitted, ProcessError, ReceiptInput, Recorded, Request, SettleError,
+};
+use bnap_core::pricing::{AdmitInput, Backing, BackingSource, PayValue, Refund};
 use bnap_core::response::{Response, Status};
 use bnap_core::schnorr::{Key, Signature, SigningKey};
 use bnap_core::sign::{UnsignedOffer, UnsignedResponse};
-use bnap_core::store::{CommitPlan, PlanInput, Settlement, UseModel};
+use bnap_core::store::{Settlement, UseModel};
 use bnap_core::test_support::{MemoryStore, block_on};
 use bnap_core::{ErrorCode, Offer};
 use bnap_plug::{
-    Action, BlindSignature, BlindedOutput, Budget, CappedSigner, Carrier, Challenge, ChangeLedger,
-    ChangeLimit, Confirmed, CoreMessage, CredentialScheme, Decision, Dleq, Entry, FundingRail,
-    KeysetId, OfferCtx, PayId, PayRequest, PayState, Point, RailError, RailPayment, RailRef,
-    RawCredential, SchemeError, SchemeOffer, SettleCtx, Signer, SignerError, UseStore, Verified,
-    VerifyCtx, confirm_rail_id,
+    Action, BlindSignature, BlindedOutput, Budget, CappedSigner, Carrier, Challenge, ChangeCap,
+    ChangeLedger, ChangeLimit, Confirmed, CoreMessage, CredentialScheme, Decision, Dleq, Entry,
+    FundingRail, KeysetId, OfferCtx, PayId, PayRequest, PayState, Point, RailError, RailPayment,
+    RailRef, RawCredential, SchemeError, SchemeOffer, SettleCtx, Signer, SignerError, UseStore,
+    Verified, VerifyCtx, confirm_rail_id,
 };
 
 const NOW: u64 = 1_791_700_000;
@@ -778,6 +780,8 @@ struct Gate {
     slow_action: std::cell::Cell<bool>,
     /// The gate crashes right after the next commit.
     crash_after_commit: std::cell::Cell<bool>,
+    /// The next action settles after `pending_timeout`, and no sweep ran.
+    late_settle: std::cell::Cell<bool>,
 }
 
 impl Gate {
@@ -807,19 +811,20 @@ impl Gate {
             limits: Limits::default(),
             slow_action: std::cell::Cell::new(false),
             crash_after_commit: std::cell::Cell::new(false),
+            late_settle: std::cell::Cell::new(false),
         }
     }
 
-    /// Verify, confirm rails and price: the scheme's verified part, the
-    /// `RailId`s and the admission.
-    fn verify_and_admit(
+    /// Verify and confirm rails: the scheme's verified part, the
+    /// `RailId`s, and the backing the rails and the signer confirmed.
+    fn verify(
         &self,
         scheme: &dyn CredentialScheme,
         part: &SchemePart,
         ctx: &Context,
         digest: &Digest,
         now: u64,
-    ) -> Result<(Verified, Vec<RailId>, Admission), ErrorCode> {
+    ) -> Result<(Verified, Vec<RailId>, Vec<Backing>), ErrorCode> {
         let (_, entry) = self.offer.fields().pay_entry(scheme.id()).unwrap();
         let view = CappedSigner::verify_only(self.signer.clone(), &entry.unit);
         let verified = block_on(scheme.verify(
@@ -846,27 +851,12 @@ impl Gate {
         let rail_ids: Vec<_> = payments.iter().map(|p| p.rail_id).collect();
         let mut backing: Vec<_> = payments.iter().map(RailPayment::backing).collect();
         backing.extend(view.notes());
-        let store: &dyn UseStore = &self.store;
-        let admission = block_on(outcome::admit(
-            store,
-            &AdmitInput {
-                offer: self.offer.fields(),
-                pay: Some(PayValue {
-                    scheme: scheme.id(),
-                    claimed: verified.value,
-                    backing,
-                    refund: registered_refund(scheme.id()),
-                }),
-                attest: &[],
-                now,
-            },
-        ))
-        .map_err(|e| e.code())?;
-        Ok((verified, rail_ids, admission))
+        Ok((verified, rail_ids, backing))
     }
 
-    /// Verify, confirm rails, price, commit, run, settle and sign the
-    /// receipt, all through `dyn` plugs.
+    /// Verify, confirm rails, then `process` (replay detection, pricing and
+    /// commit in bnap-core's order), run, settle and sign the receipt, all
+    /// through `dyn` plugs.
     fn handle(
         &self,
         scheme: &dyn CredentialScheme,
@@ -878,20 +868,29 @@ impl Gate {
         let digest = cred.digest(&ctx);
         let part = cred.pay.as_ref().unwrap();
         let (_, entry) = self.offer.fields().pay_entry(scheme.id()).unwrap();
-        let (verified, rail_ids, admission) =
-            self.verify_and_admit(scheme, part, &ctx, &digest, now)?;
+        let (verified, rail_ids, backing) = self.verify(scheme, part, &ctx, &digest, now)?;
         let store: &dyn UseStore = &self.store;
-        let plan = CommitPlan::build(&PlanInput {
-            context: &ctx,
-            pay_body: &part.body,
-            attest_bodies: &[],
-            schemes: &[verified.uses(scheme.id(), UseModel::Single)],
-            rail_ids: &rail_ids,
-            admission: &admission,
-            offer_expires: self.offer.fields().expires,
-            now,
-            replay_window: self.limits.replay_window,
-        })
+        let schemes = [verified.uses(scheme.id(), UseModel::Single)];
+        let admitted = block_on(outcome::process(
+            store,
+            &Request {
+                offer: self.offer.fields(),
+                context: &ctx,
+                pay_body: &part.body,
+                attest_bodies: &[],
+                schemes: &schemes,
+                rail_ids: &rail_ids,
+                pay: Some(PayValue {
+                    scheme: scheme.id(),
+                    claimed: verified.value,
+                    backing,
+                    refund: registered_refund(scheme.id()),
+                }),
+                attest: &[],
+                now,
+            },
+            &self.limits,
+        ))
         .map_err(|e| e.code())?;
         let receipt_input = ReceiptInput {
             offer_id,
@@ -900,17 +899,16 @@ impl Gate {
             metered: false,
             receipt_key: self.signer.receipt.public_key(),
         };
-        let rk = *plan.replay_key();
-        // The scheme's settle for a charge, inside one change budget.
-        let run_settle = |charge: &Charge| {
-            let (capped, guard) = CappedSigner::for_change(self.signer.clone(), &charge.cap, rk);
+        // The scheme's settle inside one change budget.
+        let run_settle = |cap: &ChangeCap, charged: u64, rk: ReplayKey| {
+            let (capped, guard) = CappedSigner::for_change(self.signer.clone(), cap, rk);
             let result = block_on(scheme.settle(
                 part,
                 &verified,
                 &SettleCtx {
                     now,
-                    status: charge.status,
-                    charged: charge.charged,
+                    status: cap.status(),
+                    charged,
                     entry,
                     context: &ctx,
                     digest: &digest,
@@ -921,45 +919,48 @@ impl Gate {
             guard.close();
             result.map_err(|e| e.code())
         };
-        // A timed-out outcome's refund: settle FAILED, record it once, and
-        // answer from the record the store returns.
-        let refund = || {
-            let result = run_settle(&admission.settle(Status::Failed, 0))?;
-            block_on(outcome::record_refund(store, &rk, result.as_deref()))
+        // A timed-out outcome's refund: settle FAILED under the cap the
+        // commit recorded, record it once, and answer from what the store
+        // returns.
+        let refund = |r: &Recorded| {
+            assert_eq!(r.receipt(&receipt_input), None, "no refund, no receipt");
+            let cap = r.refund_cap().unwrap();
+            let result = run_settle(&cap, 0, *r.replay_key())?;
+            block_on(outcome::record_refund(store, r, result.as_deref()))
                 .map_err(|_| ErrorCode::Unavailable)
         };
-        let fields = match block_on(outcome::commit(store, &plan, &self.limits)) {
-            Err(e) => return Err(e.code()),
-            Ok(Admitted::Replay(r)) if r.needs_refund() => {
-                assert_eq!(r.receipt(&receipt_input), None, "no refund, no receipt");
-                outcome::receipt(&refund()?, &receipt_input, true).unwrap()
-            }
-            Ok(Admitted::Replay(r)) => r.receipt(&receipt_input).unwrap(),
-            Ok(Admitted::New) => {
+        let answer = match admitted {
+            Admitted::Replay(r) if r.needs_refund() => refund(&r)?,
+            Admitted::Replay(r) => r,
+            Admitted::New(pending) => {
                 if self.crash_after_commit.take() {
                     return Err(ErrorCode::Unavailable);
                 }
                 // The action runs here.
+                let mut settled_at = now;
                 if self.slow_action.take() {
                     let late = now + self.limits.pending_timeout + 1;
                     block_on(outcome::sweep(store, late, &self.limits)).unwrap();
                 }
-                let charge = admission.settle(Status::Ok, 0);
-                let result = run_settle(&charge)?;
-                let s = Settlement::new(&charge, now).with_scheme_result(result);
-                match block_on(outcome::settle(store, &rk, &s, &self.limits)) {
-                    Ok(rec) => outcome::receipt(&rec, &receipt_input, false).unwrap(),
+                if self.late_settle.take() {
+                    // No sweep runs; the settle itself comes too late.
+                    settled_at = now + self.limits.pending_timeout + 1;
+                }
+                let charge = pending.charge(Status::Ok, 0);
+                let result = run_settle(&charge.cap, charge.charged, *pending.replay_key())?;
+                let s = Settlement::new(&charge, settled_at).with_scheme_result(result);
+                match block_on(outcome::settle(store, &pending, &s, &self.limits)) {
+                    Ok(rec) => rec,
                     // The timeout won: the OK result and its change are
                     // discarded, and the answer is the FAILED record, with
                     // its refund.
-                    Err(SettleError::AlreadySettled(rec)) => {
-                        let rec = if rec.needs_refund() { refund()? } else { *rec };
-                        outcome::receipt(&rec, &receipt_input, false).unwrap()
-                    }
+                    Err(SettleError::AlreadySettled(rec)) if rec.needs_refund() => refund(&rec)?,
+                    Err(SettleError::AlreadySettled(rec)) => *rec,
                     Err(_) => return Err(ErrorCode::Unavailable),
                 }
             }
         };
+        let fields = answer.receipt(&receipt_input).unwrap();
         let unsigned = UnsignedResponse::new(&fields).unwrap();
         let signer: &dyn Signer = &*self.signer;
         let ack = block_on(signer.schnorr(unsigned.message())).unwrap();
@@ -1184,6 +1185,29 @@ fn an_action_that_outlives_the_timeout_answers_failed_with_its_refund() {
 }
 
 #[test]
+fn an_action_that_settles_after_the_timeout_loses_to_it_without_a_sweep() {
+    // The checker's LOW probe through the gate: no sweep and no replay ran,
+    // but the action settles OK after pending_timeout. The settle loses to
+    // the timeout, so the client gets FAILED, charged 0, with the refund
+    // (cap 96), exactly as a replay at that moment would.
+    let gate = Gate::new([0; 32]);
+    let notes = Notes::claiming(96);
+    let mut cred = Credential::new(OfferRef::Id(gate.offer.offer_id()));
+    cred.pay = Some(SchemePart::new(
+        "bnap:notes",
+        notes_body(&[(64, 3), (32, 4)]),
+    ));
+    gate.late_settle.set(true);
+    let r = gate.handle(&notes, &cred, NOW).unwrap();
+    let f = r.fields();
+    assert_eq!(
+        (f.status, f.charged, f.replayed),
+        (Status::Failed, 0, false)
+    );
+    assert_eq!(f.scheme_result.as_deref(), Some(&b"cap 96"[..]));
+}
+
+#[test]
 fn a_replay_after_the_timeout_collects_the_refund_first() {
     // The gate crashes after commit: the outcome stays PENDING until the
     // client replays past pending_timeout, and that replay gets the refund.
@@ -1262,10 +1286,9 @@ fn a_store_outage_fails_closed() {
     gate.store.set_unavailable(true);
     let l402 = l402();
     let cred = credential(l402.id(), hash, &gate);
-    // admit reads no counter here (no quota), so the commit is where it
-    // fails, closed.
+    // The outcome lookup comes first, before any pricing, and fails closed.
     assert_eq!(gate.handle(&*l402, &cred, NOW), Err(ErrorCode::Unavailable));
-    let err = CommitError::Store(bnap_plug::StoreError("down".into()));
+    let err = ProcessError::Store(bnap_plug::StoreError("down".into()));
     assert_eq!(err.code(), ErrorCode::Unavailable);
 }
 

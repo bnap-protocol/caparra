@@ -90,16 +90,26 @@ pub struct OutcomeRecord {
     /// The refund of a timed-out outcome was recorded, with or without a
     /// `scheme_result` (a scheme may have nothing to refund). Set once.
     pub refund_recorded: bool,
+    /// The offer's `expires + 60`, from the commit: [`UseStore::purge`]
+    /// never deletes the record before this, whatever window it is given,
+    /// so a credential without single uses cannot be admitted again while
+    /// its offer is still valid (6.1).
+    pub keep_until: u64,
+    /// The most the refund of a timed-out outcome may sign, fixed at commit
+    /// ([`CommitPlan::refund_cap`]).
+    pub refund_cap: u64,
+    /// The pay entry's unit, for the refund; empty without pay.
+    pub unit: String,
 }
 
 impl OutcomeRecord {
-    /// A fresh PENDING record (6.3).
+    /// A fresh PENDING record for a plan (6.3).
     #[must_use]
-    pub fn pending(created: u64, counters: Vec<CounterKey>) -> Self {
+    pub fn pending(plan: &CommitPlan) -> Self {
         Self {
             status: OutcomeStatus::Pending,
-            created,
-            counters,
+            created: plan.now(),
+            counters: plan.counters().iter().map(|c| c.key).collect(),
             charged: None,
             metered_units: None,
             scheme_result: None,
@@ -107,12 +117,15 @@ impl OutcomeRecord {
             settled_at: None,
             timed_out: false,
             refund_recorded: false,
+            keep_until: plan.keep_until(),
+            refund_cap: plan.refund_cap(),
+            unit: plan.unit().to_owned(),
         }
     }
 
     /// True for a timed-out FAILED outcome whose refund is not recorded yet.
     /// No receipt is made for it until the refund is
-    /// ([`crate::outcome::receipt`]).
+    /// ([`crate::outcome::Recorded::receipt`]).
     #[must_use]
     pub fn needs_refund(&self) -> bool {
         self.status == OutcomeStatus::Failed && self.timed_out && !self.refund_recorded
@@ -158,29 +171,83 @@ pub struct SchemeUses<'a> {
     pub local_ids: &'a [Vec<u8>],
 }
 
-/// What [`CommitPlan::build`] needs.
-#[derive(Debug, Clone, Copy)]
-pub struct PlanInput<'a> {
-    /// The credential's Context.
-    pub context: &'a Context,
-    /// The pay body, or empty without pay.
-    pub pay_body: &'a [u8],
-    /// The attest bodies in the credential's (sorted) order.
-    pub attest_bodies: &'a [&'a [u8]],
-    /// Every scheme in the request, pay and attestations.
-    pub schemes: &'a [SchemeUses<'a>],
-    /// `RailId`s the rails confirmed for the request's payments.
-    pub rail_ids: &'a [RailId],
-    /// The request's admission. Its quota counter, if admission chose one,
-    /// always joins the commit (section 7), so no gate can price a request
-    /// at 0 by a quota and commit it without consuming the quota.
-    pub admission: &'a Admission,
-    /// The offer's `expires`.
-    pub offer_expires: u64,
-    /// The gate's clock.
-    pub now: u64,
-    /// The manifest's `replay_window`.
-    pub replay_window: u64,
+/// What a request names, collected before any pricing (6.1, 6.2): its
+/// `ReplayKey`, every `UseId` and `RailId`, the single uses and the rate
+/// counters.
+///
+/// The `ReplayKey` depends only on the Context, the bodies, the schemes'
+/// `UseId`s and the `RailId`s, so it is known before admission, and
+/// [`crate::outcome::process`] looks up `outcome[rk]` with it before it
+/// prices anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Uses {
+    replay_key: ReplayKey,
+    ids: Vec<[u8; 32]>,
+    singles: BTreeSet<[u8; 32]>,
+    counters: BTreeSet<CounterUse>,
+}
+
+impl Uses {
+    /// Collects the request's uses (6.1, 6.2):
+    ///
+    /// - Every local ID becomes `UseId = H_"bnap/use"(lp(scheme) ‖ local)`.
+    /// - Single-model `UseId`s and every `RailId` are single uses, whatever
+    ///   the scheme's own model (6.2: `RailId`s are always single).
+    /// - Rate-model `UseId`s become `rate(k, epoch)` counters.
+    /// - The `ReplayKey` covers every `UseId` and `RailId`, whatever its
+    ///   model, sorted and not deduplicated (ERRATA N3a-9).
+    /// - Single uses and counters are sets: an ID the request names twice is
+    ///   committed once (ERRATA N3b-3).
+    pub(crate) fn collect(
+        context: &Context,
+        pay_body: &[u8],
+        attest_bodies: &[&[u8]],
+        schemes: &[SchemeUses<'_>],
+        rail_ids: &[RailId],
+        now: u64,
+    ) -> Result<Self, PlanError> {
+        let mut ids = Vec::new();
+        let mut singles = BTreeSet::new();
+        let mut counters = BTreeSet::new();
+        for s in schemes {
+            for local in s.local_ids {
+                let id = use_id(s.scheme, local);
+                ids.push(id.0);
+                match s.model {
+                    UseModel::Single => {
+                        singles.insert(id.0);
+                    }
+                    UseModel::Rate { k, epoch } => {
+                        let key = rate_key(&id, k, epoch, now)
+                            .ok_or_else(|| PlanError::ZeroEpoch(s.scheme.to_owned()))?;
+                        counters.insert(CounterUse {
+                            key,
+                            limit: k,
+                            resets_at: epoch_end(now, epoch),
+                        });
+                    }
+                    UseModel::Reusable => {}
+                }
+            }
+        }
+        for r in rail_ids {
+            ids.push(r.0);
+            singles.insert(r.0);
+        }
+        let replay_key = crate::ids::replay_key(context, pay_body, attest_bodies, &ids);
+        ids.sort_unstable();
+        Ok(Self {
+            replay_key,
+            ids,
+            singles,
+            counters,
+        })
+    }
+
+    /// The `ReplayKey`.
+    pub(crate) fn replay_key(&self) -> &ReplayKey {
+        &self.replay_key
+    }
 }
 
 /// Why a commit plan cannot be built.
@@ -209,10 +276,14 @@ impl PlanError {
 }
 
 /// The input of the store's commit (6.3): the `ReplayKey`, the single IDs
-/// and the counters, all computed by bnap-core.
+/// and the counters, all computed by bnap-core, plus what the outcome
+/// record keeps from the admission.
 ///
-/// The fields are private so only [`CommitPlan::build`] makes one: no plug
-/// can name a use ID in another scheme's space or choose a `ReplayKey`.
+/// The fields are private and only [`crate::outcome::process`] makes one,
+/// after it found no `outcome[rk]` and admitted the request: no plug can
+/// name a use ID in another scheme's space or choose a `ReplayKey`, and no
+/// gate can commit a request it did not price, or price one it should
+/// have answered as a replay.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitPlan {
     replay_key: ReplayKey,
@@ -220,14 +291,14 @@ pub struct CommitPlan {
     singles: Vec<[u8; 32]>,
     counters: Vec<CounterUse>,
     now: u64,
+    keep_until: u64,
+    refund_cap: u64,
+    unit: String,
 }
 
 impl CommitPlan {
-    /// Builds the plan from the verified schemes (6.1, 6.2, 6.3).
+    /// Completes `uses` with the admission (6.1, 6.3, 7).
     ///
-    /// - Every local ID becomes `UseId = H_"bnap/use"(lp(scheme) ‖ local)`.
-    /// - Single-model `UseId`s and every `RailId` are single uses.
-    /// - Rate-model `UseId`s become `rate(k, epoch)` counters.
     /// - The quota counter the admission chose joins the counters, always:
     ///   the plan takes it from the [`Admission`], not from the caller.
     /// - Every payment and note the admission counted as value is a single
@@ -239,62 +310,46 @@ impl CommitPlan {
     ///   scheme's own `UseId`s for the note stay singles as well. Backing
     ///   joins the singles only; the `ReplayKey` covers what the schemes and
     ///   `rail_ids` name, as 6.1 defines it.
-    /// - The `ReplayKey` covers every `UseId` and `RailId`, whatever its
-    ///   model, sorted and not deduplicated (ERRATA N3a-9).
-    /// - Single uses and counters are sets: an ID the request names twice is
-    ///   committed once (ERRATA N3b-3).
     /// - Without any single use, the offer must expire at least 60 seconds
     ///   before the record can be deleted (6.1).
-    pub fn build(input: &PlanInput<'_>) -> Result<Self, PlanError> {
-        let mut ids = Vec::new();
-        let mut singles = BTreeSet::new();
-        let mut counters = BTreeSet::new();
-        for s in input.schemes {
-            for local in s.local_ids {
-                let id = use_id(s.scheme, local);
-                ids.push(id.0);
-                match s.model {
-                    UseModel::Single => {
-                        singles.insert(id.0);
-                    }
-                    UseModel::Rate { k, epoch } => {
-                        let key = rate_key(&id, k, epoch, input.now)
-                            .ok_or_else(|| PlanError::ZeroEpoch(s.scheme.to_owned()))?;
-                        counters.insert(CounterUse {
-                            key,
-                            limit: k,
-                            resets_at: epoch_end(input.now, epoch),
-                        });
-                    }
-                    UseModel::Reusable => {}
-                }
-            }
-        }
-        for r in input.rail_ids {
-            ids.push(r.0);
-            singles.insert(r.0);
-        }
-        if let Some(q) = input.admission.decision().quota_counter() {
+    /// - The record keeps the refund cap of a FAILED settlement
+    ///   ([`Admission::settle`]), so a replay that times the outcome out
+    ///   refunds what this commit consumed, never a value priced again, and
+    ///   `keep_until = expires + 60`: the store never deletes the record
+    ///   while its offer can still be presented.
+    pub(crate) fn build(
+        uses: Uses,
+        admission: &Admission,
+        offer_expires: u64,
+        now: u64,
+        replay_window: u64,
+    ) -> Result<Self, PlanError> {
+        let Uses {
+            replay_key,
+            ids,
+            mut singles,
+            mut counters,
+        } = uses;
+        if let Some(q) = admission.decision().quota_counter() {
             counters.insert(*q);
         }
-        if let Some(pay) = input.admission.pay() {
+        if let Some(pay) = admission.pay() {
             singles.extend(pay.backing().iter().map(BackingSource::single_id));
         }
-        if singles.is_empty()
-            && input.offer_expires.saturating_add(CLOCK_SKEW)
-                > input.now.saturating_add(input.replay_window)
-        {
+        let keep_until = offer_expires.saturating_add(CLOCK_SKEW);
+        if singles.is_empty() && keep_until > now.saturating_add(replay_window) {
             return Err(PlanError::OutlivesRecord);
         }
-        let replay_key =
-            crate::ids::replay_key(input.context, input.pay_body, input.attest_bodies, &ids);
-        ids.sort_unstable();
+        let refund = admission.settle(Status::Failed, 0).cap;
         Ok(Self {
             replay_key,
             ids,
             singles: singles.into_iter().collect(),
             counters: counters.into_iter().collect(),
-            now: input.now,
+            now,
+            keep_until,
+            refund_cap: refund.get(),
+            unit: refund.unit().to_owned(),
         })
     }
 
@@ -310,7 +365,7 @@ impl CommitPlan {
         &self.ids
     }
 
-    /// Single-model `UseId`s and `RailId`s, sorted, each once.
+    /// Single-model `UseId`s, `RailId`s and backing IDs, sorted, each once.
     #[must_use]
     pub fn singles(&self) -> &[[u8; 32]] {
         &self.singles
@@ -326,6 +381,25 @@ impl CommitPlan {
     #[must_use]
     pub fn now(&self) -> u64 {
         self.now
+    }
+
+    /// The offer's `expires + 60`: the record stays at least until then.
+    #[must_use]
+    pub fn keep_until(&self) -> u64 {
+        self.keep_until
+    }
+
+    /// The most a FAILED refund of this outcome may sign, fixed at commit:
+    /// the admitted value for an `atomic` scheme, 0 otherwise.
+    #[must_use]
+    pub fn refund_cap(&self) -> u64 {
+        self.refund_cap
+    }
+
+    /// The pay entry's unit; empty without pay.
+    #[must_use]
+    pub fn unit(&self) -> &str {
+        &self.unit
     }
 }
 
@@ -427,13 +501,27 @@ impl StoreError {
 /// it returns (6.3, section 12 "Durability"). Each behaves exactly as the
 /// function of the same name in [`logic`]. A store that cannot be reached
 /// returns [`StoreError`], and the gate fails closed.
+///
+/// **Serializable means one atomic step per method.** In [`Self::commit`]
+/// the replay check, the check of every single use, the check of every
+/// counter against its limit, and every write happen in one transaction
+/// that no concurrent commit can interleave with. A store that reads a
+/// counter in one statement and increments it in another, without
+/// serializable isolation or a conditional write that re-checks the limit,
+/// lets two commits pass one free slot. Pricing reads counters
+/// ([`Self::counter`]) outside that transaction, so a pricing read may be
+/// stale; the commit's re-check is what bounds every counter. The
+/// conformance scenarios in `test_support::conformance` (feature
+/// `test-support`) test this, concurrently, against any store.
 #[async_trait::async_trait]
 pub trait UseStore: Send + Sync {
     /// 6.3 commit: replay check, then every single ID, then every counter;
-    /// all or nothing.
+    /// all or nothing, in one serializable transaction.
     async fn commit(&self, plan: &CommitPlan) -> Result<Commit, StoreError>;
 
-    /// A counter's current value (0 when absent), for quota room at pricing.
+    /// A counter's current value (0 when absent), for quota room at
+    /// pricing. The answer may be stale by the time the commit runs; the
+    /// commit re-checks every limit.
     async fn counter(&self, key: &CounterKey) -> Result<u64, StoreError>;
 
     /// Reads `outcome[rk]`.
@@ -472,9 +560,10 @@ pub trait UseStore: Send + Sync {
     ) -> Result<Option<OutcomeRecord>, StoreError>;
 
     /// Deletes OK and FAILED outcome records created before `created_before`
-    /// (the replay window has passed). PENDING records and every `used` entry
-    /// stay. Returns how many were deleted.
-    async fn purge(&self, created_before: u64) -> Result<u64, StoreError>;
+    /// (the replay window has passed) whose `keep_until` is before `now`
+    /// (their offer can no longer be presented). PENDING records and every
+    /// `used` entry stay. Returns how many were deleted.
+    async fn purge(&self, created_before: u64, now: u64) -> Result<u64, StoreError>;
 }
 
 /// The primitive reads and writes of one serializable transaction, for
@@ -543,8 +632,7 @@ pub mod logic {
             let v = t.counter(&c.key);
             t.set_counter(c.key, v.saturating_add(1));
         }
-        let keys = plan.counters().iter().map(|c| c.key).collect();
-        t.put_outcome(rk, OutcomeRecord::pending(plan.now(), keys));
+        t.put_outcome(rk, OutcomeRecord::pending(plan));
         Commit::New
     }
 
@@ -642,13 +730,20 @@ pub mod logic {
         Some(rec.clone())
     }
 
-    /// Deletes settled outcome records created before `created_before`.
-    pub fn purge(t: &mut impl UseTable, created_before: u64) -> u64 {
+    /// Deletes settled outcome records created before `created_before`,
+    /// but never one whose offer can still be presented: `keep_until` must
+    /// be before `now`. This holds whatever window the caller computed
+    /// `created_before` from, so a sweep run with a shorter `replay_window`
+    /// than the commit saw cannot let a credential without single uses be
+    /// admitted again (6.1).
+    pub fn purge(t: &mut impl UseTable, created_before: u64, now: u64) -> u64 {
         let mut n = 0;
         for rk in t.outcome_keys() {
-            let old = t
-                .outcome(&rk)
-                .is_some_and(|r| r.status != OutcomeStatus::Pending && r.created < created_before);
+            let old = t.outcome(&rk).is_some_and(|r| {
+                r.status != OutcomeStatus::Pending
+                    && r.created < created_before
+                    && r.keep_until < now
+            });
             if old {
                 t.delete_outcome(&rk);
                 n += 1;

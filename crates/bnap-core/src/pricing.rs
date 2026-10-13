@@ -35,7 +35,7 @@
 //! claimed and what its [`Backing`] adds up to, in the pay entry's unit.
 //! Backing is a payment a rail confirmed as final, or a note the signer
 //! verified; each counts once, and every one is committed as a single use
-//! with the request ([`crate::store::CommitPlan::build`]), under an ID that
+//! with the request ([`crate::store::CommitPlan`]), under an ID that
 //! does not depend on the scheme: its `RailId`, or [`note_id`] for a note,
 //! so one note or payment admits one action whichever scheme carries it
 //! (ERRATA N3b-19). A payment in a unit that does not convert to the
@@ -172,9 +172,11 @@ fn narrow(v: u128) -> u64 {
 /// The quota attestations that could apply, in offer order, with their
 /// counter keys at `now`.
 ///
-/// A gate reads these counters from the use store before it calls
-/// [`admit`], which picks the first one with room. Only verified quota
-/// attestations of class S, A or O that name a quota identity are listed.
+/// [`crate::outcome::process`] reads these counters from the use store
+/// before it calls [`admit`], which picks the first one with room; the
+/// commit re-checks the chosen counter's limit atomically. Only verified
+/// quota attestations of class S, A or O that name a quota identity are
+/// listed.
 #[must_use]
 pub fn quota_candidates(
     offer: &OfferFields,
@@ -699,6 +701,16 @@ pub struct ChangeCap {
 }
 
 impl ChangeCap {
+    /// A cap bnap-core computed: from [`Admission::settle`], or the refund
+    /// cap an outcome record kept from its commit.
+    pub(crate) fn new(amount: u64, unit: String, status: Status) -> Self {
+        Self {
+            amount,
+            unit,
+            status,
+        }
+    }
+
     /// The cap in the pay entry's unit.
     #[must_use]
     pub fn get(&self) -> u64 {

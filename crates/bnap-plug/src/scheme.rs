@@ -55,7 +55,7 @@ pub struct Verified {
 }
 
 impl Verified {
-    /// The scheme's uses for [`bnap_core::store::CommitPlan::build`], under
+    /// The scheme's uses for [`bnap_core::outcome::Request::schemes`], under
     /// the model the registry sets.
     #[must_use]
     pub fn uses<'a>(&'a self, scheme: &'a str, model: UseModel) -> SchemeUses<'a> {

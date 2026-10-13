@@ -56,7 +56,7 @@ pub use hash::{Context, CounterKey, Digest, OfferId, RailId, ReplayKey, Scope, U
 pub use limits::Limits;
 pub use manifest::{Manifest, ManifestKey, SignedManifest};
 pub use offer::{AttestEntry, Effect, GateOfferCheck, NativeEntry, Offer, OfferFields, PayEntry};
-pub use outcome::{Admitted, CommitError, SettleError};
+pub use outcome::{Admitted, Pending, ProcessError, Recorded, SettleError};
 pub use policy::{EffectiveVector, Require, RoutePolicy};
 pub use pricing::{
     Admission, Backing, BackingSource, Charge, PriceDecision, PriceError, Refund, VerifiedAttest,

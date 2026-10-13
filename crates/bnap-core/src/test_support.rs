@@ -167,8 +167,8 @@ impl UseStore for MemoryStore {
         Ok(logic::record_refund(&mut *self.tx()?, rk, scheme_result))
     }
 
-    async fn purge(&self, created_before: u64) -> Result<u64, StoreError> {
-        Ok(logic::purge(&mut *self.tx()?, created_before))
+    async fn purge(&self, created_before: u64, now: u64) -> Result<u64, StoreError> {
+        Ok(logic::purge(&mut *self.tx()?, created_before, now))
     }
 }
 
