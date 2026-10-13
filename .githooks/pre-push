@@ -1,0 +1,5 @@
+#!/bin/sh
+# Pre-push hook: run the leak guard over the tracked files and the commits
+# being pushed. Enable once per clone with: git config core.hooksPath .githooks
+# git passes the remote name and URL as arguments and the refs on stdin.
+exec "$(git rev-parse --show-toplevel)/ops/leak-guard.sh" --pre-push "$@"
