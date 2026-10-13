@@ -316,6 +316,14 @@ fn the_signer_keeps_a_running_total_per_settlement() {
         ),
         (80, 144, 64)
     );
+    // A later call naming the same settlement with a larger cap does not
+    // raise it.
+    let bigger = cap_of(1_000, 50);
+    let (raised, _g7) = CappedSigner::for_change(inner.clone(), &bigger, rk(1));
+    assert_eq!(
+        block_on(raised.blind_sign(&ks(), &outputs(6, &[64]))),
+        Err(SignerError::OverCap { sum: 144, cap: 100 })
+    );
     inner.ledger.forget(&rk(1));
     assert_eq!(inner.ledger.total(&rk(1), Status::Failed), 0);
     // The signer refuses a settlement in a unit its keyset is not in.

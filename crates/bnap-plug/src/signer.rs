@@ -191,9 +191,11 @@ pub struct ChangeLimit {
 /// makes the same note.
 type SignedOutput = (Vec<u8>, u64, [u8; 33]);
 
-/// What a [`ChangeLedger`] keeps for one settlement.
-#[derive(Debug, Default)]
+/// What a [`ChangeLedger`] keeps for one settlement: the cap it was first
+/// named with, what was signed so far, and the outputs signed.
+#[derive(Debug)]
 struct Signed {
+    cap: u64,
     total: u64,
     outputs: BTreeSet<SignedOutput>,
 }
@@ -205,7 +207,9 @@ struct Signed {
 /// distinct output (keyset, amount, `B'`) once per settlement, so a
 /// deterministic `settle` that runs again (a replay recomputing a refund
 /// after a crash, two concurrent replays) signs the same notes again for
-/// nothing, while new outputs beyond the cap are refused. It is in memory:
+/// nothing, while new outputs beyond the cap are refused. The first cap a
+/// settlement is named with bounds it: a later call with a larger cap does
+/// not raise it. It is in memory:
 /// a signer that restarts starts from 0, which is safe only because the
 /// gate never sends change before the outcome is durable (6.4).
 #[derive(Debug, Default)]
@@ -233,7 +237,14 @@ impl ChangeLedger {
             .settlements
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let signed = all.entry((limit.replay_key, limit.status)).or_default();
+        let signed = all
+            .entry((limit.replay_key, limit.status))
+            .or_insert_with(|| Signed {
+                cap: limit.cap,
+                total: 0,
+                outputs: BTreeSet::new(),
+            });
+        let cap = signed.cap.min(limit.cap);
         let fresh: BTreeSet<SignedOutput> = outputs
             .iter()
             .map(|o| (keyset.0.clone(), o.amount, o.blinded.0))
@@ -243,14 +254,15 @@ impl ChangeLedger {
             .iter()
             .try_fold(signed.total, |acc, (_, amount, _)| acc.checked_add(*amount));
         match total {
-            Some(total) if total <= limit.cap => {
+            Some(total) if total <= cap => {
+                signed.cap = cap;
                 signed.total = total;
                 signed.outputs.extend(fresh);
                 Ok(())
             }
             total => Err(SignerError::OverCap {
                 sum: total.unwrap_or(u64::MAX),
-                cap: limit.cap,
+                cap,
             }),
         }
     }
