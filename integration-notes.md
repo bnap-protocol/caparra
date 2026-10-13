@@ -131,6 +131,25 @@ Every check returns `bnap_core::Error`; `err.code()` is the draft-00 code and
   properties for every parser on arbitrary bytes, TLV-shaped input, mutated
   valid objects and arbitrary JSON.
 
+### Status at hand-off
+
+- `cargo-q nextest run -p bnap-core`: 75 tests, 75 passed (unit tests,
+  `vectors`, `bip340`, `negative`, `props`).
+- `cargo-q clippy -p bnap-core --all-targets -- -D warnings`: clean
+  (workspace lints, `clippy::pedantic` included).
+- `RUSTDOCFLAGS="-D warnings" cargo-q doc -p bnap-core --no-deps`: clean.
+- `ops/leak-guard.sh`: clean. No `unsafe` (the workspace forbids it).
+
+## Merge notes
+
+- `Cargo.lock` gained the dependency tree of `bnap-core` (bitcoin 0.32 with
+  secp256k1 0.29, sha2 0.11, hmac 0.13, hex, serde, serde\_json,
+  serde\_json\_canonicalizer 0.4, thiserror 2; proptest and base64 for
+  tests). If it conflicts with another node's lock, regenerate it rather
+  than hand-merging. No workspace dependency was added.
+- `serde_json_canonicalizer` turns on `serde_json/float_roundtrip` for the
+  whole workspace through feature unification.
+
 ## Known gaps (for downstream nodes)
 
 - No pricing (section 7), use store commit, settle or replay logic (6.3,
