@@ -160,8 +160,9 @@ pub trait Signer: Send + Sync {
     /// `limit.status`) and refuse a call that would take it above
     /// `limit.cap`, which bnap-core set to `value - charged`; an output
     /// already signed for the same settlement MAY be signed again without
-    /// counting twice, since it makes the same note. [`ChangeLedger`] does
-    /// exactly this.
+    /// counting twice, since it makes the same note. MUST refuse an empty
+    /// batch and any output of amount 0, which carries no value but costs
+    /// signer work. [`ChangeLedger`] does exactly this.
     async fn blind_sign(
         &self,
         keyset: &KeysetId,
@@ -194,6 +195,20 @@ pub struct ChangeLimit {
 /// One output as signed: keyset, amount and `B'`. The same triple always
 /// makes the same note.
 type SignedOutput = (Vec<u8>, u64, [u8; 33]);
+
+/// Refuses an empty batch and any output of amount 0. Neither carries
+/// value, but each is signer work a hostile scheme could ask for without
+/// bound under any cap, so the budget and the ledger both refuse them before
+/// counting anything.
+fn check_outputs(outputs: &[BlindedOutput]) -> Result<(), SignerError> {
+    if outputs.is_empty() {
+        return Err(SignerError::Refused("no outputs to sign".into()));
+    }
+    if outputs.iter().any(|o| o.amount == 0) {
+        return Err(SignerError::Refused("an output of amount 0".into()));
+    }
+    Ok(())
+}
 
 /// What a [`ChangeLedger`] keeps for one settlement: the cap it was first
 /// named with, what was signed so far, and the outputs signed.
@@ -230,13 +245,15 @@ impl ChangeLedger {
 
     /// Takes `outputs` out of the settlement's cap, or refuses with
     /// [`SignerError::OverCap`] and records nothing. Outputs already
-    /// reserved for the same settlement count nothing.
+    /// reserved for the same settlement count nothing. An empty batch, or
+    /// an output of amount 0, is refused with [`SignerError::Refused`].
     pub fn reserve(
         &self,
         keyset: &KeysetId,
         outputs: &[BlindedOutput],
         limit: &ChangeLimit,
     ) -> Result<(), SignerError> {
+        check_outputs(outputs)?;
         let mut all = self
             .settlements
             .lock()
@@ -507,8 +524,10 @@ impl CappedSigner {
 
     /// Signs blinded outputs out of the change budget.
     ///
-    /// Before the signer is called, refuses when the view is verify-only
-    /// or the guard closed the budget, and takes the outputs' sum out of
+    /// Before the signer is called, refuses when the view is verify-only,
+    /// when the batch is empty or holds an output of amount 0 (the budget
+    /// is not touched), or when the guard closed the budget, and takes the
+    /// outputs' sum out of
     /// what is left with a compare-and-swap, refusing past 0; a sum that
     /// overflows is above any cap. A call that fails afterwards keeps its
     /// share spent, since the signer may have signed before failing. The
@@ -525,6 +544,7 @@ impl CappedSigner {
                 "a verify-only signer signs nothing".into(),
             ));
         };
+        check_outputs(outputs)?;
         let sum = outputs
             .iter()
             .try_fold(0u64, |acc, o| acc.checked_add(o.amount));

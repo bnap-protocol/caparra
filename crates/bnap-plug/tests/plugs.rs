@@ -133,7 +133,7 @@ fn outputs(tag: u16, amounts: &[u64]) -> Vec<BlindedOutput> {
         .map(|(i, a)| {
             let mut p = [2; 33];
             p[1..3].copy_from_slice(&tag.to_be_bytes());
-            p[3] = u8::try_from(i).unwrap();
+            p[3..5].copy_from_slice(&u16::try_from(i).unwrap().to_be_bytes());
             BlindedOutput {
                 amount: *a,
                 blinded: Point(p),
@@ -228,6 +228,56 @@ fn two_calls_whose_sum_exceeds_the_cap_are_refused() {
     );
     assert_eq!(inner.signed(), 100);
     assert_eq!(inner.ledger.total(&rk(1), Status::Ok), 100);
+}
+
+#[test]
+fn zero_amount_outputs_and_empty_batches_are_refused() {
+    // The checker's probe: a hostile scheme asked for 1,000 outputs of 0
+    // sat under a 29 sat cap. They carry no value on a standard keyset, but
+    // each one is signer work, so they are refused before the budget is
+    // touched, and the signer's own ledger refuses them as well.
+    let inner = Arc::new(TestSigner::new());
+    let (capped, guard) = CappedSigner::for_change(inner.clone(), &cap_of(50, 21), rk(1));
+    assert_eq!(capped.remaining(), Some(29));
+    let zeros = outputs(1, &[0; 1_000]);
+    assert!(matches!(
+        block_on(capped.blind_sign(&ks(), &zeros)),
+        Err(SignerError::Refused(_))
+    ));
+    // One zero among valued outputs is refused too, and so is an empty
+    // batch.
+    assert!(matches!(
+        block_on(capped.blind_sign(&ks(), &outputs(2, &[8, 0, 4]))),
+        Err(SignerError::Refused(_))
+    ));
+    assert!(matches!(
+        block_on(capped.blind_sign(&ks(), &[])),
+        Err(SignerError::Refused(_))
+    ));
+    assert_eq!(capped.remaining(), Some(29), "the budget was not touched");
+    assert_eq!(inner.calls(), Vec::<u64>::new(), "the signer was not called");
+    guard.close();
+
+    // An out-of-process signer gets the same answer from its ledger, whoever
+    // calls it.
+    let ledger = ChangeLedger::new();
+    let limit = ChangeLimit {
+        replay_key: rk(2),
+        status: Status::Ok,
+        unit: "sat".into(),
+        cap: 29,
+    };
+    assert!(matches!(
+        ledger.reserve(&ks(), &zeros, &limit),
+        Err(SignerError::Refused(_))
+    ));
+    assert!(matches!(
+        ledger.reserve(&ks(), &[], &limit),
+        Err(SignerError::Refused(_))
+    ));
+    assert_eq!(ledger.total(&rk(2), Status::Ok), 0);
+    ledger.reserve(&ks(), &outputs(3, &[16, 8]), &limit).unwrap();
+    assert_eq!(ledger.total(&rk(2), Status::Ok), 24);
 }
 
 #[test]
