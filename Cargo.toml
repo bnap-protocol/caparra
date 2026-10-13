@@ -1,0 +1,71 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/bnap-protocol/caparra"
+authors = ["BNAP contributors"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+
+# Versions shared by all member crates. A member opts in with
+# `name = { workspace = true }` and may add features on top.
+[workspace.dependencies]
+# Bitcoin, ecash and Lightning. secp256k1 is taken through the `bitcoin`
+# re-export (`bitcoin::secp256k1`) so the tree carries a single secp256k1.
+cashu = "0.18.1"
+bitcoin = { version = "0.32.102", features = ["serde", "rand-std"] }
+libmacaroon = "0.3.0"
+nwc = "0.45.1"
+fedimint-tonic-lnd = "0.4.0"
+mpp = "0.15.1"
+web-bot-auth = "0.7.0"
+josekit = "0.10.3"
+
+# Encoding and crypto helpers
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+serde_json_canonicalizer = "0.4.1"
+sha2 = "0.11.1"
+hmac = "0.13.0"
+hex = "0.4.3"
+base64 = "0.23.1"
+rand = "0.10.3"
+
+# Async runtime, HTTP and MCP
+tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "net", "time", "sync", "signal"] }
+async-trait = "0.1.92"
+axum = "0.8.9"
+tower = "0.5.3"
+tower-http = { version = "0.7.1", features = ["trace"] }
+hyper = "1.12.0"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "http2", "charset"] }
+rmcp = "3.5.1"
+
+# Storage
+sqlx = { version = "0.9.0", default-features = false, features = ["sqlite", "postgres", "runtime-tokio", "tls-rustls", "macros", "migrate"] }
+
+# Errors, config, CLI and observability
+thiserror = "2.0.21"
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+toml = "1.1.8"
+url = "2.5.8"
+time = "0.3.55"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+# Testing
+proptest = "1.12.0"
+tempfile = "3.27.0"

@@ -1,0 +1,12 @@
+[package]
+name = "caparra-gate"
+description = "Gate that sits in front of an HTTP or MCP service and enforces BNAP payment and authorization."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true

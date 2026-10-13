@@ -1,0 +1,12 @@
+[package]
+name = "bnap-rail-lnd"
+description = "Settlement rail for an LND Lightning node over gRPC."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true

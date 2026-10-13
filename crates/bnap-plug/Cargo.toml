@@ -1,0 +1,12 @@
+[package]
+name = "bnap-plug"
+description = "Plug-in traits that connect signers, stores, schemes, rails and carriers to the core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true

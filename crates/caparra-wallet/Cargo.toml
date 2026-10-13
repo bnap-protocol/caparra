@@ -1,0 +1,12 @@
+[package]
+name = "caparra-wallet"
+description = "Client wallet that holds funds and answers BNAP payment challenges."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true

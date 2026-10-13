@@ -1,0 +1,12 @@
+[package]
+name = "bnap-scheme-dpop"
+description = "Proof-of-possession scheme based on DPoP (RFC 9449)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
