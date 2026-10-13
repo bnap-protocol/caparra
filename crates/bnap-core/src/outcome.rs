@@ -19,7 +19,7 @@
 //! | --- | --- |
 //! | New | Run the action, then [`settle`] |
 //! | Replay of a PENDING outcome | PENDING with `retry_after`; past `pending_timeout`, the outcome is timed out first |
-//! | Replay of OK or FAILED inside `replay_window` | [`Admitted::Replay`]: the recorded outcome, receipt signed afresh with `replayed` |
+//! | Replay of OK or FAILED inside `replay_window` | [`Admitted::Replay`]: the recorded outcome, receipt signed afresh with `replayed`; a timed-out outcome's refund first |
 //! | Replay outside `replay_window` | SPENT |
 //! | A single ID used under another `ReplayKey` | SPENT |
 //! | A full counter | `RATE_LIMITED` with `retry_after` |
@@ -27,6 +27,22 @@
 //! The status leaves PENDING exactly once: [`settle`] on a settled outcome
 //! is refused with [`SettleError::AlreadySettled`] and changes nothing, and
 //! a replay never writes a status.
+//!
+//! **A timed-out outcome is refunded before it is answered.** The timeout
+//! moves an outcome to FAILED with no `scheme_result`; the refund it implies
+//! is computed later, by whichever request reaches it first:
+//!
+//! - a replay that gets [`Admitted::Replay`] with [`Replay::needs_refund`];
+//! - the late action itself, whose [`settle`] returns
+//!   [`SettleError::AlreadySettled`] because the timeout won. The gate then
+//!   discards the `scheme_result` and any change it computed for OK (none
+//!   of it was sent) and answers from the recorded FAILED outcome.
+//!
+//! Either way the gate runs the scheme's `settle` for FAILED with the
+//! charge and cap of `Admission::settle(Status::Failed, _)`, stores the
+//! result with [`record_refund`] (the first write wins), and builds the
+//! receipt from the record it returns. [`receipt`] makes no receipt for a
+//! record that still needs its refund, so the refund cannot be skipped.
 
 use crate::error::{ErrorCode, ErrorObject};
 use crate::hash::{CounterKey, Digest, OfferId, ReplayKey};
@@ -121,7 +137,8 @@ impl Replay {
     ///
     /// The gate then calls the scheme's `settle` for FAILED with charge 0
     /// and stores the result with [`record_refund`], which writes it only
-    /// once; the receipt carries the result the store returns.
+    /// once; the receipt carries the record the store returns:
+    /// `receipt(&recorded, input, true)`.
     #[must_use]
     pub fn needs_refund(&self) -> bool {
         self.record.needs_refund()
@@ -130,6 +147,9 @@ impl Replay {
     /// The replay's receipt fields: the recorded status, `charged`,
     /// `metered_units`, `scheme_result` and `settled_at`, with `replayed`
     /// set, over the replaying request's Digest (8.1).
+    ///
+    /// `None` while [`Self::needs_refund`]: a timed-out outcome is answered
+    /// only once its refund is recorded.
     #[must_use]
     pub fn receipt(&self, r: &ReceiptInput) -> Option<ResponseFields> {
         receipt(&self.record, r, true)
@@ -151,11 +171,17 @@ pub struct ReceiptInput {
     pub receipt_key: Key,
 }
 
-/// The Response fields for a settled outcome (8.1); `None` while PENDING.
+/// The Response fields for a settled outcome (8.1); `None` while PENDING,
+/// and `None` for a timed-out outcome whose refund is not recorded yet
+/// ([`OutcomeRecord::needs_refund`]): run the refund and [`record_refund`]
+/// first, then build the receipt from the record that returns.
 ///
 /// A timed-out outcome has no meter count; a metered offer then reports 0.
 #[must_use]
 pub fn receipt(rec: &OutcomeRecord, r: &ReceiptInput, replayed: bool) -> Option<ResponseFields> {
+    if rec.needs_refund() {
+        return None;
+    }
     let status = rec.status.settled()?;
     Some(ResponseFields {
         status,
@@ -245,8 +271,17 @@ pub enum SettleError {
 /// Settles an outcome exactly once (6.4).
 ///
 /// Compute the charge first ([`Admission::settle`]), call the scheme's
-/// deterministic `settle`, then call this. The Response may be sent only
-/// after this returns `Ok`.
+/// deterministic `settle`, then call this. The Response, and any change in
+/// it, may be sent only after this returns `Ok`.
+///
+/// [`SettleError::AlreadySettled`] means the outcome left PENDING without
+/// this write, in practice because the action outlived `pending_timeout`.
+/// Discard the `scheme_result` and change computed for this settlement and
+/// answer from the recorded outcome the error carries: if it
+/// [needs a refund](OutcomeRecord::needs_refund), run the scheme's `settle`
+/// for FAILED, [`record_refund`] it and build the receipt from the record
+/// that returns (see the module docs); otherwise build it from the record
+/// as it is. The receipt is not `replayed`: it answers this request.
 pub async fn settle<S: UseStore + ?Sized>(
     store: &S,
     rk: &ReplayKey,
@@ -260,12 +295,14 @@ pub async fn settle<S: UseStore + ?Sized>(
 }
 
 /// Stores the refund of a timed-out outcome once and returns the record
-/// the receipt reports. A concurrent replay that recorded first wins; its
-/// result is returned and the scheme MUST NOT pay out anything beyond it.
+/// the receipt reports. `scheme_result` is what the scheme's FAILED
+/// `settle` returned, `None` when it had nothing to refund. A concurrent
+/// request that recorded first wins; its result is returned and the scheme
+/// MUST NOT pay out anything beyond it.
 pub async fn record_refund<S: UseStore + ?Sized>(
     store: &S,
     rk: &ReplayKey,
-    scheme_result: &[u8],
+    scheme_result: Option<&[u8]>,
 ) -> Result<OutcomeRecord, SettleError> {
     store
         .record_refund(rk, scheme_result)

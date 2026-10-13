@@ -84,9 +84,12 @@ pub struct OutcomeRecord {
     /// Settlement time, kept for replays.
     pub settled_at: Option<u64>,
     /// The outcome moved to FAILED by the timeout, not by `settle`. Its
-    /// refund is computed when the client replays (see
-    /// [`UseStore::record_refund`]).
+    /// refund is computed when the client replays, or when the late action
+    /// tries to settle (see [`UseStore::record_refund`]).
     pub timed_out: bool,
+    /// The refund of a timed-out outcome was recorded, with or without a
+    /// `scheme_result` (a scheme may have nothing to refund). Set once.
+    pub refund_recorded: bool,
 }
 
 impl OutcomeRecord {
@@ -103,13 +106,16 @@ impl OutcomeRecord {
             response: None,
             settled_at: None,
             timed_out: false,
+            refund_recorded: false,
         }
     }
 
     /// True for a timed-out FAILED outcome whose refund is not recorded yet.
+    /// No receipt is made for it until the refund is
+    /// ([`crate::outcome::receipt`]).
     #[must_use]
     pub fn needs_refund(&self) -> bool {
-        self.status == OutcomeStatus::Failed && self.timed_out && self.scheme_result.is_none()
+        self.status == OutcomeStatus::Failed && self.timed_out && !self.refund_recorded
     }
 }
 
@@ -447,14 +453,14 @@ pub trait UseStore: Send + Sync {
         now: u64,
     ) -> Result<Vec<ReplayKey>, StoreError>;
 
-    /// Records the refund of a timed-out outcome once: writes
-    /// `scheme_result` only if the outcome is FAILED, timed out and has no
-    /// `scheme_result` yet. Returns the record after the call, or `None`
-    /// when there is none.
+    /// Records the refund of a timed-out outcome once: only if the outcome
+    /// still [needs it](OutcomeRecord::needs_refund), writes
+    /// `scheme_result` (which may be `None`) and sets `refund_recorded`.
+    /// Returns the record after the call, or `None` when there is none.
     async fn record_refund(
         &self,
         rk: &ReplayKey,
-        scheme_result: &[u8],
+        scheme_result: Option<&[u8]>,
     ) -> Result<Option<OutcomeRecord>, StoreError>;
 
     /// Deletes OK and FAILED outcome records created before `created_before`
@@ -591,11 +597,12 @@ pub mod logic {
     pub fn record_refund(
         t: &mut impl UseTable,
         rk: &ReplayKey,
-        scheme_result: &[u8],
+        scheme_result: Option<&[u8]>,
     ) -> Option<OutcomeRecord> {
         let rec = t.outcome_mut(rk)?;
         if rec.needs_refund() {
-            rec.scheme_result = Some(scheme_result.to_vec());
+            rec.scheme_result = scheme_result.map(<[u8]>::to_vec);
+            rec.refund_recorded = true;
         }
         Some(rec.clone())
     }

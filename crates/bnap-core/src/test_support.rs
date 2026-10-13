@@ -157,7 +157,7 @@ impl UseStore for MemoryStore {
     async fn record_refund(
         &self,
         rk: &ReplayKey,
-        scheme_result: &[u8],
+        scheme_result: Option<&[u8]>,
     ) -> Result<Option<OutcomeRecord>, StoreError> {
         Ok(logic::record_refund(&mut *self.tx()?, rk, scheme_result))
     }

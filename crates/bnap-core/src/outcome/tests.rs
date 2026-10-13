@@ -195,7 +195,7 @@ fn status_flip_on_replay_is_impossible() {
     // is never recorded on it.
     let swept = block_on(sweep(&store, T0 + 10_000, &limits())).unwrap();
     assert_eq!(swept.timed_out, Vec::<ReplayKey>::new());
-    let after = block_on(record_refund(&store, plan.replay_key(), b"x")).unwrap();
+    let after = block_on(record_refund(&store, plan.replay_key(), Some(b"x"))).unwrap();
     assert_eq!(after, ok);
     // A replay still reports OK.
     let replay = note_plan(&ctx(1), b"Y1", T0 + 20_000);
@@ -512,14 +512,20 @@ fn pending_timeout_moves_to_failed_and_the_replay_collects_the_refund() {
         Err(SettleError::AlreadySettled(_))
     ));
 
-    // The client replays to collect its refund, which is recorded once.
+    // The client replays to collect its refund, which is recorded once. No
+    // receipt is made before it is.
     let Ok(Admitted::Replay(r)) = block_on(commit(&store, &plan, &l)) else {
         panic!("expected a replay");
     };
     assert!(r.needs_refund());
-    let rec = block_on(record_refund(&store, plan.replay_key(), b"refund 1")).unwrap();
+    assert_eq!(r.receipt(&receipt_input(Digest([4; 32]))), None);
+    assert_eq!(
+        receipt(r.record(), &receipt_input(Digest([4; 32])), false),
+        None
+    );
+    let rec = block_on(record_refund(&store, plan.replay_key(), Some(b"refund 1"))).unwrap();
     assert_eq!(rec.scheme_result.as_deref(), Some(&b"refund 1"[..]));
-    let rec = block_on(record_refund(&store, plan.replay_key(), b"refund 2")).unwrap();
+    let rec = block_on(record_refund(&store, plan.replay_key(), Some(b"refund 2"))).unwrap();
     assert_eq!(
         rec.scheme_result.as_deref(),
         Some(&b"refund 1"[..]),
@@ -926,4 +932,57 @@ fn every_payment_and_note_counted_as_value_is_consumed() {
         block_on(commit(&store, &plan(3, &again), &limits())),
         Err(CommitError::Spent)
     );
+}
+
+#[test]
+fn a_refund_with_nothing_to_return_is_recorded_too() {
+    // A scheme whose FAILED settle returns no scheme_result (nothing to
+    // refund): the refund is still recorded once, and the receipt follows.
+    let store = MemoryStore::new();
+    let l = limits();
+    let plan = note_plan(&ctx(1), b"Y", T0);
+    block_on(commit(&store, &plan, &l)).unwrap();
+    let late = note_plan(&ctx(1), b"Y", T0 + l.pending_timeout + 5);
+    let Ok(Admitted::Replay(r)) = block_on(commit(&store, &late, &l)) else {
+        panic!("expected a replay");
+    };
+    assert!(r.needs_refund());
+    assert_eq!(r.receipt(&receipt_input(Digest([1; 32]))), None);
+    let rec = block_on(record_refund(&store, plan.replay_key(), None)).unwrap();
+    assert!(rec.refund_recorded && !rec.needs_refund());
+    let f = receipt(&rec, &receipt_input(Digest([1; 32])), true).unwrap();
+    assert_eq!((f.status, f.charged, f.scheme_result), (Status::Failed, 0, None));
+    // A later refund cannot overwrite it.
+    let rec = block_on(record_refund(&store, plan.replay_key(), Some(b"more"))).unwrap();
+    assert_eq!(rec.scheme_result, None);
+}
+
+#[test]
+fn a_late_settle_answers_from_the_recorded_failed_outcome() {
+    // The action outlived pending_timeout: the sweep made it FAILED, and its
+    // settle is refused with the record, which still needs its refund.
+    let store = MemoryStore::new();
+    let l = limits();
+    let plan = note_plan(&ctx(1), b"Y", T0);
+    block_on(commit(&store, &plan, &l)).unwrap();
+    block_on(sweep(&store, T0 + l.pending_timeout + 1, &l)).unwrap();
+    let ok = Settlement {
+        status: Status::Ok,
+        charged: 21,
+        metered_units: None,
+        scheme_result: Some(b"change for OK".to_vec()),
+        response: None,
+        settled_at: T0 + 400,
+    };
+    let Err(SettleError::AlreadySettled(rec)) = block_on(settle(&store, plan.replay_key(), &ok))
+    else {
+        panic!("expected AlreadySettled");
+    };
+    assert!(rec.needs_refund());
+    assert_eq!(receipt(&rec, &receipt_input(Digest([1; 32])), false), None);
+    let rec = block_on(record_refund(&store, plan.replay_key(), Some(b"refund"))).unwrap();
+    let f = receipt(&rec, &receipt_input(Digest([1; 32])), false).unwrap();
+    assert_eq!((f.status, f.charged), (Status::Failed, 0));
+    assert_eq!(f.scheme_result.as_deref(), Some(&b"refund"[..]));
+    assert!(!f.replayed);
 }
