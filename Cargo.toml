@@ -27,7 +27,7 @@ missing_errors_doc = "allow"
 cashu = "0.18.1"
 bitcoin = { version = "0.32.102", features = ["serde", "rand-std"] }
 libmacaroon = "0.3.0"
-nwc = "0.45.1"
+nwc = "0.44.0"
 fedimint-tonic-lnd = "0.4.0"
 mpp = "0.15.1"
 web-bot-auth = "0.7.0"
