@@ -424,7 +424,7 @@ mod tests {
     #[test]
     fn nested_ranges_enforced() {
         let mut s = TlvStream::new();
-        s.push(240, vec![]).unwrap();
+        s.push(240, Vec::<u8>::new()).unwrap();
         let b = s.to_bytes();
         assert!(TlvStream::parse(&b, StreamKind::TopLevel).is_ok());
         assert_eq!(

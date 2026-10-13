@@ -500,14 +500,14 @@ impl OfferFields {
         s.insert(t::VERSION, tu64(VERSION)).map_err(&m)?;
         s.insert(t::SCOPE, self.scope.0).map_err(&m)?;
         if self.route_scope {
-            s.insert(t::ROUTE_SCOPE, Vec::new()).map_err(&m)?;
+            s.insert(t::ROUTE_SCOPE, Vec::<u8>::new()).map_err(&m)?;
         }
         if !self.headers.is_empty() {
             s.insert(t::HEADERS, self.headers.join(",").into_bytes())
                 .map_err(&m)?;
         }
         if self.metered {
-            s.insert(t::METERED, Vec::new()).map_err(&m)?;
+            s.insert(t::METERED, Vec::<u8>::new()).map_err(&m)?;
         }
         s.insert(t::EXPIRES, tu64(self.expires)).map_err(&m)?;
         if let Some(i) = &self.info {

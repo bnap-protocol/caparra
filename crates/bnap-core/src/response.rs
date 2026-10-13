@@ -95,7 +95,7 @@ impl ResponseFields {
         s.insert(t::VERSION, tu64(VERSION)).map_err(&m)?;
         s.insert(t::STATUS, tu64(self.status.code())).map_err(&m)?;
         if self.replayed {
-            s.insert(t::REPLAYED, Vec::new()).map_err(&m)?;
+            s.insert(t::REPLAYED, Vec::<u8>::new()).map_err(&m)?;
         }
         s.insert(t::CHARGED, tu64(self.charged)).map_err(&m)?;
         if let Some(u) = &self.unit {
