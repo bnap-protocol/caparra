@@ -155,6 +155,8 @@ jobs:
         with:
           tool: mdbook@0.5
       - run: mdbook build book
+      - name: Check links
+        run: python3 -I book/linkcheck.py book/book
 
   regtest-detect:
     name: Regtest (detect)
