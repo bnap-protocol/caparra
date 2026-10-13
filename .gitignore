@@ -1,0 +1,35 @@
+# Cargo build output (Cargo.lock is committed on purpose)
+/target/
+**/*.rs.bk
+*.pdb
+
+# Editors and OS files
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Local environment, keys and databases
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Coverage and profiling
+*.profraw
+*.profdata
+lcov.info
+/coverage/
+
+# Logs and scratch
+*.log
+*.tmp
