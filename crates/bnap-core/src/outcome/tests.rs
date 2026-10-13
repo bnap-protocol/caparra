@@ -91,7 +91,7 @@ fn settle_ok(store: &MemoryStore, rk: &ReplayKey, charged: u64, at: u64) -> Outc
         response: Some(b"stored response".to_vec()),
         settled_at: at,
     };
-    block_on(settle(store, rk, &s)).unwrap()
+    block_on(settle(store, rk, &s, &limits())).unwrap()
 }
 
 fn receipt_input(digest: Digest) -> ReceiptInput {
@@ -182,14 +182,14 @@ fn status_flip_on_replay_is_impossible() {
         response: None,
         settled_at: T0 + 6,
     };
-    let err = block_on(settle(&store, plan.replay_key(), &flip)).unwrap_err();
+    let err = block_on(settle(&store, plan.replay_key(), &flip, &limits())).unwrap_err();
     assert_eq!(err, SettleError::AlreadySettled(Box::new(ok.clone())));
     // A second OK settle with another charge is refused as well.
     let mut again = flip.clone();
     again.status = Status::Ok;
     again.charged = 1;
     assert!(matches!(
-        block_on(settle(&store, plan.replay_key(), &again)),
+        block_on(settle(&store, plan.replay_key(), &again, &limits())),
         Err(SettleError::AlreadySettled(_))
     ));
     // The timeout never touches a settled outcome, and a timed-out refund
@@ -417,7 +417,7 @@ fn rate_counters_limit_and_failed_gives_them_back() {
         response: None,
         settled_at: now + 1,
     };
-    block_on(settle(&store, first.replay_key(), &failed)).unwrap();
+    block_on(settle(&store, first.replay_key(), &failed, &limits())).unwrap();
     assert_eq!(
         block_on(commit(&store, &second, &limits())),
         Ok(Admitted::New)
@@ -437,7 +437,7 @@ fn failed_keeps_single_uses_spent() {
         response: None,
         settled_at: T0 + 1,
     };
-    let rec = block_on(settle(&store, plan.replay_key(), &failed)).unwrap();
+    let rec = block_on(settle(&store, plan.replay_key(), &failed, &limits())).unwrap();
     assert_eq!(rec.status, OutcomeStatus::Failed);
     assert_eq!(rec.charged, Some(0));
     let other = note_plan(&ctx(2), b"Y1", T0 + 2);
@@ -509,7 +509,7 @@ fn pending_timeout_moves_to_failed_and_the_replay_collects_the_refund() {
         settled_at: T0 + 400,
     };
     assert!(matches!(
-        block_on(settle(&store, plan.replay_key(), &late)),
+        block_on(settle(&store, plan.replay_key(), &late, &limits())),
         Err(SettleError::AlreadySettled(_))
     ));
 
@@ -705,7 +705,7 @@ fn settle_of_an_unknown_outcome_is_refused() {
         settled_at: T0,
     };
     assert_eq!(
-        block_on(settle(&store, &ReplayKey([1; 32]), &s)),
+        block_on(settle(&store, &ReplayKey([1; 32]), &s, &limits())),
         Err(SettleError::Unknown)
     );
 }
@@ -1035,7 +1035,8 @@ fn a_late_settle_answers_from_the_recorded_failed_outcome() {
         response: None,
         settled_at: T0 + 400,
     };
-    let Err(SettleError::AlreadySettled(rec)) = block_on(settle(&store, plan.replay_key(), &ok))
+    let Err(SettleError::AlreadySettled(rec)) =
+        block_on(settle(&store, plan.replay_key(), &ok, &limits()))
     else {
         panic!("expected AlreadySettled");
     };
@@ -1164,4 +1165,54 @@ fn hand_built_limits_never_lose_a_timed_out_refund() {
         panic!("expected the refund, not SPENT");
     };
     assert!(r.needs_refund());
+}
+
+#[test]
+fn a_settle_after_the_pending_timeout_times_the_outcome_out() {
+    // The checker's probe: commit at T0, no sweep and no replay, then the
+    // action settles OK at T0 + pending_timeout + 100. A replay at that
+    // moment would have timed the outcome out, so the settle must as well:
+    // the answer cannot depend on when the sweep runs (6.4).
+    let store = MemoryStore::new();
+    let l = limits();
+    let plan = rate_plan(&ctx(1), b"client", 5, T0);
+    let key = plan.counters()[0].key;
+    block_on(commit(&store, &plan, &l)).unwrap();
+    let late = Settlement {
+        status: Status::Ok,
+        charged: 21,
+        metered_units: None,
+        scheme_result: Some(b"change for OK".to_vec()),
+        response: None,
+        settled_at: T0 + l.pending_timeout + 100,
+    };
+    let Err(SettleError::AlreadySettled(rec)) =
+        block_on(settle(&store, plan.replay_key(), &late, &limits()))
+    else {
+        panic!("a settle past pending_timeout must lose to the timeout");
+    };
+    assert_eq!(rec.status, OutcomeStatus::Failed);
+    assert!(rec.timed_out && rec.needs_refund());
+    assert_eq!(rec.charged, Some(0));
+    assert_eq!(rec.scheme_result, None, "the OK result is discarded");
+    assert_eq!(rec.settled_at, Some(T0 + l.pending_timeout + 100));
+    assert_eq!(
+        block_on(store.counter(&key)).unwrap(),
+        0,
+        "counter given back"
+    );
+    // The record is what the store holds, and a replay finds the refund due.
+    let stored = block_on(store.outcome(plan.replay_key())).unwrap().unwrap();
+    assert_eq!(stored, *rec);
+
+    // At the deadline itself the settle still wins.
+    let store = MemoryStore::new();
+    let plan = rate_plan(&ctx(2), b"client", 5, T0);
+    block_on(commit(&store, &plan, &l)).unwrap();
+    let on_time = Settlement {
+        settled_at: T0 + l.pending_timeout,
+        ..late
+    };
+    let rec = block_on(settle(&store, plan.replay_key(), &on_time, &limits())).unwrap();
+    assert_eq!(rec.status, OutcomeStatus::Ok);
 }

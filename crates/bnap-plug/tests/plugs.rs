@@ -947,7 +947,7 @@ impl Gate {
                 let charge = admission.settle(Status::Ok, 0);
                 let result = run_settle(&charge)?;
                 let s = Settlement::new(&charge, now).with_scheme_result(result);
-                match block_on(outcome::settle(store, &rk, &s)) {
+                match block_on(outcome::settle(store, &rk, &s, &self.limits)) {
                     Ok(rec) => outcome::receipt(&rec, &receipt_input, false).unwrap(),
                     // The timeout won: the OK result and its change are
                     // discarded, and the answer is the FAILED record, with

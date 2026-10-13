@@ -142,8 +142,13 @@ impl UseStore for MemoryStore {
         Ok(UseTable::outcome(&*self.tx()?, rk).cloned())
     }
 
-    async fn settle(&self, rk: &ReplayKey, s: &Settlement) -> Result<Settle, StoreError> {
-        Ok(logic::settle(&mut *self.tx()?, rk, s))
+    async fn settle(
+        &self,
+        rk: &ReplayKey,
+        s: &Settlement,
+        pending_timeout: u64,
+    ) -> Result<Settle, StoreError> {
+        Ok(logic::settle(&mut *self.tx()?, rk, s, pending_timeout))
     }
 
     async fn expire_pending(

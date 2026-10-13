@@ -274,6 +274,11 @@ pub enum SettleError {
 /// deterministic `settle`, then call this. The Response, and any change in
 /// it, may be sent only after this returns `Ok`.
 ///
+/// A settle at `s.settled_at` later than the outcome's `created +
+/// pending_timeout` is refused: the store times the outcome out in the same
+/// transaction (6.4), so the late action loses to the timeout whether or
+/// not a sweep or a replay ran first.
+///
 /// [`SettleError::AlreadySettled`] means the outcome left PENDING without
 /// this write, in practice because the action outlived `pending_timeout`.
 /// Discard the `scheme_result` and change computed for this settlement and
@@ -286,8 +291,9 @@ pub async fn settle<S: UseStore + ?Sized>(
     store: &S,
     rk: &ReplayKey,
     s: &Settlement,
+    limits: &Limits,
 ) -> Result<OutcomeRecord, SettleError> {
-    match store.settle(rk, s).await? {
+    match store.settle(rk, s, limits.pending_timeout).await? {
         Settle::Settled(r) => Ok(r),
         Settle::AlreadySettled(r) => Err(SettleError::AlreadySettled(Box::new(r))),
         Settle::Unknown => Err(SettleError::Unknown),

@@ -439,9 +439,18 @@ pub trait UseStore: Send + Sync {
     /// Reads `outcome[rk]`.
     async fn outcome(&self, rk: &ReplayKey) -> Result<Option<OutcomeRecord>, StoreError>;
 
-    /// 6.4 settle: one conditional update that succeeds only from PENDING;
-    /// on FAILED the outcome's counters are given back in the same write.
-    async fn settle(&self, rk: &ReplayKey, s: &Settlement) -> Result<Settle, StoreError>;
+    /// 6.4 settle: one conditional update that succeeds only from PENDING
+    /// and only while `s.settled_at <= created + pending_timeout`; on FAILED
+    /// the outcome's counters are given back in the same write. A settle
+    /// that comes later times the outcome out instead, in the same
+    /// transaction, and returns it as [`Settle::AlreadySettled`], so the
+    /// answer never depends on when the sweep runs.
+    async fn settle(
+        &self,
+        rk: &ReplayKey,
+        s: &Settlement,
+        pending_timeout: u64,
+    ) -> Result<Settle, StoreError>;
 
     /// 6.4 timeout: every outcome still PENDING that was created before
     /// `created_before` moves to FAILED with charge 0 and `timed_out`, its
@@ -546,14 +555,46 @@ pub mod logic {
         }
     }
 
+    /// Moves a PENDING record to FAILED by the timeout: charge 0, settled
+    /// at `now`, `timed_out`, its counters given back.
+    fn time_out(
+        t: &mut impl UseTable,
+        rk: ReplayKey,
+        rec: &OutcomeRecord,
+        now: u64,
+    ) -> OutcomeRecord {
+        let mut rec = rec.clone();
+        rec.status = OutcomeStatus::Failed;
+        rec.charged = Some(0);
+        rec.settled_at = Some(now);
+        rec.timed_out = true;
+        give_back(t, &rec);
+        t.put_outcome(rk, rec.clone());
+        rec
+    }
+
     /// 6.4 settle: the status changes exactly once. On FAILED, single uses
     /// stay spent and the outcome's counters are given back.
-    pub fn settle(t: &mut impl UseTable, rk: &ReplayKey, s: &Settlement) -> Settle {
+    ///
+    /// A settle at `s.settled_at > created + pending_timeout` comes after
+    /// the outcome's timeout: the record moves to FAILED by the timeout
+    /// (as [`expire_pending`] would, settled at `s.settled_at`) and the
+    /// settle is refused with it, whether or not a sweep or a replay ran.
+    pub fn settle(
+        t: &mut impl UseTable,
+        rk: &ReplayKey,
+        s: &Settlement,
+        pending_timeout: u64,
+    ) -> Settle {
         let Some(rec) = t.outcome(rk) else {
             return Settle::Unknown;
         };
         if rec.status != OutcomeStatus::Pending {
             return Settle::AlreadySettled(rec.clone());
+        }
+        if s.settled_at > rec.created.saturating_add(pending_timeout) {
+            let rec = rec.clone();
+            return Settle::AlreadySettled(time_out(t, *rk, &rec, s.settled_at));
         }
         let mut rec = rec.clone();
         rec.status = s.status.into();
@@ -578,13 +619,8 @@ pub mod logic {
             if rec.status != OutcomeStatus::Pending || rec.created >= created_before {
                 continue;
             }
-            let mut rec = rec.clone();
-            rec.status = OutcomeStatus::Failed;
-            rec.charged = Some(0);
-            rec.settled_at = Some(now);
-            rec.timed_out = true;
-            give_back(t, &rec);
-            t.put_outcome(rk, rec);
+            let rec = rec.clone();
+            time_out(t, rk, &rec, now);
             out.push(rk);
         }
         out.sort_unstable();
