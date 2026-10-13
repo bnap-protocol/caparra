@@ -651,7 +651,10 @@ impl Admission {
             metered_units,
             cap: ChangeCap {
                 amount: value.saturating_sub(charged),
-                unit: self.pay.as_ref().map_or_else(String::new, |p| p.unit.clone()),
+                unit: self
+                    .pay
+                    .as_ref()
+                    .map_or_else(String::new, |p| p.unit.clone()),
                 status,
             },
         }

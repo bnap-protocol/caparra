@@ -512,7 +512,10 @@ impl CappedSigner {
             .iter()
             .try_fold(0u64, |acc, o| acc.checked_add(o.amount));
         budget.take(sum)?;
-        let sigs = self.inner.blind_sign(keyset, outputs, &budget.limit).await?;
+        let sigs = self
+            .inner
+            .blind_sign(keyset, outputs, &budget.limit)
+            .await?;
         let matches = sigs.len() == outputs.len()
             && sigs.iter().zip(outputs).all(|(s, o)| s.amount == o.amount);
         if !matches {

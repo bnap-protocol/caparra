@@ -5,8 +5,8 @@ use bnap_core::hash::{CounterKey, RailId, Scope};
 use bnap_core::ids::use_id;
 use bnap_core::offer::{AttestEntry, Effect, OfferFields, PayEntry};
 use bnap_core::pricing::{
-    AdmitInput, Backing, BackingSource, PayValue, PriceError, VerifiedAttest, admit,
-    backed_value, decide, metered_entry_allowed, quota_candidates,
+    AdmitInput, Backing, BackingSource, PayValue, PriceError, VerifiedAttest, admit, backed_value,
+    decide, metered_entry_allowed, quota_candidates,
 };
 use bnap_core::response::Status;
 use bnap_core::schnorr::Key;
@@ -189,7 +189,10 @@ fn admission_rules() {
     assert_eq!(e.code(), bnap_core::ErrorCode::Policy);
     // A required attestation of class None is fine: it only gates.
     let ok = [att("httpauth:DPoP", BindingClass::None)];
-    assert_eq!(admit(&input(&o, Some(100), &ok), empty).unwrap().price(), 100);
+    assert_eq!(
+        admit(&input(&o, Some(100), &ok), empty).unwrap().price(),
+        100
+    );
 
     let o = offer(100, vec![]);
     // Value below the price: UNDERPAID.
@@ -253,11 +256,18 @@ fn the_value_is_what_the_rails_and_the_signer_confirmed() {
     assert_eq!(admit(&pay(1_000_000, vec![]), empty), Err(under(0)));
     // The same payment named twice counts once.
     assert_eq!(
-        admit(&pay(120, vec![paid(1, 60, "sat"), paid(1, 60, "sat")]), empty),
+        admit(
+            &pay(120, vec![paid(1, 60, "sat"), paid(1, 60, "sat")]),
+            empty
+        ),
         Err(under(60))
     );
     // Two payments add up.
-    let a = admit(&pay(120, vec![paid(1, 60, "sat"), paid(2, 60, "sat")]), empty).unwrap();
+    let a = admit(
+        &pay(120, vec![paid(1, 60, "sat"), paid(2, 60, "sat")]),
+        empty,
+    )
+    .unwrap();
     assert_eq!(a.pay().unwrap().value(), 120);
     // An overclaim on enough backing is cut to the backing, and so is the
     // change cap: backed minus price, never claimed minus price.
@@ -344,17 +354,29 @@ fn a_value_larger_than_the_verified_notes_is_cut_to_them() {
 #[test]
 fn backing_converts_only_between_sat_and_msat() {
     let sum = |unit: &str, b: &[Backing]| backed_value(unit, b).map(|(v, _)| v);
-    assert_eq!(sum("msat", &[paid(1, 2, "sat"), paid(2, 5, "msat")]), Ok(2_005));
+    assert_eq!(
+        sum("msat", &[paid(1, 2, "sat"), paid(2, 5, "msat")]),
+        Ok(2_005)
+    );
     // 1 sat + 999 msat is 1,999 msat: 1 sat.
-    assert_eq!(sum("sat", &[paid(1, 1, "sat"), paid(2, 999, "msat")]), Ok(1));
-    assert_eq!(sum("sat", &[paid(1, 1, "sat"), paid(2, 1_000, "msat")]), Ok(2));
+    assert_eq!(
+        sum("sat", &[paid(1, 1, "sat"), paid(2, 999, "msat")]),
+        Ok(1)
+    );
+    assert_eq!(
+        sum("sat", &[paid(1, 1, "sat"), paid(2, 1_000, "msat")]),
+        Ok(2)
+    );
     assert_eq!(sum("USD", &[paid(1, 5, "USD"), paid(2, 6, "USD")]), Ok(11));
     assert!(sum("USD", &[paid(1, 5, "sat")]).is_err());
     assert!(sum("sat", &[paid(1, 5, "USD")]).is_err());
     assert!(sum("sat", &[paid(1, 5, "SAT")]).is_err(), "units are exact");
     // The sum saturates.
     assert_eq!(
-        sum("sat", &[paid(1, u64::MAX, "sat"), paid(2, u64::MAX, "msat")]),
+        sum(
+            "sat",
+            &[paid(1, u64::MAX, "sat"), paid(2, u64::MAX, "msat")]
+        ),
         Ok(u64::MAX)
     );
 }

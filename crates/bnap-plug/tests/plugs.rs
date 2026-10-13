@@ -6,13 +6,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 
 use bnap_core::credential::{Credential, OfferRef, SchemePart};
-use bnap_core::hash::{ReplayKey, Scope, sha256};
+use bnap_core::hash::{Context, Digest, RailId, ReplayKey, Scope, sha256};
 use bnap_core::ids::{rail, rail_id};
 use bnap_core::limits::Limits;
 use bnap_core::manifest::KeyUse;
 use bnap_core::offer::{OfferFields, PayEntry};
 use bnap_core::outcome::{self, Admitted, CommitError, ReceiptInput, SettleError};
-use bnap_core::pricing::{AdmitInput, Backing, BackingSource, Charge, PayValue};
+use bnap_core::pricing::{Admission, AdmitInput, Backing, BackingSource, Charge, PayValue};
 use bnap_core::response::{Response, Status};
 use bnap_core::schnorr::{Key, Signature, SigningKey};
 use bnap_core::sign::{UnsignedOffer, UnsignedResponse};
@@ -22,9 +22,9 @@ use bnap_core::{ErrorCode, Offer};
 use bnap_plug::{
     Action, BlindSignature, BlindedOutput, Budget, CappedSigner, Carrier, Challenge, ChangeLedger,
     ChangeLimit, Confirmed, CoreMessage, CredentialScheme, Decision, Dleq, Entry, FundingRail,
-    KeysetId, OfferCtx, PayId,
-    PayRequest, PayState, Point, RailError, RailPayment, RailRef, RawCredential, SchemeError,
-    SchemeOffer, SettleCtx, Signer, SignerError, UseStore, Verified, VerifyCtx, confirm_rail_id,
+    KeysetId, OfferCtx, PayId, PayRequest, PayState, Point, RailError, RailPayment, RailRef,
+    RawCredential, SchemeError, SchemeOffer, SettleCtx, Signer, SignerError, UseStore, Verified,
+    VerifyCtx, confirm_rail_id,
 };
 
 const NOW: u64 = 1_791_700_000;
@@ -289,25 +289,25 @@ fn the_signer_keeps_a_running_total_per_settlement() {
     let cap = cap_of(150, 50);
     // Two budgets for one settlement: the signer's total bounds them
     // together, whatever each budget has left.
-    let (a, _ga) = CappedSigner::for_change(inner.clone(), &cap, rk(1));
-    let (b, _gb) = CappedSigner::for_change(inner.clone(), &cap, rk(1));
-    block_on(a.blind_sign(&ks(), &outputs(1, &[64, 16]))).unwrap();
+    let (first, _g1) = CappedSigner::for_change(inner.clone(), &cap, rk(1));
+    let (second, _g2) = CappedSigner::for_change(inner.clone(), &cap, rk(1));
+    block_on(first.blind_sign(&ks(), &outputs(1, &[64, 16]))).unwrap();
     assert_eq!(
-        block_on(b.blind_sign(&ks(), &outputs(2, &[64]))),
+        block_on(second.blind_sign(&ks(), &outputs(2, &[64]))),
         Err(SignerError::OverCap { sum: 144, cap: 100 })
     );
     // The same outputs again make the same notes: they count nothing.
-    let (c, _gc) = CappedSigner::for_change(inner.clone(), &cap, rk(1));
-    block_on(c.blind_sign(&ks(), &outputs(1, &[64, 16]))).unwrap();
+    let (again, _g3) = CappedSigner::for_change(inner.clone(), &cap, rk(1));
+    block_on(again.blind_sign(&ks(), &outputs(1, &[64, 16]))).unwrap();
     assert_eq!(inner.ledger.total(&rk(1), Status::Ok), 80);
     // The refund of the same ReplayKey and another outcome have their own
     // totals.
     let refund = settled_cap(150, 50, "sat", Status::Failed);
     assert_eq!((refund.get(), refund.status()), (150, Status::Failed));
-    let (d, _gd) = CappedSigner::for_change(inner.clone(), &refund, rk(1));
-    block_on(d.blind_sign(&ks(), &outputs(3, &[128, 16]))).unwrap();
-    let (e, _ge) = CappedSigner::for_change(inner.clone(), &cap, rk(2));
-    block_on(e.blind_sign(&ks(), &outputs(4, &[64]))).unwrap();
+    let (refunds, _g4) = CappedSigner::for_change(inner.clone(), &refund, rk(1));
+    block_on(refunds.blind_sign(&ks(), &outputs(3, &[128, 16]))).unwrap();
+    let (other, _g5) = CappedSigner::for_change(inner.clone(), &cap, rk(2));
+    block_on(other.blind_sign(&ks(), &outputs(4, &[64]))).unwrap();
     assert_eq!(
         (
             inner.ledger.total(&rk(1), Status::Ok),
@@ -320,10 +320,10 @@ fn the_signer_keeps_a_running_total_per_settlement() {
     assert_eq!(inner.ledger.total(&rk(1), Status::Failed), 0);
     // The signer refuses a settlement in a unit its keyset is not in.
     let msat = settled_cap(150, 50, "msat", Status::Ok);
-    let (f, _gf) = CappedSigner::for_change(inner.clone(), &msat, rk(3));
-    assert_eq!(f.unit(), "msat");
+    let (in_msat, _g6) = CappedSigner::for_change(inner.clone(), &msat, rk(3));
+    assert_eq!(in_msat.unit(), "msat");
     assert!(matches!(
-        block_on(f.blind_sign(&ks(), &outputs(5, &[1]))),
+        block_on(in_msat.blind_sign(&ks(), &outputs(5, &[1]))),
         Err(SignerError::Refused(_))
     ));
 }
@@ -398,7 +398,12 @@ fn the_signer_signs_core_messages_with_the_key_for_their_use() {
 fn the_verify_only_view_keeps_each_accepted_note_once() {
     let view = CappedSigner::verify_only(Arc::new(TestSigner::new()), "sat");
     let (y1, y2, bad) = (Point([3; 33]), Point([4; 33]), Point([5; 33]));
-    for (amount, y, c) in [(64, &y1, &y1), (32, &y2, &y2), (64, &y1, &y1), (1_000, &bad, &y1)] {
+    for (amount, y, c) in [
+        (64, &y1, &y1),
+        (32, &y2, &y2),
+        (64, &y1, &y1),
+        (1_000, &bad, &y1),
+    ] {
         let _ = block_on(view.verify_unblinded(&ks(), amount, y, c)).unwrap();
     }
     // A clone adds to the same notes.
@@ -417,7 +422,7 @@ fn the_verify_only_view_keeps_each_accepted_note_once() {
     // A view in another unit: the signer accepts no sat keyset for it.
     let msat = CappedSigner::verify_only(Arc::new(TestSigner::new()), "msat");
     assert!(!block_on(msat.verify_unblinded(&ks(), 64, &y1, &y1)).unwrap());
-    assert!(msat.notes().is_empty());
+    assert_eq!(msat.notes(), Vec::<Backing>::new());
 }
 
 /// A class O scheme whose local ID is its payment hash, like L402, or a
@@ -585,7 +590,7 @@ fn notes_body(notes: &[(u64, u8)]) -> Vec<u8> {
 
 #[async_trait::async_trait]
 impl CredentialScheme for Notes {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "bnap:notes"
     }
 
@@ -599,7 +604,12 @@ impl CredentialScheme for Notes {
             let amount = u64::from_be_bytes(n[..8].try_into().unwrap());
             let y = Point(n[8..41].try_into().unwrap());
             let c = Point(n[41..74].try_into().unwrap());
-            if !cx.signer.verify_unblinded(&ks(), amount, &y, &c).await.unwrap() {
+            if !cx
+                .signer
+                .verify_unblinded(&ks(), amount, &y, &c)
+                .await
+                .unwrap()
+            {
                 return Err(SchemeError::rejected("bnap:notes", "BAD_NOTE", "C != kY"));
             }
             ys.push(y.0.to_vec());
@@ -720,18 +730,16 @@ impl Gate {
         }
     }
 
-    /// Verify, confirm rails, price, commit, run, settle and sign the
-    /// receipt, all through `dyn` plugs.
-    fn handle(
+    /// Verify, confirm rails and price: the scheme's verified part, the
+    /// `RailId`s and the admission.
+    fn verify_and_admit(
         &self,
         scheme: &dyn CredentialScheme,
-        cred: &Credential,
+        part: &SchemePart,
+        ctx: &Context,
+        digest: &Digest,
         now: u64,
-    ) -> Result<Response, ErrorCode> {
-        let offer_id = self.offer.offer_id();
-        let ctx = cred.context(&offer_id, &self.scope);
-        let digest = cred.digest(&ctx);
-        let part = cred.pay.as_ref().unwrap();
+    ) -> Result<(Verified, Vec<RailId>, Admission), ErrorCode> {
         let (_, entry) = self.offer.fields().pay_entry(scheme.id()).unwrap();
         let view = CappedSigner::verify_only(self.signer.clone(), &entry.unit);
         let verified = block_on(scheme.verify(
@@ -741,8 +749,8 @@ impl Gate {
                 offer: &self.offer,
                 entry: Entry::Pay(entry),
                 action_scope: &self.scope,
-                context: &ctx,
-                digest: &digest,
+                context: ctx,
+                digest,
                 signer: &view,
             },
         ))
@@ -773,6 +781,25 @@ impl Gate {
             },
         ))
         .map_err(|e| e.code())?;
+        Ok((verified, rail_ids, admission))
+    }
+
+    /// Verify, confirm rails, price, commit, run, settle and sign the
+    /// receipt, all through `dyn` plugs.
+    fn handle(
+        &self,
+        scheme: &dyn CredentialScheme,
+        cred: &Credential,
+        now: u64,
+    ) -> Result<Response, ErrorCode> {
+        let offer_id = self.offer.offer_id();
+        let ctx = cred.context(&offer_id, &self.scope);
+        let digest = cred.digest(&ctx);
+        let part = cred.pay.as_ref().unwrap();
+        let (_, entry) = self.offer.fields().pay_entry(scheme.id()).unwrap();
+        let (verified, rail_ids, admission) =
+            self.verify_and_admit(scheme, part, &ctx, &digest, now)?;
+        let store: &dyn UseStore = &self.store;
         let plan = CommitPlan::build(&PlanInput {
             context: &ctx,
             pay_body: &part.body,
@@ -984,7 +1011,10 @@ fn a_scheme_cannot_sign_past_its_cap_or_after_settle() {
         ..Notes::claiming(96)
     };
     let mut cred = Credential::new(OfferRef::Id(gate.offer.offer_id()));
-    cred.pay = Some(SchemePart::new("bnap:notes", notes_body(&[(64, 3), (32, 4)])));
+    cred.pay = Some(SchemePart::new(
+        "bnap:notes",
+        notes_body(&[(64, 3), (32, 4)]),
+    ));
     let r = gate.handle(&greedy, &cred, NOW).unwrap();
     assert_eq!(
         r.fields().scheme_result.as_deref(),
@@ -1009,17 +1039,26 @@ fn an_action_that_outlives_the_timeout_answers_failed_with_its_refund() {
     let gate = Gate::new([0; 32]);
     let notes = Notes::claiming(96);
     let mut cred = Credential::new(OfferRef::Id(gate.offer.offer_id()));
-    cred.pay = Some(SchemePart::new("bnap:notes", notes_body(&[(64, 3), (32, 4)])));
+    cred.pay = Some(SchemePart::new(
+        "bnap:notes",
+        notes_body(&[(64, 3), (32, 4)]),
+    ));
     gate.slow_action.set(true);
     let r = gate.handle(&notes, &cred, NOW).unwrap();
     let f = r.fields();
-    assert_eq!((f.status, f.charged, f.replayed), (Status::Failed, 0, false));
+    assert_eq!(
+        (f.status, f.charged, f.replayed),
+        (Status::Failed, 0, false)
+    );
     assert_eq!(f.scheme_result.as_deref(), Some(&b"cap 96"[..]));
     r.verify_ack().unwrap();
     // A replay gets the same recorded refund, never a second one.
     let again = gate.handle(&notes, &cred, NOW + 1).unwrap();
     assert!(again.fields().replayed);
-    assert_eq!(again.fields().scheme_result.as_deref(), Some(&b"cap 96"[..]));
+    assert_eq!(
+        again.fields().scheme_result.as_deref(),
+        Some(&b"cap 96"[..])
+    );
 }
 
 #[test]
@@ -1029,7 +1068,10 @@ fn a_replay_after_the_timeout_collects_the_refund_first() {
     let gate = Gate::new([0; 32]);
     let notes = Notes::claiming(96);
     let mut cred = Credential::new(OfferRef::Id(gate.offer.offer_id()));
-    cred.pay = Some(SchemePart::new("bnap:notes", notes_body(&[(64, 3), (32, 4)])));
+    cred.pay = Some(SchemePart::new(
+        "bnap:notes",
+        notes_body(&[(64, 3), (32, 4)]),
+    ));
     gate.crash_after_commit.set(true);
     assert_eq!(gate.handle(&notes, &cred, NOW), Err(ErrorCode::Unavailable));
     assert_eq!(gate.handle(&notes, &cred, NOW + 1), Err(ErrorCode::Pending));
@@ -1038,7 +1080,11 @@ fn a_replay_after_the_timeout_collects_the_refund_first() {
     let f = r.fields();
     assert_eq!((f.status, f.charged, f.replayed), (Status::Failed, 0, true));
     assert_eq!(f.scheme_result.as_deref(), Some(&b"cap 96"[..]));
-    assert_eq!(gate.signer.calls(), Vec::<u64>::new(), "notes sign nothing here");
+    assert_eq!(
+        gate.signer.calls(),
+        Vec::<u64>::new(),
+        "notes sign nothing here"
+    );
 }
 
 #[test]

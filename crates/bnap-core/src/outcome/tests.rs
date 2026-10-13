@@ -913,14 +913,11 @@ fn every_payment_and_note_counted_as_value_is_consumed() {
     };
     let p1 = plan(1, &first);
     let y1 = ids::use_id("bnap:notes", b"Y1").0;
-    let mut want = vec![y1, [4; 32]];
+    let mut want = [y1, [4; 32]];
     want.sort_unstable();
     assert_eq!(p1.singles(), &want[..]);
     assert!(p1.ids().is_empty(), "the ReplayKey keeps what 6.1 names");
-    assert_eq!(
-        block_on(commit(&store, &p1, &limits())),
-        Ok(Admitted::New)
-    );
+    assert_eq!(block_on(commit(&store, &p1, &limits())), Ok(Admitted::New));
     // The same note, or the same payment, counted again: SPENT.
     let again = admit_with(vec![note(b"Y1", 64)]);
     assert_eq!(
@@ -951,7 +948,10 @@ fn a_refund_with_nothing_to_return_is_recorded_too() {
     let rec = block_on(record_refund(&store, plan.replay_key(), None)).unwrap();
     assert!(rec.refund_recorded && !rec.needs_refund());
     let f = receipt(&rec, &receipt_input(Digest([1; 32])), true).unwrap();
-    assert_eq!((f.status, f.charged, f.scheme_result), (Status::Failed, 0, None));
+    assert_eq!(
+        (f.status, f.charged, f.scheme_result),
+        (Status::Failed, 0, None)
+    );
     // A later refund cannot overwrite it.
     let rec = block_on(record_refund(&store, plan.replay_key(), Some(b"more"))).unwrap();
     assert_eq!(rec.scheme_result, None);
