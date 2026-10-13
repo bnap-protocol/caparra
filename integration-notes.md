@@ -44,6 +44,11 @@ Things that will bite a downstream node:
    `cargo-q +1.94 check -p <crate>` when unsure (install 1.94 once with `rustup toolchain install 1.94 --profile minimal`).
 3. **`--locked` everywhere.** Commit `Cargo.lock` with every dependency change.
    A merge that leaves the lock file stale turns CI red, which is intended.
+   For the orchestrator: node branches seen so far (N3 at `03c6792`) add
+   dependencies without committing the matching `Cargo.lock`. After merging
+   such a branch, refresh the lock (`cargo-q metadata --format-version 1 >
+   /dev/null` or any build) and commit it in the merge, or every `--locked`
+   job fails.
 4. **nextest runs each test in its own process** and does not run doctests;
    the separate `cargo test --doc` step does. `--no-tests=warn` keeps stub
    crates green; it does not hide failing tests.
