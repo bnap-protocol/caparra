@@ -290,6 +290,25 @@ impl Response {
         &self.fields.offer_id == offer_id && &self.fields.digest == digest
     }
 
+    /// The presence rules of 8.1 that depend on the request: `unit` is
+    /// required when the credential has `pay`, and `metered_units` in
+    /// metered offers.
+    pub fn check_required(&self, metered: bool, has_pay: bool) -> Result<(), Error> {
+        if has_pay && self.fields.unit.is_none() {
+            return Err(Error::rule(
+                Object::Response,
+                "unit is required when the credential has pay",
+            ));
+        }
+        if metered && self.fields.metered_units.is_none() {
+            return Err(Error::rule(
+                Object::Response,
+                "metered_units is required in metered offers",
+            ));
+        }
+        Ok(())
+    }
+
     /// The client's receipt rules of 9.3: the ack verifies; `receipt_key`
     /// is listed in the pin with use `receipt` and `not_after >= settled_at`;
     /// without `replayed`, `settled_at` is within 60 s of the client's clock

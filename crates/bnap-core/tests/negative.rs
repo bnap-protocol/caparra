@@ -877,6 +877,10 @@ fn receipt_client_rules() {
     .sign(&k, &AUX0)
     .unwrap();
     replay.check_client(&pin, NOW + 100_000, &id, &dg).unwrap();
+    // unit and metered_units presence.
+    r.check_required(false, false).unwrap();
+    assert!(r.check_required(false, true).is_err());
+    assert!(r.check_required(true, false).is_err());
     // status outside 0 to 1.
     let b = with_record(r.bytes(), 2, Some(encoding::tu64(2)));
     assert_eq!(
