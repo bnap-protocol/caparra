@@ -12,7 +12,7 @@ use bnap_core::limits::Limits;
 use bnap_core::manifest::KeyUse;
 use bnap_core::offer::{OfferFields, PayEntry};
 use bnap_core::outcome::{self, Admitted, CommitError, ReceiptInput, SettleError};
-use bnap_core::pricing::{Admission, AdmitInput, Backing, BackingSource, Charge, PayValue};
+use bnap_core::pricing::{Admission, AdmitInput, Backing, BackingSource, Charge, PayValue, Refund};
 use bnap_core::response::{Response, Status};
 use bnap_core::schnorr::{Key, Signature, SigningKey};
 use bnap_core::sign::{UnsignedOffer, UnsignedResponse};
@@ -171,6 +171,7 @@ fn settled_cap(value: u64, price: u64, unit: &str, status: Status) -> bnap_plug:
                     amount: value,
                     unit: unit.into(),
                 }],
+                refund: Refund::Atomic,
             }),
             attest: &[],
             now: NOW,
@@ -699,6 +700,16 @@ fn the_rail_supplies_the_rail_id() {
 
 // ------------------------------------------------------------------ gate
 
+/// Each test scheme's registered `refund` property, as the registry states
+/// it; the gate passes it to admission, never asking the plug.
+fn registered_refund(scheme: &str) -> Refund {
+    match scheme {
+        "bnap:notes" | "cashu:nut24" => Refund::Atomic,
+        "payment:lightning/charge" => Refund::OutOfBand,
+        _ => Refund::None,
+    }
+}
+
 struct Gate {
     store: MemoryStore,
     signer: Arc<TestSigner>,
@@ -788,6 +799,7 @@ impl Gate {
                     scheme: scheme.id(),
                     claimed: verified.value,
                     backing,
+                    refund: registered_refund(scheme.id()),
                 }),
                 attest: &[],
                 now,
@@ -1139,6 +1151,40 @@ fn a_replay_after_the_timeout_collects_the_refund_first() {
         Vec::<u64>::new(),
         "notes sign nothing here"
     );
+}
+
+#[test]
+fn a_scheme_without_atomic_refund_mints_no_change_or_refund() {
+    // The review's probe: httpauth:L402 at 21 sat, backed by a confirmed
+    // 1,000 sat Lightning payment. L402 registers refund = "none": the
+    // excess is kept, and neither the OK settle nor the refund of a
+    // timed-out outcome gets a change budget (LnScheme::settle asserts a
+    // cap of 0), so nothing is signed in the operator's notes.
+    let hash = sha256(b"preimage");
+    let gate = Gate::with_rail(FakeLn {
+        amount: 1_000,
+        ..FakeLn::paid(hash)
+    });
+    let l402 = l402();
+    let cred = credential(l402.id(), hash, &gate);
+    let r = gate.handle(&*l402, &cred, NOW).unwrap();
+    assert_eq!((r.fields().status, r.fields().charged), (Status::Ok, 21));
+
+    let other = sha256(b"other preimage");
+    let gate = Gate::with_rail(FakeLn {
+        amount: 1_000,
+        ..FakeLn::paid(other)
+    });
+    let cred = credential(l402.id(), other, &gate);
+    gate.crash_after_commit.set(true);
+    assert_eq!(gate.handle(&*l402, &cred, NOW), Err(ErrorCode::Unavailable));
+    let late = NOW + gate.limits.pending_timeout + 1;
+    let r = gate.handle(&*l402, &cred, late).unwrap();
+    let f = r.fields();
+    assert_eq!((f.status, f.charged, f.replayed), (Status::Failed, 0, true));
+    assert_eq!(f.scheme_result.as_deref(), Some(&b"settled 0"[..]));
+    assert_eq!(gate.signer.signed(), 0, "minted nothing on FAILED");
+    assert_eq!(gate.signer.calls(), Vec::<u64>::new());
 }
 
 #[test]

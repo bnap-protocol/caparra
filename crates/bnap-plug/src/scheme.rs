@@ -281,6 +281,11 @@ pub trait CredentialScheme: Send + Sync {
     /// Settles a value scheme: change or refund, within the signer's cap.
     /// Returns the `scheme_result` bytes. The default returns none.
     ///
+    /// The cap is `value - charged` only when the scheme's registry entry
+    /// has `refund = "atomic"`; for `none` and `out-of-band` it is 0, so
+    /// such a scheme keeps an overpayment or refunds by its own means, and
+    /// never in the operator's notes (ERRATA N3b-20).
+    ///
     /// `signer` is a change budget for this one settlement: every
     /// `blind_sign` call takes from the same cap, clones share it, and it
     /// closes when `settle` returns, so a clone kept for later signs

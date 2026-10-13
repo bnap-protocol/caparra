@@ -4,9 +4,10 @@ use bnap_core::class::BindingClass;
 use bnap_core::hash::{CounterKey, RailId, Scope};
 use bnap_core::ids::use_id;
 use bnap_core::offer::{AttestEntry, Effect, OfferFields, PayEntry};
+use bnap_core::policy::{EffectiveVector, Part, PartKind, PropertyVector};
 use bnap_core::pricing::{
-    AdmitInput, Backing, BackingSource, PayValue, PriceError, VerifiedAttest, admit, backed_value,
-    decide, metered_entry_allowed, quota_candidates,
+    AdmitInput, Backing, BackingSource, PayValue, PriceError, Refund, VerifiedAttest, admit,
+    backed_value, decide, metered_entry_allowed, quota_candidates,
 };
 use bnap_core::response::Status;
 use bnap_core::schnorr::Key;
@@ -173,6 +174,7 @@ fn input<'a>(
             scheme: "bnap:notes",
             claimed: value,
             backing: vec![paid(1, value, "sat")],
+            refund: Refund::Atomic,
         }),
         attest: verified,
         now: NOW,
@@ -220,6 +222,7 @@ fn admission_rules() {
         scheme: "httpauth:L402",
         claimed: 100,
         backing: vec![paid(1, 100, "sat")],
+        refund: Refund::None,
     });
     assert_eq!(
         admit(&i, empty),
@@ -236,6 +239,7 @@ fn the_value_is_what_the_rails_and_the_signer_confirmed() {
             scheme: "bnap:notes",
             claimed,
             backing,
+            refund: Refund::Atomic,
         }),
         attest: &[],
         now: NOW,
@@ -298,6 +302,7 @@ fn a_wrong_unit_is_refused() {
             scheme: "bnap:notes",
             claimed: 100,
             backing: vec![paid(1, 100, "USD")],
+            refund: Refund::Atomic,
         }),
         attest: &[],
         now: NOW,
@@ -323,6 +328,7 @@ fn a_value_larger_than_the_verified_notes_is_cut_to_them() {
             scheme: "bnap:notes",
             claimed: 1_000,
             backing: notes.clone(),
+            refund: Refund::Atomic,
         }),
         attest: &[],
         now: NOW,
@@ -580,6 +586,92 @@ fn overpayment_and_failure() {
     );
     let failed = a.settle(Status::Failed, 0);
     assert_eq!((failed.charged, failed.cap.get()), (0, 150));
+}
+
+/// Admission of a pay part worth `value` through one rail payment, for a
+/// scheme with the registered `refund` property.
+fn admit_with_refund(o: &OfferFields, value: u64, refund: Refund) -> bnap_core::Admission {
+    let i = AdmitInput {
+        offer: o,
+        pay: Some(PayValue {
+            scheme: &o.pay[0].scheme,
+            claimed: value,
+            backing: vec![paid(1, value, "sat")],
+            refund,
+        }),
+        attest: &[],
+        now: NOW,
+    };
+    admit(&i, empty).unwrap()
+}
+
+#[test]
+fn only_an_atomic_refund_gets_a_change_cap() {
+    // The review's probe: httpauth:L402 at 21 sat, backed by a confirmed
+    // 1,000 sat rail payment. L402 registers refund = "none", so it may
+    // sign no change for the overpayment and no refund on FAILED.
+    let mut o = OfferFields::new(Scope([1; 32]), NOW + 300, Key([9; 32]), [0; 16]);
+    o.pay.push(PayEntry::new("httpauth:L402", 21, "sat"));
+    for refund in [Refund::None, Refund::OutOfBand] {
+        let a = admit_with_refund(&o, 1_000, refund);
+        assert_eq!(a.pay().unwrap().refund(), refund);
+        let ok = a.settle(Status::Ok, 0);
+        assert_eq!(
+            (ok.charged, ok.cap.get()),
+            (21, 0),
+            "{refund:?}: excess kept"
+        );
+        let failed = a.settle(Status::Failed, 0);
+        assert_eq!(
+            (failed.charged, failed.cap.get(), failed.cap.status()),
+            (0, 0, Status::Failed),
+            "{refund:?}: no refund in operator notes"
+        );
+    }
+    // The same overpayment through an atomic scheme: change and a full
+    // refund, as before.
+    let a = admit_with_refund(&o, 1_000, Refund::Atomic);
+    assert_eq!(a.settle(Status::Ok, 0).cap.get(), 979);
+    assert_eq!(a.settle(Status::Failed, 0).cap.get(), 1_000);
+}
+
+#[test]
+fn a_metered_upto_scheme_without_atomic_refund_signs_no_change() {
+    // A metered entry of an upto scheme (refund none) settles the lower
+    // amount itself: its charge is metered, but its change cap is 0.
+    let mut o = offer(1_000, vec![]);
+    o.metered = true;
+    o.pay[0].rate = Some(1_000);
+    let a = admit_with_refund(&o, 1_000, Refund::None);
+    let ok = a.settle(Status::Ok, 400);
+    assert_eq!((ok.charged, ok.cap.get()), (400, 0));
+    assert_eq!(a.settle(Status::Failed, 400).cap.get(), 0);
+    let a = admit_with_refund(&o, 1_000, Refund::Atomic);
+    assert_eq!(a.settle(Status::Ok, 400).cap.get(), 600);
+}
+
+#[test]
+fn refund_tokens_follow_the_registry_order() {
+    for (token, r) in [
+        ("none", Refund::None),
+        ("out-of-band", Refund::OutOfBand),
+        ("atomic", Refund::Atomic),
+    ] {
+        assert_eq!(Refund::from_token(token), r);
+        assert_eq!(r.as_str(), token);
+        assert_eq!(r.returns_change(), r == Refund::Atomic);
+    }
+    // Unknown is the weakest, as for every property (section 11).
+    assert_eq!(Refund::from_token("Atomic"), Refund::None);
+    assert_eq!(Refund::from_token(""), Refund::None);
+    assert!(Refund::None < Refund::OutOfBand && Refund::OutOfBand < Refund::Atomic);
+    // From an effective vector: a credential's refund; none when absent.
+    let mut v = PropertyVector::new();
+    v.insert("refund".into(), "atomic".into());
+    let eff = EffectiveVector::compute(&[Part::known(PartKind::Credential, &v)]);
+    assert_eq!(Refund::of(&eff), Refund::Atomic);
+    let eff = EffectiveVector::compute(&[Part::unknown(PartKind::Credential)]);
+    assert_eq!(Refund::of(&eff), Refund::None);
 }
 
 #[test]

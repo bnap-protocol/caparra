@@ -318,8 +318,67 @@ pub struct Backing {
     pub unit: String,
 }
 
+/// A value scheme's registered `refund` property (section 11: `none`,
+/// `out-of-band` or `atomic`), as the registry entry states it. The gate
+/// passes it in, as it passes binding classes; a plug never describes
+/// itself.
+///
+/// Only an `atomic` scheme gets a change budget ([`ChangeCap`]) for a
+/// FAILED refund or for change: `none` keeps the value, and `out-of-band`
+/// returns it outside the socket, never in the operator's notes
+/// (ERRATA N3b-20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Refund {
+    /// `none`: the scheme cannot return value; any excess is kept.
+    None,
+    /// `out-of-band`: the scheme returns value by its own means, outside
+    /// the settlement.
+    OutOfBand,
+    /// `atomic`: the scheme returns value inside the settlement, such as
+    /// notes as change outputs.
+    Atomic,
+}
+
+impl Refund {
+    /// The property from its registry token. An unknown token is the
+    /// weakest, `none`, as every unknown property value is (section 11).
+    #[must_use]
+    pub fn from_token(token: &str) -> Self {
+        match token {
+            "atomic" => Self::Atomic,
+            "out-of-band" => Self::OutOfBand,
+            _ => Self::None,
+        }
+    }
+
+    /// The effective `refund` of a pay entry's vector; `none` when the
+    /// vector has none.
+    #[must_use]
+    pub fn of(vector: &crate::policy::EffectiveVector) -> Self {
+        vector.value("refund").map_or(Self::None, Self::from_token)
+    }
+
+    /// The registry token.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::OutOfBand => "out-of-band",
+            Self::Atomic => "atomic",
+        }
+    }
+
+    /// True only for `atomic`: the scheme may return value through the
+    /// operator's signer, so its settlement gets a change budget.
+    #[must_use]
+    pub fn returns_change(self) -> bool {
+        self == Self::Atomic
+    }
+}
+
 /// The value scheme the credential pays with: what its `verify` claimed,
-/// and what the rails and the signer confirmed.
+/// what the rails and the signer confirmed, and how its registry entry says
+/// it can return value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PayValue<'a> {
     /// Scheme ID of the credential's `pay` part.
@@ -330,6 +389,9 @@ pub struct PayValue<'a> {
     /// Every payment and note behind the part, as the rails and the signer
     /// confirmed them.
     pub backing: Vec<Backing>,
+    /// The scheme's registered `refund` property, from its registry entry
+    /// (or [`Refund::of`] its effective vector), never from the plug.
+    pub refund: Refund,
 }
 
 /// What [`admit`] needs.
@@ -360,6 +422,7 @@ pub struct AdmittedPay {
     backed: u64,
     value: u64,
     backing: Vec<BackingSource>,
+    refund: Refund,
 }
 
 impl AdmittedPay {
@@ -417,6 +480,13 @@ impl AdmittedPay {
     #[must_use]
     pub fn backing(&self) -> &[BackingSource] {
         &self.backing
+    }
+
+    /// The scheme's registered `refund` property, as the gate passed it.
+    /// Only `atomic` gets a change cap above 0.
+    #[must_use]
+    pub fn refund(&self) -> Refund {
+        self.refund
     }
 }
 
@@ -548,6 +618,7 @@ pub fn admit(
                 backed,
                 value: pv.claimed.min(backed),
                 backing,
+                refund: pv.refund,
             })
         }
     };
@@ -611,8 +682,10 @@ pub fn backed_value(
     Ok((narrow(total / scale), seen.into_iter().collect()))
 }
 
-/// The most change a scheme may sign at settlement: `value - charged`, in
-/// the pay entry's unit, for an OK or a FAILED settlement.
+/// The most change a scheme may sign at settlement, in the pay entry's
+/// unit, for an OK or a FAILED settlement: `value - charged` for a scheme
+/// whose registered refund is `atomic`, and 0 for every other scheme
+/// ([`Refund`], ERRATA N3b-20).
 ///
 /// Only [`Admission::settle`] makes one, and an [`Admission`] comes only
 /// from [`admit`], so the cap a signer enforces is always the one this
@@ -654,37 +727,48 @@ pub struct Charge {
     pub charged: u64,
     /// The Response's `metered_units`, in metered offers.
     pub metered_units: Option<u64>,
-    /// The change the scheme may return: `value - charged`.
+    /// The change the scheme may return: `value - charged` for an
+    /// `atomic` scheme, 0 otherwise.
     pub cap: ChangeCap,
 }
 
 impl Admission {
     /// The charge for an outcome (sections 6.4 and 7).
     ///
-    /// - OK, not metered: the effective price. Overpayment is left to the
-    ///   scheme, which returns change up to [`Charge::cap`] if it can.
+    /// - OK, not metered: the effective price. Overpayment is returned as
+    ///   change only by a scheme that can return change; otherwise the
+    ///   excess is kept (section 7).
     /// - OK, metered: `min(price(⌈units × rate / 1000⌉), price(amount))`,
     ///   under the decision made at admission; `units` is reported as
-    ///   `metered_units`.
-    /// - FAILED: 0, and the cap is the whole value, which the scheme refunds
-    ///   as its registered refund property allows.
+    ///   `metered_units`. An `upto` scheme that is not `atomic` settles the
+    ///   lower amount itself and signs no change.
+    /// - FAILED: 0. The scheme refunds as its registered refund property
+    ///   allows (6.4).
+    ///
+    /// The cap is `value - charged` when the scheme's registered refund is
+    /// `atomic`, and 0 otherwise, for change and refund alike: a `none`
+    /// scheme keeps the value, and an `out-of-band` scheme refunds outside
+    /// the socket, so neither may sign the operator's notes (ERRATA N3b-20).
     ///
     /// `units` is the meter's count and is ignored in non-metered offers.
     #[must_use]
     pub fn settle(&self, status: Status, units: u64) -> Charge {
-        let value = self.pay.as_ref().map_or(0, |p| p.value);
         let metered_units = self.metered.then_some(units);
         let charged = match status {
             Status::Failed => 0,
             Status::Ok if !self.metered => self.price,
             Status::Ok => self.metered_charge(units),
         };
+        let change = match &self.pay {
+            Some(p) if p.refund.returns_change() => p.value.saturating_sub(charged),
+            _ => 0,
+        };
         Charge {
             status,
             charged,
             metered_units,
             cap: ChangeCap {
-                amount: value.saturating_sub(charged),
+                amount: change,
                 unit: self
                     .pay
                     .as_ref()
@@ -710,7 +794,7 @@ impl Admission {
 /// its scheme's registry entry has `refund = "atomic"` or `upto = true`.
 #[must_use]
 pub fn metered_entry_allowed(refund: &str, upto: bool) -> bool {
-    refund == "atomic" || upto
+    Refund::from_token(refund) == Refund::Atomic || upto
 }
 
 #[cfg(test)]

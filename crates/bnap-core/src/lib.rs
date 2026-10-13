@@ -59,7 +59,7 @@ pub use offer::{AttestEntry, Effect, GateOfferCheck, NativeEntry, Offer, OfferFi
 pub use outcome::{Admitted, CommitError, SettleError};
 pub use policy::{EffectiveVector, Require, RoutePolicy};
 pub use pricing::{
-    Admission, Backing, BackingSource, Charge, PriceDecision, PriceError, VerifiedAttest,
+    Admission, Backing, BackingSource, Charge, PriceDecision, PriceError, Refund, VerifiedAttest,
 };
 pub use response::{Response, ResponseFields, Status};
 pub use schnorr::{Key, Signature, SigningKey};

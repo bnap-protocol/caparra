@@ -8,7 +8,7 @@ use crate::credential::{Credential, OfferRef, SchemePart};
 use crate::hash::{Context, RailId, Scope, UseId, sha256};
 use crate::ids::{self, rail};
 use crate::offer::{AttestEntry, OfferFields, PayEntry};
-use crate::pricing::{AdmitInput, Backing, BackingSource, PayValue, VerifiedAttest};
+use crate::pricing::{AdmitInput, Backing, BackingSource, PayValue, Refund, VerifiedAttest};
 use crate::response::Status;
 use crate::store::{PlanInput, SchemeUses, UseModel};
 use crate::test_support::{MemoryStore, block_on};
@@ -34,6 +34,7 @@ fn no_quota() -> Admission {
             scheme: "bnap:notes",
             claimed: 0,
             backing: Vec::new(),
+            refund: Refund::Atomic,
         }),
         attest: &[],
         now: T0,
@@ -756,6 +757,7 @@ fn a_quota_with_room_at_pricing_but_full_at_commit_is_rate_limited() {
             scheme: "bnap:notes",
             claimed: 0,
             backing: Vec::new(),
+            refund: Refund::Atomic,
         }),
         attest: &att,
         now: T0,
@@ -880,6 +882,7 @@ fn every_payment_and_note_counted_as_value_is_consumed() {
                 scheme: "bnap:notes",
                 claimed: 1_000,
                 backing,
+                refund: Refund::Atomic,
             }),
             attest: &[],
             now: T0,
@@ -954,6 +957,7 @@ fn one_signer_verified_note_is_spent_once_across_value_schemes() {
                     amount: 64,
                     unit: "sat".into(),
                 }],
+                refund: Refund::Atomic,
             }),
             attest: &[],
             now: T0,
