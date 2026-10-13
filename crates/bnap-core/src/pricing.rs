@@ -19,6 +19,15 @@
 //!   if the scheme's verified value < p                                -> UNDERPAID
 //! ```
 //!
+//! **Without pay** the build does not use the literal base of 0. Read
+//! literally, `price(0)` is always 0, so `if p > 0 and no pay` can never
+//! fire and a credential with no `pay` and no verified waive (for example
+//! one carrying only a discount attestation, verified or not) would be
+//! admitted for free. [`admit`] instead prices a credential without pay at
+//! [`NO_PAY_BASE`] (2⁶⁴ − 1): it is admitted only when its verified
+//! attestations alone bring the price to 0, through a waive, a full
+//! discount or a quota with room (ERRATA N3b-1, owner decision needed).
+//!
 //! [`admit`] makes the attestation and quota decision once, at admission,
 //! and returns it inside the [`Admission`]. [`Admission::settle`] reuses
 //! that decision for the charge, so settlement never consumes a quota
@@ -230,6 +239,11 @@ pub fn decide(
     d
 }
 
+/// The base [`admit`] prices a credential without `pay` at: the largest
+/// amount, so only a waive, a full discount or a quota makes it 0
+/// (ERRATA N3b-1).
+pub const NO_PAY_BASE: u64 = u64::MAX;
+
 /// The value scheme the credential pays with and the value its `verify`
 /// returned, in the chosen pay entry's unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -275,8 +289,9 @@ pub struct AdmittedPay {
 pub struct Admission {
     /// Attestation results and quota decision, reused at settlement.
     pub decision: PriceDecision,
-    /// `price(entry.amount, or 0)`: the effective price; the most a metered
-    /// action can be charged.
+    /// `price(entry.amount)`, or `price(NO_PAY_BASE)` without pay (then
+    /// always 0): the effective price; the most a metered action can be
+    /// charged.
     pub price: u64,
     /// The chosen pay entry, when the credential has `pay`.
     pub pay: Option<AdmittedPay>,
@@ -318,7 +333,7 @@ impl PriceError {
 }
 
 /// Admission (section 7): required attestations, `price`, and the value
-/// check. `counter` returns a counter's current value from the use store,
+/// check; without pay, see [`NO_PAY_BASE`]. `counter` returns a counter's current value from the use store,
 /// for the quota candidates of [`quota_candidates`].
 pub fn admit(
     input: &AdmitInput<'_>,
@@ -346,7 +361,7 @@ pub fn admit(
             })
         }
     };
-    let base = pay.as_ref().map_or(0, |p| p.amount);
+    let base = pay.as_ref().map_or(NO_PAY_BASE, |p| p.amount);
     let decision = decide(offer, input.attest, base, input.now, counter);
     let price = decision.price(base);
     let value = pay.as_ref().map_or(0, |p| p.value);
