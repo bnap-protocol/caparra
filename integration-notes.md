@@ -1,11 +1,19 @@
-# Integration notes: N3 part A, `bnap-core` encoding and cryptography
+# Integration notes: N3, `bnap-core` and `bnap-plug`
+
+Two parts, one branch. Part A (the encoding layer) was built on
+`node/n3a`. Part B (socket semantics and the plug traits) continues on
+`node/n3-core`, which starts at `node/n3a`'s last commit `cc24e55`, so
+`node/n3-core` holds both parts and supersedes `node/n3a` for merging.
+Part B is documented at the end of this file, from "Part B" on.
+
+## Part A: `bnap-core` encoding and cryptography
 
 Branch `node/n3a`, crate `crates/bnap-core` only. Normative source:
 `bnap/spec/socket-draft-00.md` (doc rev 39), with `spec/ERRATA.md` and
 `spec/DECISIONS.md`. Vectors: `bnap/vectors/vectors.json` at bnap commit
 `14bbd5e`, copied to `crates/bnap-core/tests/data/vectors.json`.
 
-## Public API
+### Public API
 
 Everything is I/O-free and RNG-free. Callers pass the clock (`now`, Unix
 seconds), nonces, BIP-340 auxiliary randomness and GREASE randomness in.
@@ -29,7 +37,7 @@ seconds), nonces, BIP-340 auxiliary randomness and GREASE randomness in.
 `bnap_core::secp256k1` re-exports the `bitcoin` crate's secp256k1; no second
 secp256k1 is added.
 
-### How a gate uses it (4.4 order)
+#### How a gate uses it (4.4 order)
 
 1. `Credential::parse_with(bytes, &CredentialParse { max_credential, known_ext_types })`:
    TOO_LARGE, MALFORMED, VERSION for the credential.
@@ -50,7 +58,7 @@ secp256k1 is added.
 Every check returns `bnap_core::Error`; `err.code()` is the draft-00 code and
 `ErrorObject::from(&err)` builds the 8.2 Error object.
 
-## Decisions made
+### Decisions made
 
 - **Builders validate by parsing.** `OfferFields::sign` and
   `ResponseFields::sign` serialize, sign, then run the parser on the result,
@@ -85,7 +93,7 @@ Every check returns `bnap_core::Error`; `err.code()` is the draft-00 code and
 - **Effect** serializes in the manifest as `required`, `waive`,
   `discount`, `quota` (ERRATA row 12).
 
-## ERRATA list (ambiguities found, literal draft-00 reading taken)
+### ERRATA list (ambiguities found, literal draft-00 reading taken)
 
 | # | Where | Ambiguity | What `bnap-core` does |
 | --- | --- | --- | --- |
@@ -109,7 +117,7 @@ Every check returns `bnap_core::Error`; `err.code()` is the draft-00 code and
 | N3a-18 | 4.4 client | "`info`, if present, is on the origin the offer came from" | `same_origin`: the URI starts with the RFC 6454 origin, followed by `/`, `?`, `#` or nothing |
 | N3a-19 | 14 / BIP-340 | The official BIP-340 rows 15 to 18 use messages that are not 32 bytes | Skipped: the secp256k1 0.29 API (via `bitcoin` 0.32) takes 32-byte messages only. Every socket message is a 32-byte tagged hash |
 
-## Tests
+### Tests
 
 - `tests/vectors.rs`: every value in `vectors.json` (tagged hash, BigSize,
   tu64, HTTP action and route scope, the route offer bytes, OfferID and
@@ -131,7 +139,7 @@ Every check returns `bnap_core::Error`; `err.code()` is the draft-00 code and
   properties for every parser on arbitrary bytes, TLV-shaped input, mutated
   valid objects and arbitrary JSON.
 
-### Status at hand-off
+#### Status at hand-off
 
 - `cargo-q nextest run -p bnap-core`: 75 tests, 75 passed (unit tests,
   `vectors`, `bip340`, `negative`, `props`).
@@ -140,7 +148,7 @@ Every check returns `bnap_core::Error`; `err.code()` is the draft-00 code and
 - `RUSTDOCFLAGS="-D warnings" cargo-q doc -p bnap-core --no-deps`: clean.
 - `ops/leak-guard.sh`: clean. No `unsafe` (the workspace forbids it).
 
-## Merge notes
+### Merge notes
 
 - `Cargo.lock` gained the dependency tree of `bnap-core` (bitcoin 0.32 with
   secp256k1 0.29, sha2 0.11, hmac 0.13, hex, serde, serde\_json,
@@ -150,10 +158,10 @@ Every check returns `bnap_core::Error`; `err.code()` is the draft-00 code and
 - `serde_json_canonicalizer` turns on `serde_json/float_roundtrip` for the
   whole workspace through feature unification.
 
-## Known gaps (for downstream nodes)
+### Known gaps (for downstream nodes)
 
 - No pricing (section 7), use store commit, settle or replay logic (6.3,
-  6.4): `bnap-core` provides the IDs and keys those need.
+  6.4): `bnap-core` provides the IDs and keys those need. (Done in part B.)
 - No base64url: carriers encode and decode headers themselves.
 - The HTTP carrier still has to combine repeated fields (RFC 9110 5.3), cap
   credentials at `HTTP_MAX_CREDENTIAL`, compare `BNAP-Context`, and reject
@@ -163,3 +171,236 @@ Every check returns `bnap_core::Error`; `err.code()` is the draft-00 code and
   the judge.
 - GREASE values need caller randomness (`tlv::grease_type(seed)` maps a seed
   to a GREASE type).
+
+## Part B: socket semantics and the plug traits
+
+Branch `node/n3-core`. New modules in `crates/bnap-core` (`pricing`,
+`policy`, `store`, `outcome`, `sign`, `test_support`) and the whole of
+`crates/bnap-plug`. Part A's modules are unchanged except for two
+visibility widenings, listed under "Changes to part A files".
+
+### Public API: `bnap-core`
+
+| Module | What it exposes |
+| --- | --- |
+| `pricing` (section 7) | `VerifiedAttest` (`new`, `with_quota_id`), `QuotaUse`, `PriceDecision` (`price`, `price_wide`, `quota_counter`; fields `waive`, `discounts`, `quota`, `ignored`), `decide`, `quota_candidates`, `AdmitInput`, `PayValue`, `admit`, `Admission` (`settle`), `AdmittedPay`, `Charge`, `ChangeCap` (sealed, `get`), `PriceError` (`code`), `NO_PAY_BASE`, `metered_entry_allowed` |
+| `policy` (section 11) | `PROPERTIES` (embedded table), `PropertyDef` (`rank`, `value`, `applies`), `property`, `PartKind`, `Part` (`known`, `unknown`), `PropertyVector`, `EffectiveVector` (`compute`, `rank`, `value`, `to_tokens`), `Require` (`parse`, `from_pairs`, `satisfied_by`), `RoutePolicy` (`admits`, `select`), `Candidate`, `Selection`, `PolicyError` |
+| `store` (6.2 to 6.4) | `UseStore` (async trait), `OutcomeRecord` (`pending`, `needs_refund`), `OutcomeStatus`, `CounterUse`, `UseModel`, `SchemeUses`, `PlanInput`, `CommitPlan` (`build` is the only constructor; `replay_key`, `ids`, `singles`, `counters`, `now`), `PlanError`, `Commit`, `Settlement` (`new`, `with_scheme_result`, `with_response`), `Settle`, `StoreError`, `UseTable`, `logic::{commit, settle, expire_pending, record_refund, purge}` |
+| `outcome` (section 6) | async `commit`, `settle`, `record_refund`, `sweep`, `admit`, all generic over `S: UseStore + ?Sized`; `Admitted::{New, Replay}`, `Replay` (`record`, `needs_refund`, `receipt`), `ReceiptInput`, `receipt`, `CommitError` (`code`, `retry_after`, `to_error_object`), `SettleError`, `AdmitError`, `Sweep` |
+| `sign` | `CoreMessage` (sealed; `purpose`, `key`, `digest`, `sign_with`, `verify`), `Purpose` (`key_use`, `tag`), `UnsignedOffer` (`new`, `message`, `finish`, `finish_with_limit`), `UnsignedResponse` (same), `SignError` |
+| `test_support`, feature `test-support` | `MemoryStore` (`new`, `set_unavailable`, `inspect`), `MemoryTable`, `block_on` |
+
+### Public API: `bnap-plug`
+
+| Module | What it exposes |
+| --- | --- |
+| `scheme` | `CredentialScheme` (`id`, `offer`, `native`, `verify`, `settle`, `recover_native`), `Verified { use_ids, rail_ids, value, quota_id }` (`uses`, `quota_use_id`), `LocalId`, `RailRef`, `OfferCtx`, `OfferRole`, `SchemeOffer`, `NativeCtx`, `NativeArtifact`, `Entry`, `VerifyCtx`, `SettleCtx`, `NativeCredential`, `SchemeError` (`rejected`, `code`, `to_error_object`) |
+| `signer` | `Signer` (`schnorr`, `verify_unblinded`, `blind_sign`), `CappedSigner` (`verify_only`, `for_change`, `cap`, `verify_unblinded`, `blind_sign`), `Point`, `KeysetId`, `BlindedOutput`, `BlindSignature`, `Dleq`, `SignerError` |
+| `rail` | `FundingRail` (`kind`, `request`, `status`, `confirm`), `confirm_rail_id`, `PayId`, `PayRequest`, `PayState`, `Confirmed`, `RailError` |
+| `carrier` | `Carrier` (associated `Request` and `Response`; `name`, `action_scope`, `route_scope`, `extract`, `offer`, `receipt`, `error`), `RawCredential`, `Challenge`, `NativeChallenge` |
+| `policy` | `Pricer`, `PricerError`, `Judge` (`admit`, `after`), `Decision` (`error`), `Action` |
+| `pay` | `PaySource`, `Budget`, `PayProof`, `PayError`, `within_budget` |
+| re-exports | `UseStore`, `Commit`, `CommitPlan`, `OutcomeRecord`, `Settle`, `Settlement`, `StoreError`, `CoreMessage`, `ChangeCap`, `Properties` (= `EffectiveVector`) |
+
+Every async trait uses `async-trait`, so each plug can be held as
+`Arc<dyn Trait>`; `tests/plugs.rs` drives them all that way. `Carrier` is
+synchronous: it only transforms requests and responses.
+
+### How a gate runs a request (after part A's 4.4 checks)
+
+1. Verify each part: `scheme.verify(part, &VerifyCtx { signer:
+   &CappedSigner::verify_only(signer), .. })`. Verification reads no use
+   state, so a replay always reaches step 5.
+2. Turn each `RailRef` into a `RailId` with `confirm_rail_id(rail, &r)`,
+   using the rail plug for that kind. The `RailId` uses the rail's own kind.
+3. `outcome::admit(store, &AdmitInput { offer, pay, attest, now })` reads
+   the quota counters and returns the `Admission` (POLICY, UNDERPAID,
+   `NOT_OFFERED` or UNAVAILABLE otherwise). Build `VerifiedAttest` with the
+   registry class and `verified.quota_use_id(scheme)`.
+4. `CommitPlan::build(&PlanInput { context, pay_body, attest_bodies,
+   schemes: &[verified.uses(id, model), ..], rail_ids, quota:
+   admission.decision.quota.as_ref(), offer_expires, now, replay_window })`.
+   `PlanError::OutlivesRecord` is POLICY.
+5. `outcome::commit(store, &plan, &limits)`:
+   - `Admitted::New`: run the action; `let charge =
+     admission.settle(status, units)`; `scheme.settle(part, &verified,
+     &SettleCtx { .. }, &CappedSigner::for_change(signer, charge.cap))`;
+     `outcome::settle(store, rk, &Settlement::new(&charge,
+     now).with_scheme_result(r).with_response(kept))`; then
+     `outcome::receipt(&record, &input, false)`.
+   - `Admitted::Replay(r)`: if `r.needs_refund()`, call `scheme.settle` for
+     FAILED with charge 0 and a cap of the whole value, then
+     `outcome::record_refund` (first write wins) and
+     `outcome::receipt(&record, &input, true)`; otherwise `r.receipt(&input)`.
+   - `Err(e)`: answer `e.to_error_object()` (SPENT, PENDING or
+     `RATE_LIMITED` with `retry_after`, UNAVAILABLE).
+6. Sign the receipt: `let u = UnsignedResponse::new(&fields)?`, `let sig =
+   signer.schnorr(u.message()).await?`, `u.finish(&sig)?`. Never send the
+   Response, or any change in it, before step 5's settle returned.
+7. Run `outcome::sweep(store, now, &limits)` periodically: PENDING past
+   `pending_timeout` goes to FAILED, settled records past `replay_window`
+   are deleted, single uses stay.
+
+Offers are signed the same way: `UnsignedOffer::new(&fields, Some(&k_mac))`,
+`signer.schnorr(u.message())`, `u.finish(&sig)`.
+
+### Decisions made
+
+- **`UseStore` lives in `bnap-core`** (`store`), not `bnap-plug`: the
+  outcome state machine is generic over it, and `bnap-plug` depends on
+  `bnap-core`. `bnap-plug` re-exports it. This added `async-trait` to
+  `bnap-core`, a compile-time macro; the crate still does no I/O.
+- **The store contract is the `logic` module.** Each `UseStore` method
+  behaves exactly as the `store::logic` function of the same name, run as
+  one serializable, durable transaction. Key-value stores can implement
+  `UseTable` and call `logic` directly; SQL stores write the same rules in
+  SQL. `MemoryStore` is the reference implementation.
+- **Only bnap-core makes a `CommitPlan`**: its fields are private, so no
+  plug can choose a `ReplayKey` or name a use ID in another scheme's space.
+- **Sealed signer messages.** `Signer::schnorr` takes `&CoreMessage`, which
+  has no public constructor; `UnsignedOffer` and `UnsignedResponse` are the
+  only sources, and their `finish` checks the signature under the object's
+  own key and re-parses the object. A compile_fail doctest in each crate
+  shows that neither a `CoreMessage` literal nor raw bytes compile.
+- **`CappedSigner` has no message signing at all.** Schemes get only it, so
+  a scheme can never get an offer or a receipt signed, even though
+  `UnsignedResponse` is public. It refuses outputs above the cap (and sums
+  that overflow) before the signer is called, passes the cap on so the
+  signer enforces it too, rejects answers that do not match the outputs,
+  and in its verify-only view signs nothing. `ChangeCap` is sealed: only
+  `Admission::settle` makes one.
+- **`Verified.rail_ids` are rail references** (`RailRef { kind, reference }`)
+  that the rail confirms, per draft-00 6.1 and ERRATA row 19; the field
+  keeps the overview's name. `Verified` adds `quota_id`, the local ID of
+  the registry's `quota_id` identity.
+- **`UseModel::Rate { k, epoch }`**: the registry says only `rate`, so `k`
+  and `epoch` come from the gate's configuration.
+- **Settlement charges**: OK non-metered is the admitted price; OK metered
+  is `min(price(⌈units × rate / 1000⌉), price(amount))` in 128 bits under
+  the admission's decision (no second quota use); FAILED is 0 with a cap of
+  the whole value. Overpayment is left to the scheme, up to the cap.
+- **Property order** comes from `policy::PROPERTIES`, a table copied from
+  the registry's `properties.toml` (twelve properties, tokens weakest
+  first, `applies_to`). It is to be replaced by the registry export; keep
+  the same API. Property vectors themselves are passed in by the caller
+  (from the registry entries), never taken from a plug.
+- **Async tests without tokio**: `test_support::block_on` polls with a no-op
+  waker, enough for `MemoryStore`. The concurrent race uses OS threads and
+  a barrier against the store's mutex.
+
+### ERRATA list, part B
+
+| # | Where | Ambiguity | What the build does |
+| --- | --- | --- | --- |
+| N3b-1 | 7, admit | `p = price(entry.amount, or 0 if the credential has no pay)` makes `price(0) = 0` always, so `if p > 0 and no pay -> UNDERPAID` can never fire, and a credential with no `pay` and any attestation (a discount, or one that failed verification) is admitted for free | **Not the literal reading, because it is a free-admission bypass.** Without pay the base is `NO_PAY_BASE` (2⁶⁴ − 1): admitted only when verified attestations alone make the price 0 (a waive, a 10,000 bp discount, or a quota with room). Owner decision needed |
+| N3b-2 | 6.4, 8.1 | What a FAILED outcome charges | 0, with the whole value as the refund cap (as the notes draft-00 7.1 reads it) |
+| N3b-3 | 6.3 | `singles` and `counters` named twice by one credential; the literal loop increments a counter twice | Both are sets: each ID and counter commits once. The `ReplayKey` keeps duplicates (N3a-9) |
+| N3b-4 | 6.1 | The `expires + 60 <= now + replay_window` rule has no error code | POLICY |
+| N3b-5 | 11 | "Per-property minimum over its scheme, rail and verifier entries, with unknown counted as weakest": read literally, a rail entry has no binding, so every effective binding would be `none`, against the section 11 example | A property counts only the entries whose kind it applies to (registry `applies_to`, N2-2 and N2-3). Within those, a missing value, an unknown token or a missing registry entry is the weakest. A property that applies to no part (refund for an attestation) does not constrain it |
+| N3b-6 | 6.4 | Is `replay_window` measured from commit or from settlement? | From commit (`created`), matching 6.1's `now + replay_window` at commit |
+| N3b-7 | 6.4 | A record past `replay_window` that the sweep has not deleted yet | SPENT, as if deleted, so the answer does not depend on sweep timing |
+| N3b-8 | 8.2; overview, Judge | No code for a judge that queues or refuses | Queue is `RATE_LIMITED` with `retry_after`; refuse is POLICY |
+| N3b-9 | 9.1 `require` | An unknown property or value token | The route is refused at start-up (`PolicyError`), never ignored |
+| N3b-10 | 9.1; overview rules | `allow_experimental` is an overview rule with no manifest member | `RoutePolicy::allow_experimental`, from gate configuration; experimental means effective `maturity = experimental` |
+| N3b-11 | 7, 11 | A required attestation (effect 0) whose vector fails `require`: dropping it from the offer would lift the requirement | The route is refused at start-up |
+| N3b-12 | 6.4 Timeout | "Moves to FAILED, with the refund that implies", but nothing records the refund | The refund is computed when the client replays: settle FAILED with charge 0, then `record_refund` writes `scheme_result` once (as the notes draft-00 7.5 reads it) |
+| N3b-13 | 6.4 | A replay after `pending_timeout` but before the sweep ran | The replay times the outcome out at once and proceeds as a FAILED replay |
+| N3b-14 | 6.3, 6.4 | `retry_after` values | PENDING: seconds until `created + pending_timeout`; `RATE_LIMITED`: seconds until the full counter's epoch ends; at least 1 |
+
+### Tests, part B
+
+- `src/outcome/tests.rs` (state machine, `MemoryStore`): a concurrent
+  double spend of one note by 16 credentials (exactly one wins, one `used`
+  entry, one outcome); 12 concurrent retries of one credential (one New,
+  the rest PENDING); replay returns the recorded outcome with `replayed`,
+  the original `settled_at` and the new Digest, and writes nothing; no
+  status flip after settlement (second settle refused, sweep and refund
+  leave it alone); same use IDs under another `ReplayKey` are SPENT,
+  including a body altered on the path; one Lightning payment through
+  L402 and MPP is a conflict and the aborted commit consumes nothing; rate
+  counters, `retry_after` and give-back on FAILED; FAILED keeps single
+  uses spent; pending timeout, late settle refused, refund recorded once
+  on replay; replay window edge, purge and SPENT after it; PENDING never
+  purged; the 6.1 rule; reusable IDs in the `ReplayKey` but not consumed;
+  duplicate IDs; a store outage fails closed; a binding change on retry
+  keeps the `ReplayKey`; a quota with room at pricing but full at commit.
+- `tests/pricing.rs`: the price table (two 20% discounts give 36%, waive
+  beats discount in either order, bearer attestations cannot waive or
+  discount, rounding, the 10.3 example), admission rules, attestation-only
+  offers, the no-pay bypass of N3b-1, quota order, room and epochs, the
+  10.3 metered charge (340 sat, 1,340 sat of change), products beyond 2⁶⁴,
+  overpayment, FAILED; proptests for monotonicity and the metered cap.
+- `tests/policy.rs`: the overview route example with registry vectors
+  (notes, MPP and L402 at binding O, notes alone at A, never a reusable
+  bearer), notes funded by card, a custodial facilitator, unknown entries
+  and tokens, attestations and credential-only properties, unsatisfiable
+  routes, experimental entries, a failing required attestation, `require`
+  parsing.
+- `tests/sign.rs`: the section 14 offer and Response reproduced byte for
+  byte through `UnsignedOffer` and `UnsignedResponse`; wrong keys and bad
+  signatures refused.
+- `bnap-plug/tests/plugs.rs`: the capped signer, a key-use-checking test
+  signer, and the whole gate flow through `dyn` plugs (mock L402 and MPP
+  schemes, a fake Lightning rail, the in-memory store): one payment under
+  two schemes admits one action, the replay is re-signed with `replayed`,
+  an unpaid payment never reaches commit, an outage fails closed; plus a
+  string carrier, judge decisions, budgets and scheme error codes.
+
+#### Status at hand-off, part B
+
+- `cargo-q nextest run -p bnap-core -p bnap-plug`: 140 tests, 140 passed
+  (130 in `bnap-core`, 10 in `bnap-plug`).
+- `cargo-q test --doc -p bnap-core -p bnap-plug`: the two compile_fail
+  doctests pass.
+- `cargo-q clippy -p bnap-core -p bnap-plug --all-targets -- -D warnings`,
+  with and without `--features bnap-core/test-support`: clean (pedantic
+  included, toolchain 1.99.0).
+- `RUSTDOCFLAGS="-D warnings" cargo-q doc -p bnap-core -p bnap-plug
+  --no-deps`: clean. `cargo-q fmt --check`: clean. `ops/leak-guard.sh`:
+  clean.
+
+### Changes to part A files
+
+- `OfferFields::to_stream` and `ResponseFields::to_stream` are
+  `pub(crate)` instead of private, so `sign` can serialize without a local
+  key. No behaviour change.
+- `lib.rs`: the new modules and re-exports. `Cargo.toml`: `async-trait`
+  (workspace dependency) and the `test-support` feature.
+
+### Merge notes, part B
+
+- `Cargo.lock` gains `async-trait` and `bnap-plug`'s edges; regenerate it on
+  conflict. No workspace dependency was added.
+- `bnap-plug` depends on `bnap-core` by path (`../bnap-core`); no crate
+  declared an internal dependency before, so there was no pattern to
+  follow.
+- Downstream crates that want `MemoryStore` add
+  `bnap-core = { path = "../bnap-core", features = ["test-support"] }` to
+  their dev-dependencies.
+
+### Known gaps and notes for downstream nodes
+
+- **Stores** (`bnap-store-sqlite`, `bnap-store-postgres`): implement
+  `UseStore` so each method matches `store::logic`, durably.
+  `bnap-store-tests` should run the scenarios of `src/outcome/tests.rs`
+  against `&dyn UseStore`, with `MemoryStore` as the reference.
+- **Registry**: `policy::PROPERTIES` is an embedded copy of
+  `registry/properties.toml`; replace it with the export and add a test
+  that the order matches. The gate supplies each entry's vector and its
+  binding class; `metered_entry_allowed(refund, upto)` must be called when
+  building metered offers, since core has no registry access.
+- **Gate** (`caparra-gate`): owns the offer-building loop (Pricer, then
+  `scheme.offer`, `OfferID`, `scheme.native`, `UnsignedOffer`), the flow
+  above, the per-address and per-offer bounds on plug work (section 12),
+  stopping actions at `pending_timeout`, and the sweep schedule.
+- **Native credentials** (5.4): `CredentialScheme::recover_native` exists
+  with an unsupported default; the native envelope from part A
+  (`credential::native_context`, `native_digest`) is not wired into a flow.
+- **Signers** (`bnap-signer-file`, `bnap-signer-process`): `schnorr` MUST
+  check that the key named by the `CoreMessage` is held for
+  `purpose().key_use()`; `blind_sign` MUST enforce `cap` itself.
+- `Verified.value` is taken to be in the chosen pay entry's unit; core does
+  not see units from schemes.
+- No WIT interface yet (the overview's v0.7 WASM plugs).
+- Part A's open review item on duplicate JSON member names in the manifest
+  is unchanged by part B.
