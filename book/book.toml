@@ -1,0 +1,15 @@
+[book]
+title = "Caparra"
+description = "Guide to Caparra, the Rust reference implementation of the BNAP protocol."
+authors = ["BNAP contributors"]
+language = "en"
+src = "src"
+
+[build]
+# A missing chapter is an error, not an empty file created behind your back.
+create-missing = false
+
+[output.html]
+site-url = "/caparra/"
+git-repository-url = "https://github.com/bnap-protocol/caparra"
+edit-url-template = "https://github.com/bnap-protocol/caparra/edit/develop/book/{path}"

@@ -1,0 +1,59 @@
+# Release: PLACEHOLDER, OWNER-GATED.
+#
+# This workflow reacts only to pushed tags that start with "v" (for example
+# v0.1.0). It builds and publishes nothing yet. Cutting a release is the
+# owner's decision, and nothing in CI may do it on its own.
+#
+# What a release will look like (see CONTRIBUTING.md, "Releases"):
+# - Library crates: release-plz (release-plz.toml) opens a release pull
+#   request, writes per-crate changelogs and, once crates.io trusted
+#   publishing is set up, publishes and tags each crate as <crate>-v<version>.
+#   Those tags do not match "v*" and do not trigger this workflow.
+# - Binaries: dist ([workspace.metadata.dist] in Cargo.toml) builds
+#   caparra-gate, bnap and bnap-mcp for aarch64-apple-darwin,
+#   x86_64-unknown-linux-gnu and aarch64-unknown-linux-gnu, with GitHub
+#   artifact attestations, when the owner pushes a v<workspace version> tag.
+#
+# To enable binary releases, the owner:
+#   1. runs `dist generate --mode ci` with dist 0.33, which replaces this file
+#      with the generated release workflow;
+#   2. removes "ci" from allow-dirty in [workspace.metadata.dist];
+#   3. creates a GitHub environment named "release" with the owner as required
+#      reviewer and puts the publishing jobs behind it;
+#   4. adds a tag rule so that only the owner can push v* tags.
+#
+# Until then a v* tag makes this run fail on purpose, so that a pushed tag is
+# never mistaken for a published release.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  placeholder:
+    name: Release (not enabled)
+    if: github.repository == 'bnap-protocol/caparra'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Show what this tag would release
+        shell: sh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          echo "tag:               $TAG"
+          echo "workspace version: $version"
+          echo "binaries:          caparra-gate, bnap, bnap-mcp"
+          if [ "$TAG" != "v$version" ]; then
+            echo "::warning::tag $TAG does not match the workspace version $version"
+          fi
+      - name: Stop (release automation is owner-gated and not enabled)
+        run: |
+          echo "::error::Release automation is not enabled yet. Nothing was built or published. See the header of .github/workflows/release.yml."
+          exit 1

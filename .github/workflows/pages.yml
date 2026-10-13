@@ -1,0 +1,51 @@
+# Build the mdBook guide in book/ and publish it to GitHub Pages.
+#
+# Runs on every push to main (released docs) and on demand. Pull requests and
+# develop only build the book, in the "Book" job of ci.yml.
+#
+# One-time owner setup: Settings > Pages > Build and deployment > Source:
+# "GitHub Actions". The site is served at https://bnap-protocol.github.io/caparra/.
+
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time; a newer run never cancels one that is deploying.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build the book
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook@0.5
+      - uses: actions/configure-pages@v6
+      - run: mdbook build book
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: book/book
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

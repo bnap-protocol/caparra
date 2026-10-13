@@ -55,14 +55,71 @@ commits if the text is in history) before pushing. Do not bypass it with
 
 ## Checks before a pull request
 
+CI (`.github/workflows/ci.yml`) runs these on every push and pull request to
+`develop` and `main`. Run them locally first:
+
 ```sh
+ops/leak-guard.sh
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo nextest run --workspace --locked     # or: cargo test --workspace
+cargo test --workspace --doc --locked
+cargo deny check                           # needs cargo-deny
+mdbook build book                          # needs mdBook 0.5
 ```
 
+What CI runs, job by job:
+
+| Job | What it checks |
+| --- | --- |
+| Leak guard | `ops/leak-guard.sh` over the tracked files and every new commit; on pull requests, a `Signed-off-by` line on every non-merge commit |
+| Rustfmt | `cargo fmt --all --check` |
+| Clippy | `cargo clippy --workspace --all-targets -- -D warnings` |
+| Test | `cargo nextest run --workspace` and the doctests, on Linux and macOS |
+| MSRV | `cargo check --workspace --all-targets` on Rust 1.94 |
+| cargo-deny | Advisories (reported, not blocking), bans, licenses and sources (blocking), per `deny.toml` |
+| Book | `mdbook build book` |
+| Regtest e2e | `cargo nextest run -p e2e --features regtest` against `devenv/regtest/compose.yml`; skipped until that file exists |
+
 The toolchain is pinned in `rust-toolchain.toml`. The minimum supported Rust
-version is declared in the workspace `Cargo.toml`.
+version is declared in the workspace `Cargo.toml`. `Cargo.lock` is committed
+and CI builds with `--locked`, so commit the lock file with any dependency
+change.
+
+## Dependencies
+
+- Add shared dependencies to `[workspace.dependencies]` in the root
+  `Cargo.toml` and use them from a crate as `name = { workspace = true }`.
+  `cargo deny` rejects a crate that declares its own version instead.
+- The tree carries exactly one `secp256k1`, taken through the `bitcoin`
+  re-export (`bitcoin::secp256k1`). Do not add `secp256k1` directly; `cargo
+  deny` fails on a second version.
+- Every dependency must be licensed under one of the licenses allowed in
+  `deny.toml` and come from crates.io.
+- Dependabot opens weekly update pull requests against `develop`.
+
+## Documentation
+
+The guide lives in `book/` (mdBook 0.5). Pull requests build it; every push
+to `main` publishes it to GitHub Pages. A new chapter needs an entry in
+`book/src/SUMMARY.md`: missing chapter files are a build error.
+
+## Releases
+
+Releases are owner-gated: only the owner cuts them, and no workflow publishes
+anything yet.
+
+- **Library crates** are versioned with [release-plz](https://release-plz.dev)
+  (`release-plz.toml`): it writes a `CHANGELOG.md` per crate from the
+  conventional commit messages and tags each released crate as
+  `<crate>-v<version>`. Publishing to crates.io stays off until crates.io
+  trusted publishing is configured.
+- **Binaries** (`caparra-gate`, `bnap`, `bnap-mcp`) are built by
+  [dist](https://opensource.axo.dev/cargo-dist/) from
+  `[workspace.metadata.dist]` in `Cargo.toml`, for macOS on Apple silicon and
+  Linux on x86-64 and arm64, with GitHub artifact attestations.
+  `.github/workflows/release.yml` reacts to `v*` tags but is a placeholder
+  until the owner enables it; its header lists the steps.
 
 ## Licensing of contributions
 

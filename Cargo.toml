@@ -76,3 +76,34 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# Binary releases with dist (https://opensource.axo.dev/cargo-dist/).
+# Written by hand for dist 0.33; `dist init` was not run. Releases are
+# owner-gated: .github/workflows/release.yml is a placeholder until the owner
+# replaces it with the output of `dist generate --mode ci` and drops "ci"
+# from allow-dirty.
+[workspace.metadata.dist]
+cargo-dist-version = "0.33.0"
+ci = "github"
+# Exactly these packages ship binaries: caparra-gate, bnap (from bnap-cli)
+# and bnap-mcp. Every other member is a library and is never distributed.
+packages = ["caparra-gate", "bnap-cli", "bnap-mcp"]
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+]
+# Installers are off for now. The planned set is ["shell", "homebrew"]; the
+# homebrew installer also needs a `tap` repository.
+installers = []
+install-path = "CARGO_HOME"
+github-attestations = true
+pr-run-mode = "plan"
+# The release workflow is a hand-written placeholder, so dist must not insist
+# that it matches the generated one.
+allow-dirty = ["ci"]
+
+# The profile dist builds release binaries with.
+[profile.dist]
+inherits = "release"
+lto = "thin"
