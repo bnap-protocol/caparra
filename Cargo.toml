@@ -69,3 +69,10 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # Testing
 proptest = "1.12.0"
 tempfile = "3.27.0"
+
+# Keep build output small: the dev box has little free disk.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
