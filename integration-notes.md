@@ -63,8 +63,11 @@ Things that will bite a downstream node:
 7. **cargo-deny `licenses`:** allowed are MIT, MIT-0, Apache-2.0 (also with
    LLVM-exception), BSD-2-Clause, BSD-3-Clause, 0BSD, ISC, Unicode-3.0,
    Unicode-DFS-2016, CC0-1.0, Zlib, MPL-2.0 and CDLA-Permissive-2.0. Anything
-   else (for example OpenSSL, GPL, AGPL) fails. Unpublished members
-   (`publish = false`) are not license checked.
+   else (for example OpenSSL, GPL, AGPL) fails, except `MITNFA` for
+   `hex_lit` alone (a required dependency of `bitcoin`). Unpublished members
+   (`publish = false`) are not license checked. Checked against N3's
+   `bnap-core` dependency tree (branch `node/n3a` at `03c6792`) in a scratch
+   merge: bans, licenses and sources pass, one `secp256k1`.
 
 ### Regtest job contract (for the node that adds `devenv/regtest/`)
 
@@ -159,10 +162,17 @@ HTML. Pages deploys only from `main`.
 ## Known gaps
 
 - Nothing was pushed, so no workflow has run on GitHub yet. YAML parses
-  (Ruby Psych) and the shell steps were exercised locally where possible.
-- Not run locally: `dist plan` (dist is not installed, per the node brief),
-  release-plz, and `cargo deny check advisories` (it clones the RustSec
-  database). See the verification section of the N12 report for what was run.
+  (Ruby Psych). Run locally through `cargo-q` on this branch, all green:
+  `cargo metadata --locked`, `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets --locked -- -D warnings`,
+  `cargo nextest run --workspace --locked --no-tests=warn` (nextest 0.9.148),
+  `cargo test --workspace --doc --locked`,
+  `cargo deny --all-features check bans licenses sources` (cargo-deny 0.20.2,
+  the version the action ships), `mdbook build book` (0.5.4) and the link
+  check. The leak guard is clean in tracked and pre-push mode.
+- Not run locally: the MSRV job (no 1.94 toolchain installed), `dist plan`
+  (dist is not installed, per the node brief), release-plz, and
+  `cargo deny check advisories` (it clones the RustSec database).
 - The DCO check does not compare the sign-off identity with the author.
 - No Windows job; dist targets no Windows either.
 - `book/` chapters are stubs by design.
