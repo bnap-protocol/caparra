@@ -1,3 +1,50 @@
 //! Core BNAP protocol types, encoding and verification logic, free of I/O.
 //!
-//! Stub: nothing is implemented yet.
+//! This crate is the BNAP socket of `spec/socket-draft-00.md`, byte for byte:
+//!
+//! | Module | Draft-00 |
+//! | --- | --- |
+//! | [`encoding`] | Section 2: BigSize, `tu64`, `lp(x)` |
+//! | [`tlv`] | Section 2: TLV streams, type ranges, even/odd rule, entry lists |
+//! | [`hash`] | Section 2: SHA-256, BIP-340 tagged hashes, HMAC-SHA256 |
+//! | [`schnorr`] | Section 2: BIP-340 keys and signatures |
+//! | [`offer`] | Section 4: the Offer, OfferID, `offer_sig`, MAC, checks of 4.4 |
+//! | [`credential`] | Section 5: the Credential, Context, Digest, native envelope |
+//! | [`ids`] | Section 6.1 and 6.2: UseId, RailId, ReplayKey, counter keys |
+//! | [`response`] | Section 8.1: the Response and its ack |
+//! | [`error`] | Section 8.2: error codes and the Error object |
+//! | [`manifest`] | Section 9: the manifest, JCS, root signature, pinning |
+//! | [`http`] | Section 10.1: HTTP action and route scopes |
+//! | [`class`] | Binding classes S, A, O and none |
+//! | [`limits`] | Size limits, clock skew and timeout defaults |
+//!
+//! The crate does no I/O and holds no RNG: callers pass the clock, nonces,
+//! BIP-340 auxiliary randomness and GREASE randomness in.
+
+pub mod class;
+pub mod credential;
+pub mod encoding;
+pub mod error;
+pub mod hash;
+pub mod http;
+pub mod ids;
+pub mod limits;
+pub mod manifest;
+pub mod offer;
+pub mod response;
+pub mod schnorr;
+pub mod tlv;
+
+pub use class::BindingClass;
+pub use credential::{Credential, CredentialParse, OfferRef, SchemePart};
+pub use error::{Error, ErrorCode, ErrorObject, MalformedKind, Object};
+pub use hash::{Context, CounterKey, Digest, OfferId, RailId, ReplayKey, Scope, UseId};
+pub use limits::Limits;
+pub use manifest::{Manifest, ManifestKey, SignedManifest};
+pub use offer::{AttestEntry, Effect, GateOfferCheck, NativeEntry, Offer, OfferFields, PayEntry};
+pub use response::{Response, ResponseFields, Status};
+pub use schnorr::{Key, Signature, SigningKey};
+
+/// The `bitcoin` crate's re-export of secp256k1, the only secp256k1 in the
+/// tree.
+pub use bitcoin::secp256k1;

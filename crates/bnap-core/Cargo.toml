@@ -8,5 +8,21 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[dependencies]
+# BIP-340 Schnorr comes from the secp256k1 that `bitcoin` re-exports, so the
+# tree keeps a single secp256k1.
+bitcoin = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_json_canonicalizer = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+base64 = { workspace = true }
+
 [lints]
 workspace = true
