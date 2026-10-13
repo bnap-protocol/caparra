@@ -168,7 +168,7 @@ fn admission_rules() {
     assert_eq!(e.code(), bnap_core::ErrorCode::Policy);
     // A required attestation of class None is fine: it only gates.
     let ok = [att("httpauth:DPoP", BindingClass::None)];
-    assert_eq!(admit(&input(&o, Some(100), &ok), empty).unwrap().price, 100);
+    assert_eq!(admit(&input(&o, Some(100), &ok), empty).unwrap().price(), 100);
 
     let o = offer(100, vec![]);
     // Value below the price: UNDERPAID.
@@ -183,8 +183,8 @@ fn admission_rules() {
     assert_eq!(e.code(), bnap_core::ErrorCode::Underpaid);
     // Exactly the price is admitted.
     let a = admit(&input(&o, Some(100), &[]), empty).unwrap();
-    assert_eq!(a.price, 100);
-    assert_eq!(a.pay.as_ref().unwrap().unit, "sat");
+    assert_eq!(a.price(), 100);
+    assert_eq!(a.pay().unwrap().unit(), "sat");
     // No pay and a price above 0: UNDERPAID.
     assert!(matches!(
         admit(&input(&o, None, &[]), empty),
@@ -208,8 +208,8 @@ fn attestation_only_waive_needs_no_pay() {
     o.pay.clear();
     let v = [att("httpauth:DPoP", BindingClass::A)];
     let a = admit(&input(&o, None, &v), empty).unwrap();
-    assert_eq!(a.price, 0);
-    assert!(a.pay.is_none());
+    assert_eq!(a.price(), 0);
+    assert!(a.pay().is_none());
     assert_eq!(a.settle(Status::Ok, 0).charged, 0);
     // The waive did not verify: UNDERPAID, never a free admission
     // (ERRATA N3b-1; the literal base of 0 would admit it).
@@ -240,13 +240,13 @@ fn no_pay_with_only_a_discount_is_never_free() {
     // A full discount or a quota does admit it.
     let o = offer(21, vec![AttestEntry::discount("full", 10_000)]);
     let v = [att("full", BindingClass::S)];
-    assert_eq!(admit(&input(&o, None, &v), empty).unwrap().price, 0);
+    assert_eq!(admit(&input(&o, None, &v), empty).unwrap().price(), 0);
     let id = use_id("q", b"acct");
     let o = offer(21, vec![AttestEntry::quota("q", 1, 60)]);
     let v = [att("q", BindingClass::S).with_quota_id(id)];
     let a = admit(&input(&o, None, &v), empty).unwrap();
-    assert_eq!(a.price, 0);
-    assert!(a.decision.quota.is_some());
+    assert_eq!(a.price(), 0);
+    assert!(a.decision().quota.is_some());
 }
 
 #[test]
@@ -269,13 +269,13 @@ fn quotas_pick_the_first_with_room_in_offer_order() {
     let (ka, kb) = (cands[0].counter.key, cands[1].counter.key);
     // Both have room: the first in offer order wins.
     let a = admit(&input(&o, Some(0), &v), empty).unwrap();
-    assert_eq!(a.price, 0);
-    assert_eq!(a.decision.quota.as_ref().unwrap().scheme, "q:a");
-    assert_eq!(a.decision.quota_counter().unwrap().limit, 2);
+    assert_eq!(a.price(), 0);
+    assert_eq!(a.decision().quota.as_ref().unwrap().scheme, "q:a");
+    assert_eq!(a.decision().quota_counter().unwrap().limit, 2);
     // The first is full: the second.
     let full_a = |k: &CounterKey| if *k == ka { 2 } else { 0 };
     let a = admit(&input(&o, Some(0), &v), full_a).unwrap();
-    assert_eq!(a.decision.quota.as_ref().unwrap().scheme, "q:b");
+    assert_eq!(a.decision().quota.as_ref().unwrap().scheme, "q:b");
     // Both full: the full price.
     let full = |k: &CounterKey| {
         if *k == ka {
@@ -311,8 +311,8 @@ fn quotas_are_not_consumed_when_the_price_is_already_zero() {
         att("q", BindingClass::S).with_quota_id(id),
     ];
     let a = admit(&input(&o, Some(0), &v), empty).unwrap();
-    assert_eq!(a.price, 0);
-    assert!(a.decision.quota.is_none());
+    assert_eq!(a.price(), 0);
+    assert!(a.decision().quota.is_none());
 }
 
 #[test]
@@ -349,7 +349,7 @@ fn metered_charge_matches_the_10_3_example() {
     route.pay[0].rate = Some(500);
     let verified = [att("httpsig:web-bot-auth", BindingClass::A)];
     let adm = admit(&input(&route, Some(1_680), &verified), empty).unwrap();
-    assert_eq!(adm.price, 1_680, "the client sends price(ceiling)");
+    assert_eq!(adm.price(), 1_680, "the client sends price(ceiling)");
     // 850 tokens: ⌈850 × 500 / 1000⌉ = 425 before the discount, 340 after.
     let charge = adm.settle(Status::Ok, 850);
     assert_eq!(charge.charged, 340);
@@ -386,7 +386,7 @@ fn settlement_reuses_the_quota_decision() {
     o.pay[0].rate = Some(1000);
     let v = [att("q", BindingClass::S).with_quota_id(id)];
     let a = admit(&input(&o, Some(0), &v), empty).unwrap();
-    assert!(a.decision.quota.is_some());
+    assert!(a.decision().quota.is_some());
     assert_eq!(a.settle(Status::Ok, 500).charged, 0);
 }
 
@@ -449,7 +449,7 @@ proptest! {
         let v = [att("d", BindingClass::S)];
         let a = admit(&input(&o, Some(u64::MAX), &v), empty).unwrap();
         let c = a.settle(Status::Ok, units);
-        prop_assert!(c.charged <= a.price);
+        prop_assert!(c.charged <= a.price());
         prop_assert_eq!(c.cap.get(), u64::MAX - c.charged);
     }
 }

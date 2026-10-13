@@ -735,8 +735,8 @@ fn a_quota_with_room_at_pricing_but_full_at_commit_is_rate_limited() {
     // Two requests price at the same time; both see room.
     let a1 = block_on(admit(&store, &input)).unwrap();
     let a2 = block_on(admit(&store, &input)).unwrap();
-    assert_eq!((a1.price, a2.price), (0, 0));
-    let quota = a1.decision.quota.clone().unwrap();
+    assert_eq!((a1.price(), a2.price()), (0, 0));
+    let quota = a1.decision().quota.clone().unwrap();
     let dpop = [b"jwk thumbprint".to_vec()];
     let plan = |c: u8, note: &[u8]| {
         let note = [note.to_vec()];

@@ -272,35 +272,107 @@ pub struct AdmitInput<'a> {
 }
 
 /// The chosen pay entry, as admitted.
+///
+/// Its fields are private and only [`admit`] makes one, so the value a
+/// [`ChangeCap`] is computed from is always the one admission checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdmittedPay {
+    index: usize,
+    scheme: String,
+    unit: String,
+    amount: u64,
+    rate: Option<u64>,
+    value: u64,
+}
+
+impl AdmittedPay {
     /// Index of the entry in the offer's `pay`.
-    pub index: usize,
+    #[must_use]
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
     /// Scheme ID.
-    pub scheme: String,
+    #[must_use]
+    pub fn scheme(&self) -> &str {
+        &self.scheme
+    }
+
     /// The entry's unit; the Response's `unit`.
-    pub unit: String,
+    #[must_use]
+    pub fn unit(&self) -> &str {
+        &self.unit
+    }
+
     /// The entry's amount; the ceiling in a metered offer.
-    pub amount: u64,
+    #[must_use]
+    pub fn amount(&self) -> u64 {
+        self.amount
+    }
+
     /// Price per 1,000 meter units, in a metered offer.
-    pub rate: Option<u64>,
-    /// The value the scheme verified.
-    pub value: u64,
+    #[must_use]
+    pub fn rate(&self) -> Option<u64> {
+        self.rate
+    }
+
+    /// The value admission counted, in the entry's unit.
+    #[must_use]
+    pub fn value(&self) -> u64 {
+        self.value
+    }
 }
 
 /// The result of admission: the decision, the price and the pay entry.
+///
+/// Its fields are private and only [`admit`] makes one, so
+/// [`Admission::settle`] is the only way to a [`ChangeCap`], and the cap is
+/// always computed from a value and a decision that admission checked. No
+/// crate can write one out:
+///
+/// ```compile_fail,E0451
+/// use bnap_core::pricing::{Admission, PriceDecision};
+/// let forged = Admission {
+///     decision: PriceDecision::default(),
+///     price: 0,
+///     pay: None,
+///     metered: false,
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Admission {
+    decision: PriceDecision,
+    price: u64,
+    pay: Option<AdmittedPay>,
+    metered: bool,
+}
+
+impl Admission {
     /// Attestation results and quota decision, reused at settlement.
-    pub decision: PriceDecision,
+    #[must_use]
+    pub fn decision(&self) -> &PriceDecision {
+        &self.decision
+    }
+
     /// `price(entry.amount)`, or `price(NO_PAY_BASE)` without pay (then
     /// always 0): the effective price; the most a metered action can be
     /// charged.
-    pub price: u64,
+    #[must_use]
+    pub fn price(&self) -> u64 {
+        self.price
+    }
+
     /// The chosen pay entry, when the credential has `pay`.
-    pub pay: Option<AdmittedPay>,
+    #[must_use]
+    pub fn pay(&self) -> Option<&AdmittedPay> {
+        self.pay.as_ref()
+    }
+
     /// The offer is metered.
-    pub metered: bool,
+    #[must_use]
+    pub fn metered(&self) -> bool {
+        self.metered
+    }
 }
 
 /// Why admission failed.
@@ -382,8 +454,9 @@ pub fn admit(
 
 /// The most change a scheme may sign at settlement: `value - charged`.
 ///
-/// Only [`Admission::settle`] makes one, so the cap a signer enforces is
-/// always the one this module computed.
+/// Only [`Admission::settle`] makes one, and an [`Admission`] comes only
+/// from [`admit`], so the cap a signer enforces is always the one this
+/// module computed from an admitted value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChangeCap(u64);
 
