@@ -132,8 +132,8 @@ prop_compose! {
         f.metered = metered;
         f.headers = headers;
         f.info = info;
-        f.pay = dedup_by_scheme(pay, |e| &e.scheme);
-        f.attest = dedup_by_scheme(attest, |e| &e.scheme);
+        f.pay = dedup_by_scheme(pay, |e| e.scheme.as_str());
+        f.attest = dedup_by_scheme(attest, |e| e.scheme.as_str());
         if f.pay.is_empty() && !f.attest.iter().any(|a| a.effect == Effect::Waive) {
             f.attest.retain(|a| a.scheme != "waive:x");
             f.attest.push(AttestEntry::new("waive:x", Effect::Waive));
@@ -168,7 +168,7 @@ prop_compose! {
         unknown in unknown(odd_top_type()),
     ) -> Credential {
         let mut c = Credential::new(if inline { OfferRef::Inline(offer_bytes) } else { OfferRef::Id(OfferId(offer_id)) });
-        c.attest = dedup_by_scheme(attest, |p| &p.scheme);
+        c.attest = dedup_by_scheme(attest, |p| p.scheme.as_str());
         c.sort_attest();
         c.pay = pay.or_else(|| c.attest.is_empty().then(|| SchemePart::new("pay:x", b"b".to_vec())));
         c.binding = binding;
