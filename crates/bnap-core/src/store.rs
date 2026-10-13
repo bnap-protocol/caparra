@@ -27,7 +27,7 @@ use crate::error::ErrorCode;
 use crate::hash::{Context, CounterKey, RailId, ReplayKey};
 use crate::ids::{rate_key, use_id};
 use crate::limits::CLOCK_SKEW;
-use crate::pricing::{QuotaUse, epoch_end};
+use crate::pricing::{Admission, epoch_end};
 use crate::response::Status;
 
 /// The state of an outcome record.
@@ -165,8 +165,10 @@ pub struct PlanInput<'a> {
     pub schemes: &'a [SchemeUses<'a>],
     /// `RailId`s the rails confirmed for the request's payments.
     pub rail_ids: &'a [RailId],
-    /// The quota chosen at admission ([`crate::pricing::PriceDecision::quota`]).
-    pub quota: Option<&'a QuotaUse>,
+    /// The request's admission. Its quota counter, if admission chose one,
+    /// always joins the commit (section 7), so no gate can price a request
+    /// at 0 by a quota and commit it without consuming the quota.
+    pub admission: &'a Admission,
     /// The offer's `expires`.
     pub offer_expires: u64,
     /// The gate's clock.
@@ -220,7 +222,8 @@ impl CommitPlan {
     /// - Every local ID becomes `UseId = H_"bnap/use"(lp(scheme) ‖ local)`.
     /// - Single-model `UseId`s and every `RailId` are single uses.
     /// - Rate-model `UseId`s become `rate(k, epoch)` counters.
-    /// - The chosen quota's counter joins the counters.
+    /// - The quota counter the admission chose joins the counters, always:
+    ///   the plan takes it from the [`Admission`], not from the caller.
     /// - The `ReplayKey` covers every `UseId` and `RailId`, whatever its
     ///   model, sorted and not deduplicated (ERRATA N3a-9).
     /// - Single uses and counters are sets: an ID the request names twice is
@@ -256,8 +259,8 @@ impl CommitPlan {
             ids.push(r.0);
             singles.insert(r.0);
         }
-        if let Some(q) = input.quota {
-            counters.insert(q.counter);
+        if let Some(q) = input.admission.decision().quota_counter() {
+            counters.insert(*q);
         }
         if singles.is_empty()
             && input.offer_expires.saturating_add(CLOCK_SKEW)

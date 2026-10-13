@@ -442,7 +442,7 @@ impl Gate {
             attest_bodies: &[],
             schemes: &[verified.uses(scheme.id(), UseModel::Single)],
             rail_ids: &rail_ids,
-            quota: admission.decision().quota.as_ref(),
+            admission: &admission,
             offer_expires: self.offer.fields().expires,
             now,
             replay_window: self.limits.replay_window,

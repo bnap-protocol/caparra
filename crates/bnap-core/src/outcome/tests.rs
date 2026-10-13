@@ -23,6 +23,25 @@ fn ctx(n: u8) -> Context {
     Context([n; 32])
 }
 
+/// An admission at price 0 without a quota, for plans that test the store
+/// alone.
+fn no_quota() -> Admission {
+    let mut o = OfferFields::new(Scope([1; 32]), T0 + 300, Key([9; 32]), [0; 16]);
+    o.pay.push(PayEntry::new("bnap:notes", 0, "sat"));
+    let input = AdmitInput {
+        offer: &o,
+        pay: Some(PayValue {
+            scheme: "bnap:notes",
+            value: 0,
+        }),
+        attest: &[],
+        now: T0,
+    };
+    let a = pricing::admit(&input, |_| 0).unwrap();
+    assert!(a.decision().quota.is_none());
+    a
+}
+
 /// A plan for one credential: `ctx` tells credentials apart, `schemes`
 /// carries their verified uses.
 fn plan_at(
@@ -38,7 +57,7 @@ fn plan_at(
         attest_bodies: &[],
         schemes,
         rail_ids: rails,
-        quota: None,
+        admission: &no_quota(),
         offer_expires: now + 300,
         now,
         replay_window: limits().replay_window,
@@ -456,7 +475,7 @@ fn pending_timeout_moves_to_failed_and_the_replay_collects_the_refund() {
             },
         ],
         rail_ids: &[],
-        quota: None,
+        admission: &no_quota(),
         offer_expires: T0 + 300,
         now: T0,
         replay_window: l.replay_window,
@@ -586,13 +605,14 @@ fn credentials_without_single_ids_must_not_outlive_their_record() {
         local_ids: &ids,
     }];
     let c = ctx(1);
+    let adm = no_quota();
     let input = |expires| PlanInput {
         context: &c,
         pay_body: b"",
         attest_bodies: &[],
         schemes: &uses,
         rail_ids: &[],
-        quota: None,
+        admission: &adm,
         offer_expires: expires,
         now: T0,
         replay_window: l.replay_window,
@@ -736,7 +756,6 @@ fn a_quota_with_room_at_pricing_but_full_at_commit_is_rate_limited() {
     let a1 = block_on(admit(&store, &input)).unwrap();
     let a2 = block_on(admit(&store, &input)).unwrap();
     assert_eq!((a1.price(), a2.price()), (0, 0));
-    let quota = a1.decision().quota.clone().unwrap();
     let dpop = [b"jwk thumbprint".to_vec()];
     let plan = |c: u8, note: &[u8]| {
         let note = [note.to_vec()];
@@ -757,7 +776,7 @@ fn a_quota_with_room_at_pricing_but_full_at_commit_is_rate_limited() {
                 },
             ],
             rail_ids: &[],
-            quota: Some(&quota),
+            admission: &a1,
             offer_expires: T0 + 300,
             now: T0,
             replay_window: limits().replay_window,
@@ -790,4 +809,51 @@ fn use_ids_are_prefixed_by_the_scheme() {
     let a: UseId = ids::use_id("bnap:notes", b"x");
     let b: UseId = ids::use_id("httpauth:L402", b"x");
     assert_ne!(a, b);
+}
+
+#[test]
+fn a_quota_priced_admission_always_commits_its_counter() {
+    // The review's probe: an attestation-only credential under a quota of
+    // 1 per hour, priced at 0 by the quota. The plan takes the counter from
+    // the admission, so no gate can commit it without consuming the quota.
+    let store = MemoryStore::new();
+    let offer = quota_offer();
+    let client = ids::use_id("httpauth:DPoP", b"jwk thumbprint");
+    let att = [VerifiedAttest::new("httpauth:DPoP", BindingClass::A).with_quota_id(client)];
+    let dpop = [b"jwk thumbprint".to_vec()];
+    let mut answers = Vec::new();
+    for c in 1..=5u8 {
+        let input = AdmitInput {
+            offer: &offer,
+            pay: None,
+            attest: &att,
+            now: T0,
+        };
+        // Price before the commits: every request sees room.
+        let a = pricing::admit(&input, |_| 0).unwrap();
+        assert_eq!(a.price(), 0);
+        let counter = *a.decision().quota_counter().unwrap();
+        let plan = CommitPlan::build(&PlanInput {
+            context: &ctx(c),
+            pay_body: b"",
+            attest_bodies: &[&b"dpop proof"[..]],
+            schemes: &[SchemeUses {
+                scheme: "httpauth:DPoP",
+                model: UseModel::Reusable,
+                local_ids: &dpop,
+            }],
+            rail_ids: &[],
+            admission: &a,
+            offer_expires: offer.expires,
+            now: T0,
+            replay_window: limits().replay_window,
+        })
+        .unwrap();
+        assert_eq!(plan.counters(), &[counter]);
+        answers.push(block_on(commit(&store, &plan, &limits())));
+    }
+    assert_eq!(answers[0], Ok(Admitted::New));
+    for a in &answers[1..] {
+        assert!(matches!(a, Err(CommitError::RateLimited { .. })), "{a:?}");
+    }
 }
