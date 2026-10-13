@@ -7,7 +7,13 @@
 //! The signature is checked over the document as received, as a JSON value,
 //! so members this crate does not know are still covered. The typed
 //! [`Manifest`] is read from that same value.
+//!
+//! The document is read as I-JSON (RFC 7493), which JCS assumes: an object
+//! that names a member twice, at any depth, is refused
+//! ([`ManifestError::DuplicateMember`]). Otherwise one parser could verify
+//! the signature over one of the two values while another reads the other.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -222,6 +228,10 @@ pub enum ManifestError {
     /// no larger than 2⁵³.
     #[error("disallowed JSON value: {0}")]
     Value(&'static str),
+    /// An object names a member twice, at any depth (RFC 7493 2.3). The
+    /// document is malformed: JCS and the signature over it assume I-JSON.
+    #[error("member named twice: {0}")]
+    DuplicateMember(String),
     /// A member is missing or has the wrong type.
     #[error("bad member: {0}")]
     Member(String),
@@ -294,8 +304,7 @@ impl SignedManifest {
     /// members, `bnap == 1`, `max_age` at most 30 days and the origin form.
     /// The signature is not checked; see [`SignedManifest::verify`].
     pub fn parse(bytes: &[u8]) -> Result<Self, ManifestError> {
-        let mut v: Value =
-            serde_json::from_slice(bytes).map_err(|e| ManifestError::Json(e.to_string()))?;
+        let mut v = parse_strict(bytes)?;
         check_values(&v)?;
         let Value::Object(o) = &mut v else {
             return Err(ManifestError::Json("top level is not an object".into()));
@@ -354,6 +363,94 @@ impl SignedManifest {
             .root
             .verify(&msg, &self.sig)
             .map_err(|_| ManifestError::Signature)
+    }
+}
+
+/// Parses JSON bytes into a [`Value`], refusing an object that names a
+/// member twice at any depth ([`ManifestError::DuplicateMember`]) and any
+/// bytes after the value. Names are compared after unescaping, so `"root"`
+/// and `"r\u006fot"` are the same name.
+fn parse_strict(bytes: &[u8]) -> Result<Value, ManifestError> {
+    let dup = RefCell::new(None);
+    let mut de = serde_json::Deserializer::from_slice(bytes);
+    let parsed = serde::de::DeserializeSeed::deserialize(Strict(&dup), &mut de).and_then(|v| {
+        de.end()?;
+        Ok(v)
+    });
+    match (parsed, dup.into_inner()) {
+        (_, Some(name)) => Err(ManifestError::DuplicateMember(name)),
+        (Ok(v), None) => Ok(v),
+        (Err(e), None) => Err(ManifestError::Json(e.to_string())),
+    }
+}
+
+/// A [`Value`] seed that records the first member name an object repeats.
+#[derive(Clone, Copy)]
+struct Strict<'a>(&'a RefCell<Option<String>>);
+
+impl<'de> serde::de::DeserializeSeed<'de> for Strict<'_> {
+    type Value = Value;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Value, D::Error> {
+        d.deserialize_any(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for Strict<'_> {
+    type Value = Value;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, v: bool) -> Result<Value, E> {
+        Ok(Value::Bool(v))
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Value, E> {
+        Ok(Value::from(v))
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Value, E> {
+        Ok(Value::from(v))
+    }
+
+    fn visit_f64<E>(self, v: f64) -> Result<Value, E> {
+        Ok(serde_json::Number::from_f64(v).map_or(Value::Null, Value::Number))
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Value, E> {
+        Ok(Value::String(v.to_owned()))
+    }
+
+    fn visit_string<E>(self, v: String) -> Result<Value, E> {
+        Ok(Value::String(v))
+    }
+
+    fn visit_unit<E>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+        let mut out = Vec::new();
+        while let Some(v) = seq.next_element_seed(self)? {
+            out.push(v);
+        }
+        Ok(Value::Array(out))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+        let mut out = serde_json::Map::new();
+        while let Some(name) = map.next_key::<String>()? {
+            if out.contains_key(&name) {
+                let msg = format!("member {name} named twice");
+                *self.0.borrow_mut() = Some(name);
+                return Err(serde::de::Error::custom(msg));
+            }
+            let v = map.next_value_seed(self)?;
+            out.insert(name, v);
+        }
+        Ok(Value::Object(out))
     }
 }
 

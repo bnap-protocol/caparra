@@ -823,6 +823,77 @@ fn manifest_document_rules() {
     assert!(manifest::SignedManifest::parse(&good.jcs().unwrap()).is_err());
 }
 
+/// `doc` with `extra` inserted right after the first occurrence of
+/// `anchor`, as raw bytes: the way an attacker adds a second member with a
+/// name the document already has.
+fn splice(doc: &[u8], anchor: &str, extra: &str) -> Vec<u8> {
+    let s = std::str::from_utf8(doc).unwrap();
+    let at = s.find(anchor).unwrap() + anchor.len();
+    format!("{}{extra}{}", &s[..at], &s[at..]).into_bytes()
+}
+
+#[test]
+fn manifest_members_named_twice_are_refused() {
+    // A parser differential on the signed manifest: with last-wins, two
+    // `root` members verify under the second while a first-wins client pins
+    // the first. JCS (RFC 8785) assumes I-JSON (RFC 7493), which forbids
+    // duplicate names, so a document with one is refused at every depth.
+    let a = key(b"root a");
+    let b = key(b"root b");
+    let evil = key(b"root evil");
+    let mut m = manifest(&a, &b, 1, NOW);
+    m.routes.push(manifest::Route {
+        id: "thing".into(),
+        match_: "POST /v1/thing".into(),
+        scope: manifest::RouteScopeMode::Exact,
+        metered: false,
+        meter: None,
+        price: [("sat".to_owned(), 21)].into(),
+        pay: vec!["bnap:notes".into()],
+        attest: vec![],
+        require: None,
+        headers: vec![],
+    });
+    let doc = m.sign(&a, &AUX0).unwrap();
+    manifest::SignedManifest::parse(&doc)
+        .unwrap()
+        .verify()
+        .unwrap();
+    let root = format!("\"root\":\"{}\",", hex::encode(evil.public_key().0));
+    let cases = [
+        // Top level: a second root.
+        splice(&doc, "{", &root),
+        // Nested in routes[0]: a second pay list.
+        splice(&doc, "\"routes\":[{", "\"pay\":[\"free:none\"],"),
+        // Nested in routes[0].price: one unit priced twice.
+        splice(&doc, "\"price\":{", "\"sat\":0,"),
+        // Nested in keys[0].
+        splice(&doc, "\"keys\":[{", "\"use\":\"receipt\","),
+        // The same name, spelled with an escape.
+        splice(&doc, "{", "\"r\\u006fot\":\"00\","),
+    ];
+    for bad in &cases {
+        assert!(
+            matches!(
+                manifest::SignedManifest::parse(bad),
+                Err(ManifestError::DuplicateMember(_))
+            ),
+            "{}",
+            String::from_utf8_lossy(bad)
+        );
+        assert!(manifest::accept(None, ORIGIN, bad, NOW).is_err());
+    }
+    // Equal names in different objects are fine: two routes.
+    let mut two = m.clone();
+    let mut other = two.routes[0].clone();
+    other.id = "other".into();
+    two.routes.push(other);
+    let doc = two.sign(&a, &AUX0).unwrap();
+    let parsed = manifest::SignedManifest::parse(&doc).unwrap();
+    parsed.verify().unwrap();
+    assert_eq!(parsed.manifest().routes.len(), 2);
+}
+
 #[test]
 fn receipt_client_rules() {
     let k = key(b"bnap test receipt key");
