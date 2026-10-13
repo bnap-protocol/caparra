@@ -14,7 +14,7 @@ pub enum BindingClass {
     S,
     /// A client-made artifact embeds the Context.
     A,
-    /// A server-made artifact embeds the OfferID.
+    /// A server-made artifact embeds the `OfferID`.
     O,
     /// A bearer credential.
     None,

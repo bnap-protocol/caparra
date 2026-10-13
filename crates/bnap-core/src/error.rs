@@ -134,8 +134,8 @@ impl ErrorCode {
         }
     }
 
-    /// True when the answer carries a fresh offer (BAD_OFFER, STALE,
-    /// WRONG_SCOPE and REQUIRED).
+    /// True when the answer carries a fresh offer (`BAD_OFFER`, `STALE`,
+    /// `WRONG_SCOPE` and `REQUIRED`).
     #[must_use]
     pub fn sends_fresh_offer(self) -> bool {
         matches!(
@@ -144,7 +144,7 @@ impl ErrorCode {
         )
     }
 
-    /// True when the answer carries `retry_after` (PENDING and RATE_LIMITED).
+    /// True when the answer carries `retry_after` (`PENDING` and `RATE_LIMITED`).
     #[must_use]
     pub fn has_retry_after(self) -> bool {
         matches!(self, Self::Pending | Self::RateLimited)
@@ -237,10 +237,10 @@ impl fmt::Display for Object {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum MalformedKind {
-    /// The bytes ended inside a BigSize, a length or a value.
+    /// The bytes ended inside a `BigSize`, a length or a value.
     #[error("truncated")]
     Truncated,
-    /// A BigSize was not minimally encoded.
+    /// A `BigSize` was not minimally encoded.
     #[error("non-minimal BigSize")]
     NonMinimalBigSize,
     /// Record types were not strictly increasing.
@@ -297,7 +297,7 @@ pub enum MalformedKind {
     Rule(&'static str),
 }
 
-/// Why an offer failed the authenticity check (BAD_OFFER).
+/// Why an offer failed the authenticity check (`BAD_OFFER`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum BadOffer {
@@ -313,7 +313,7 @@ pub enum BadOffer {
     /// `offer_sig` does not verify.
     #[error("offer_sig does not verify")]
     Signature,
-    /// A credential named an OfferID the gate does not cache.
+    /// A credential named an `OfferID` the gate does not cache.
     #[error("unknown OfferID")]
     UnknownOfferId,
     /// Client side: `offer_key` is not in the pinned manifest for use
@@ -345,7 +345,7 @@ pub enum Stale {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// TOO_LARGE: the object is over its size limit.
+    /// `TOO_LARGE`: the object is over its size limit.
     #[error("{object} is {len} bytes, over the {max}-byte limit")]
     TooLarge {
         /// The object.
@@ -371,16 +371,16 @@ pub enum Error {
         /// The version it carries.
         version: u64,
     },
-    /// BAD_OFFER.
+    /// `BAD_OFFER`.
     #[error("bad offer: {0}")]
     BadOffer(BadOffer),
     /// STALE.
     #[error("stale: {0}")]
     Stale(Stale),
-    /// WRONG_SCOPE.
+    /// `WRONG_SCOPE`.
     #[error("offer is for another action or route")]
     WrongScope,
-    /// NOT_OFFERED: the credential uses a scheme the offer does not list.
+    /// `NOT_OFFERED`: the credential uses a scheme the offer does not list.
     #[error("scheme {0} is not offered")]
     NotOffered(String),
     /// BINDING: the TLS binding does not match or cannot be checked.

@@ -8,7 +8,7 @@ use sha2::{Digest as _, Sha256};
 
 /// The socket's hash tags, one per use.
 pub mod tags {
-    /// OfferID (4.2).
+    /// `OfferID` (4.2).
     pub const OFFER: &str = "bnap/offer";
     /// The message `offer_sig` signs (4.2).
     pub const OFFER_SIG: &str = "bnap/offer-sig";
@@ -20,11 +20,11 @@ pub mod tags {
     pub const CTX_NATIVE: &str = "bnap/ctx-native";
     /// Native Digest (5.4).
     pub const CRED_NATIVE: &str = "bnap/cred-native";
-    /// UseId (6.1).
+    /// `UseId` (6.1).
     pub const USE: &str = "bnap/use";
-    /// RailId (6.1).
+    /// `RailId` (6.1).
     pub const RAIL: &str = "bnap/rail";
-    /// ReplayKey (6.1).
+    /// `ReplayKey` (6.1).
     pub const REPLAY: &str = "bnap/replay";
     /// Rate counter key (6.2).
     pub const RATE: &str = "bnap/rate";
@@ -179,7 +179,7 @@ macro_rules! hash32 {
 }
 
 hash32!(
-    /// An OfferID: `H_"bnap/offer"(S₀)` (draft-00 4.2).
+    /// An `OfferID`: `H_"bnap/offer"(S₀)` (draft-00 4.2).
     OfferId
 );
 hash32!(
@@ -203,7 +203,7 @@ hash32!(
     RailId
 );
 hash32!(
-    /// A ReplayKey (6.1).
+    /// A `ReplayKey` (6.1).
     ReplayKey
 );
 hash32!(

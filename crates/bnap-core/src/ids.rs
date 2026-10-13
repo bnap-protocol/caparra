@@ -1,4 +1,4 @@
-//! Socket identifiers (draft-00 section 6.1): UseId, RailId, ReplayKey, and
+//! Socket identifiers (draft-00 section 6.1): `UseId`, `RailId`, `ReplayKey`, and
 //! the rate and quota counter keys of 6.2.
 //!
 //! A scheme's `verify` returns local IDs; the gate turns each into a socket
@@ -33,7 +33,7 @@ pub fn rail_id(kind: &str, canonical: &[u8]) -> RailId {
 
 /// `ReplayKey = H_"bnap/replay"(Context ‖ H(pay body, or empty) ‖ H(attest
 /// body₁) ‖ … ‖ H(attest bodyₙ) ‖ BigSize(m) ‖ id₁ ‖ … ‖ idₘ)`, with the ids
-/// (every UseId and RailId of every scheme in the request, whatever its use
+/// (every `UseId` and `RailId` of every scheme in the request, whatever its use
 /// model) sorted bytewise.
 ///
 /// The ids are sorted but not deduplicated, as in the reference encoder.

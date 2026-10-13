@@ -525,10 +525,12 @@ mod tests {
     #[test]
     fn value_rules() {
         assert!(
-            check_values(&serde_json::json!({"a": [1, true, "x", {"b": 9007199254740992u64}]}))
-                .is_ok()
+            check_values(
+                &serde_json::json!({"a": [1, true, "x", {"b": 9_007_199_254_740_992_u64}]})
+            )
+            .is_ok()
         );
-        assert!(check_values(&serde_json::json!({"a": 9007199254740993u64})).is_err());
+        assert!(check_values(&serde_json::json!({"a": 9_007_199_254_740_993_u64})).is_err());
         assert!(check_values(&serde_json::json!({"a": 1.5})).is_err());
         assert!(check_values(&serde_json::json!({"a": null})).is_err());
     }

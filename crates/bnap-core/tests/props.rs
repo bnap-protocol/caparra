@@ -1,4 +1,4 @@
-//! Property tests: encoding roundtrips for BigSize, tu64, TLV streams,
+//! Property tests: encoding roundtrips for `BigSize`, tu64, TLV streams,
 //! Offers, Credentials and Responses, and "the parser never panics" for every
 //! parser in the crate.
 

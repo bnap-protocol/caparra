@@ -71,7 +71,7 @@ pub struct ResponseFields {
     pub charged: u64,
     /// The chosen entry's unit; required when the credential has `pay`.
     pub unit: Option<String>,
-    /// The OfferID of the offer the credential used.
+    /// The `OfferID` of the offer the credential used.
     pub offer_id: OfferId,
     /// The Digest of the request this Response answers.
     pub digest: Digest,
@@ -283,7 +283,7 @@ impl Response {
             .map_err(|_| ReceiptError::Ack)
     }
 
-    /// True when the Response answers the request with this OfferID and
+    /// True when the Response answers the request with this `OfferID` and
     /// Digest.
     #[must_use]
     pub fn answers(&self, offer_id: &OfferId, digest: &Digest) -> bool {

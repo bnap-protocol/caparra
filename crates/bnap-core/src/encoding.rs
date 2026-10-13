@@ -1,15 +1,15 @@
-//! Primitive encodings of draft-00 section 2: BigSize, `tu64` and `lp(x)`.
+//! Primitive encodings of draft-00 section 2: `BigSize`, `tu64` and `lp(x)`.
 //!
-//! Every reader here enforces the canonical form. A non-minimal BigSize or
+//! Every reader here enforces the canonical form. A non-minimal `BigSize` or
 //! `tu64` is MALFORMED, so one value has exactly one encoding and a signature
 //! over the bytes is a signature over the value.
 
 use crate::error::MalformedKind;
 
-/// Largest value a one-byte BigSize holds.
+/// Largest value a one-byte `BigSize` holds.
 const BIGSIZE_U8_MAX: u64 = 0xfc;
 
-/// Appends the BigSize encoding of `n` (BOLT 1) to `out`.
+/// Appends the `BigSize` encoding of `n` (BOLT 1) to `out`.
 ///
 /// The encoding is always minimal: one byte below `0xfd`, then `fd` and two
 /// bytes, `fe` and four bytes, or `ff` and eight bytes, all big-endian.
@@ -29,7 +29,7 @@ pub fn write_bigsize(out: &mut Vec<u8>, n: u64) {
     }
 }
 
-/// Returns the BigSize encoding of `n`.
+/// Returns the `BigSize` encoding of `n`.
 #[must_use]
 pub fn bigsize(n: u64) -> Vec<u8> {
     let mut out = Vec::with_capacity(9);
@@ -37,21 +37,21 @@ pub fn bigsize(n: u64) -> Vec<u8> {
     out
 }
 
-/// Number of bytes the BigSize encoding of `n` takes.
+/// Number of bytes the `BigSize` encoding of `n` takes.
 #[must_use]
 pub fn bigsize_len(n: u64) -> usize {
     if n <= BIGSIZE_U8_MAX {
         1
-    } else if n <= u64::from(u16::MAX) {
+    } else if u16::try_from(n).is_ok() {
         3
-    } else if n <= u64::from(u32::MAX) {
+    } else if u32::try_from(n).is_ok() {
         5
     } else {
         9
     }
 }
 
-/// Reads one BigSize from the front of `buf`.
+/// Reads one `BigSize` from the front of `buf`.
 ///
 /// Returns the value and the number of bytes consumed. A truncated or
 /// non-minimal encoding is an error.
@@ -69,7 +69,7 @@ pub fn read_bigsize(buf: &[u8]) -> Result<(u64, usize), MalformedKind> {
         0xfe => {
             let b: [u8; 4] = take_array(rest)?;
             let v = u64::from(u32::from_be_bytes(b));
-            if v <= u64::from(u16::MAX) {
+            if u16::try_from(v).is_ok() {
                 return Err(MalformedKind::NonMinimalBigSize);
             }
             Ok((v, 5))
@@ -77,7 +77,7 @@ pub fn read_bigsize(buf: &[u8]) -> Result<(u64, usize), MalformedKind> {
         0xff => {
             let b: [u8; 8] = take_array(rest)?;
             let v = u64::from_be_bytes(b);
-            if v <= u64::from(u32::MAX) {
+            if u32::try_from(v).is_ok() {
                 return Err(MalformedKind::NonMinimalBigSize);
             }
             Ok((v, 9))

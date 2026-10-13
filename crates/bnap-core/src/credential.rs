@@ -43,7 +43,7 @@ pub mod part_types {
 pub enum OfferRef {
     /// The Offer, byte for byte as received.
     Inline(Vec<u8>),
-    /// The OfferID of an offer the gate issued and still caches.
+    /// The `OfferID` of an offer the gate issued and still caches.
     Id(OfferId),
 }
 
@@ -140,7 +140,7 @@ impl Default for CredentialParse<'_> {
 /// [`Credential::digest`]); a scheme plug receives them read-only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Credential {
-    /// The offer, inline or by OfferID.
+    /// The offer, inline or by `OfferID`.
     pub offer: OfferRef,
     /// The value part, at most one.
     pub pay: Option<SchemePart>,
@@ -348,7 +348,7 @@ impl Credential {
         digest(ctx, self.binding.as_ref(), self.pay_body(), &bodies)
     }
 
-    /// The ReplayKey of 6.1 under `ctx`, over every UseId and RailId of
+    /// The `ReplayKey` of 6.1 under `ctx`, over every `UseId` and `RailId` of
     /// every scheme in the request.
     #[must_use]
     pub fn replay_key(&self, ctx: &Context, ids: &[[u8; 32]]) -> ReplayKey {
@@ -481,9 +481,9 @@ impl GateOfferCheck<'_> {
     /// Resolves the credential's offer and runs the offer checks of 4.4 on
     /// it, steps 1 to 6 in order.
     ///
-    /// An inline offer is parsed with `max_offer`. An offer named by OfferID
+    /// An inline offer is parsed with `max_offer`. An offer named by `OfferID`
     /// comes from `cache`, the gate's cache of offers it issued; an unknown
-    /// OfferID is BAD_OFFER, and the gate answers with a fresh offer.
+    /// `OfferID` is `BAD_OFFER`, and the gate answers with a fresh offer.
     pub fn check_credential(
         &self,
         cred: &Credential,
@@ -501,7 +501,7 @@ impl GateOfferCheck<'_> {
     }
 
     /// Runs the offer checks of 4.4 for a native credential (5.4): the
-    /// adapter has recovered the OfferID and the offer; `scheme` is the
+    /// adapter has recovered the `OfferID` and the offer; `scheme` is the
     /// native scheme, which must be offered.
     pub fn check_native(&self, offer: &Offer, scheme: &str) -> Result<(), Error> {
         self.check(offer, Some(scheme))?;

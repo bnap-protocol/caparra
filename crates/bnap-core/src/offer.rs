@@ -1,11 +1,11 @@
-//! The Offer (draft-00 section 4): records, OfferID, `offer_sig`, MAC, the
+//! The Offer (draft-00 section 4): records, `OfferID`, `offer_sig`, MAC, the
 //! builder, the parser and the section 4.4 checks.
 //!
 //! Build an offer by filling [`OfferFields`], computing its
 //! [`OfferFields::offer_id`] when native artifacts must embed it, adding the
 //! natives, then calling [`OfferFields::sign`]. Parse a received offer with
 //! [`Offer::parse`]; the parser enforces every structural rule of 4.1 and
-//! keeps the received bytes, so the OfferID, `S` and the MAC are computed
+//! keeps the received bytes, so the `OfferID`, `S` and the MAC are computed
 //! over exactly what was sent, unknown odd records included.
 
 use crate::class::BindingClass;
@@ -330,10 +330,10 @@ impl AttestEntry {
                 _ => bad("discount value must be 1 to 10,000 basis points"),
             },
             Effect::Quota => {
-                if !self.value.is_some_and(|v| v >= 1) {
+                if self.value.is_none_or(|v| v < 1) {
                     return bad("quota value must be at least 1");
                 }
-                if !self.epoch.is_some_and(|e| e >= 1) {
+                if self.epoch.is_none_or(|e| e < 1) {
                     return bad("quota epoch must be at least 1");
                 }
                 Ok(())
@@ -546,11 +546,11 @@ impl OfferFields {
         Ok(s)
     }
 
-    /// The OfferID these fields give: `H_"bnap/offer"(S₀)`, over every record
+    /// The `OfferID` these fields give: `H_"bnap/offer"(S₀)`, over every record
     /// except the signature range and `native` (4.2 steps 1 and 2).
     ///
-    /// Native artifacts that must embed the OfferID are made after this call
-    /// and added to [`OfferFields::native`]; the OfferID does not change.
+    /// Native artifacts that must embed the `OfferID` are made after this call
+    /// and added to [`OfferFields::native`]; the `OfferID` does not change.
     pub fn offer_id(&self) -> Result<OfferId, Error> {
         Ok(OfferId(tagged_hash(
             tags::OFFER,
@@ -705,9 +705,9 @@ fn check_header_name(h: &str) -> Result<(), MalformedKind> {
 pub struct Offer {
     bytes: Vec<u8>,
     fields: OfferFields,
-    offer_sig: Signature,
+    sig: Signature,
     mac: Option<[u8; 32]>,
-    offer_id: OfferId,
+    id: OfferId,
     signed: Vec<u8>,
     signature_unknown: Vec<(u64, Vec<u8>)>,
 }
@@ -782,9 +782,9 @@ impl Offer {
         Ok(Self {
             bytes: bytes.to_vec(),
             fields,
-            offer_sig,
+            sig: offer_sig,
             mac,
-            offer_id,
+            id: offer_id,
             signed,
             signature_unknown,
         })
@@ -802,16 +802,16 @@ impl Offer {
         &self.fields
     }
 
-    /// The OfferID.
+    /// The `OfferID`.
     #[must_use]
     pub fn offer_id(&self) -> OfferId {
-        self.offer_id
+        self.id
     }
 
     /// `offer_sig`.
     #[must_use]
     pub fn offer_sig(&self) -> Signature {
-        self.offer_sig
+        self.sig
     }
 
     /// `mac`, absent in offers published in advance.
@@ -846,7 +846,7 @@ impl Offer {
     pub fn verify_signature(&self) -> Result<(), Error> {
         self.fields
             .offer_key
-            .verify(&self.sig_message(), &self.offer_sig)
+            .verify(&self.sig_message(), &self.sig)
             .map_err(|_| Error::BadOffer(BadOffer::Signature))
     }
 
@@ -866,7 +866,7 @@ impl Offer {
         }
     }
 
-    /// Gate step 3, authenticity (BAD_OFFER).
+    /// Gate step 3, authenticity (`BAD_OFFER`).
     ///
     /// An offer with `mac` passes only if the MAC verifies under a current
     /// or retained `K_mac`. An offer without `mac` must carry `issued_at`,
@@ -910,7 +910,7 @@ impl Offer {
         Ok(())
     }
 
-    /// Gate step 5, scope (WRONG_SCOPE).
+    /// Gate step 5, scope (`WRONG_SCOPE`).
     ///
     /// An exact-scope offer must name `action_scope`, the carrier's scope of
     /// this request. A route-scope offer must name `route_scope`, the scope
@@ -928,7 +928,7 @@ impl Offer {
         if ok { Ok(()) } else { Err(Error::WrongScope) }
     }
 
-    /// Gate step 6, offered schemes (NOT_OFFERED): the pay scheme must be in
+    /// Gate step 6, offered schemes (`NOT_OFFERED`): the pay scheme must be in
     /// `pay` and every attestation scheme in `attest`.
     pub fn check_offered<'s>(
         &self,
@@ -1119,7 +1119,7 @@ impl GateOfferCheck<'_> {
     }
 
     /// Runs 4.4 gate steps 3 to 5 on an already parsed offer, such as one
-    /// found in the gate's cache by OfferID.
+    /// found in the gate's cache by `OfferID`.
     pub fn check(&self, offer: &Offer, chosen_pay: Option<&str>) -> Result<(), Error> {
         if offer.bytes.len() > self.max_offer {
             return Err(Error::TooLarge {

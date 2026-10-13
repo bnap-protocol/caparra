@@ -4,13 +4,13 @@
 //!
 //! | Module | Draft-00 |
 //! | --- | --- |
-//! | [`encoding`] | Section 2: BigSize, `tu64`, `lp(x)` |
+//! | [`encoding`] | Section 2: `BigSize`, `tu64`, `lp(x)` |
 //! | [`tlv`] | Section 2: TLV streams, type ranges, even/odd rule, entry lists |
 //! | [`hash`] | Section 2: SHA-256, BIP-340 tagged hashes, HMAC-SHA256 |
 //! | [`schnorr`] | Section 2: BIP-340 keys and signatures |
-//! | [`offer`] | Section 4: the Offer, OfferID, `offer_sig`, MAC, checks of 4.4 |
+//! | [`offer`] | Section 4: the Offer, `OfferID`, `offer_sig`, MAC, checks of 4.4 |
 //! | [`credential`] | Section 5: the Credential, Context, Digest, native envelope |
-//! | [`ids`] | Section 6.1 and 6.2: UseId, RailId, ReplayKey, counter keys |
+//! | [`ids`] | Section 6.1 and 6.2: `UseId`, `RailId`, `ReplayKey`, counter keys |
 //! | [`response`] | Section 8.1: the Response and its ack |
 //! | [`error`] | Section 8.2: error codes and the Error object |
 //! | [`manifest`] | Section 9: the manifest, JCS, root signature, pinning |

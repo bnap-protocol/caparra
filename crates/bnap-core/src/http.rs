@@ -10,7 +10,7 @@ use crate::encoding::{len_u64, write_bigsize, write_lp};
 use crate::hash::{Scope, sha256, tagged_hash, tags};
 
 /// Largest Credential the HTTP carrier accepts, in bytes: 12,288 base64url
-/// characters (DECISIONS row 30). Larger credentials are TOO_LARGE.
+/// characters (DECISIONS row 30). Larger credentials are `TOO_LARGE`.
 pub const HTTP_MAX_CREDENTIAL: usize = 9216;
 
 /// The HTTP action scope of one request.

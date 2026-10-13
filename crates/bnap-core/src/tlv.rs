@@ -3,7 +3,7 @@
 //!
 //! A stream is `BigSize(type) ‖ BigSize(length) ‖ value`, repeated, with types
 //! strictly increasing and no duplicates. [`TlvStream::parse`] enforces the
-//! framing, minimal BigSize, the order, and for nested streams the allowed
+//! framing, minimal `BigSize`, the order, and for nested streams the allowed
 //! type ranges. The even/odd rule for unknown types is applied by the object
 //! parsers, which know which types they define, through [`Fields`].
 
@@ -194,16 +194,16 @@ impl TlvStream {
 
     /// Parses a stream that fills all of `buf`.
     ///
-    /// Enforces minimal BigSize, framing, strictly increasing types, and for
+    /// Enforces minimal `BigSize`, framing, strictly increasing types, and for
     /// [`StreamKind::Nested`] the allowed type ranges.
     pub fn parse(buf: &[u8], kind: StreamKind) -> Result<Self, MalformedKind> {
         let mut records = Vec::new();
-        let mut i = 0usize;
+        let mut pos = 0usize;
         let mut prev: Option<u64> = None;
-        while i < buf.len() {
-            let (typ, a) = read_bigsize(buf.get(i..).ok_or(MalformedKind::Truncated)?)?;
-            let j = i + a;
-            let (len, b) = read_bigsize(buf.get(j..).ok_or(MalformedKind::Truncated)?)?;
+        while pos < buf.len() {
+            let (typ, type_len) = read_bigsize(buf.get(pos..).ok_or(MalformedKind::Truncated)?)?;
+            let len_at = pos + type_len;
+            let (len, len_len) = read_bigsize(buf.get(len_at..).ok_or(MalformedKind::Truncated)?)?;
             if let Some(p) = prev
                 && typ <= p
             {
@@ -213,12 +213,12 @@ impl TlvStream {
                 return Err(MalformedKind::TypeNotAllowed(typ));
             }
             let len = usize::try_from(len).map_err(|_| MalformedKind::Truncated)?;
-            let k = j + b;
-            let end = k.checked_add(len).ok_or(MalformedKind::Truncated)?;
-            let value = buf.get(k..end).ok_or(MalformedKind::Truncated)?;
+            let value_at = len_at + len_len;
+            let end = value_at.checked_add(len).ok_or(MalformedKind::Truncated)?;
+            let value = buf.get(value_at..end).ok_or(MalformedKind::Truncated)?;
             records.push((typ, value.to_vec()));
             prev = Some(typ);
-            i = end;
+            pos = end;
         }
         Ok(Self { records })
     }
@@ -451,6 +451,6 @@ mod tests {
         assert_eq!(l, b"\x02ab\x00\x01c");
         assert_eq!(parse_entry_list(&l).unwrap(), vec![&b"ab"[..], b"", b"c"]);
         assert!(parse_entry_list(b"\x05ab").is_err());
-        assert!(parse_entry_list(b"").unwrap().is_empty());
+        assert_eq!(parse_entry_list(b"").unwrap(), Vec::<&[u8]>::new());
     }
 }

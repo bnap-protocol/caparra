@@ -292,7 +292,7 @@ struct Cred {
     digest: bnap_core::Digest,
     notes_body: Vec<u8>,
     wba_body: Vec<u8>,
-    cred: Credential,
+    credential: Credential,
 }
 
 fn build_credential(k: &Keys, binding: [u8; 32]) -> Cred {
@@ -328,7 +328,7 @@ fn build_credential(k: &Keys, binding: [u8; 32]) -> Cred {
         digest,
         notes_body,
         wba_body,
-        cred,
+        credential: cred,
     }
 }
 
@@ -342,7 +342,7 @@ fn credential_vector() {
     let c = build_credential(&k, binding);
     assert_eq!(x(c.ctx), s(tv, &["context"]));
     assert_eq!(x(c.digest), s(tv, &["digest"]));
-    let witness = &c.cred.pay.as_ref().unwrap().witness;
+    let witness = &c.credential.pay.as_ref().unwrap().witness;
     assert_eq!(x(witness), s(tv, &["witness"]));
     k.note
         .public_key()
@@ -352,7 +352,7 @@ fn credential_vector() {
         )
         .unwrap();
 
-    let bytes = c.cred.to_bytes().unwrap();
+    let bytes = c.credential.to_bytes().unwrap();
     assert_eq!(
         u64::try_from(bytes.len()).unwrap(),
         tv["bytes_len"].as_u64().unwrap()
@@ -388,7 +388,7 @@ fn credential_vector() {
 
     // Parse it back and recompute everything as the gate does.
     let parsed = Credential::parse(&bytes).unwrap();
-    assert_eq!(parsed, c.cred);
+    assert_eq!(parsed, c.credential);
     let gate = GateOfferCheck {
         now: NOW,
         max_offer: bnap_core::limits::MAX_OFFER,
@@ -427,7 +427,9 @@ fn credential_vector() {
     let other = build_credential(&k, sha256(b"other connection"));
     assert_eq!(x(other.digest), s(tv, &["digest_other_binding"]));
     assert_eq!(other.ctx, c.ctx);
-    let rk2 = other.cred.replay_key(&other.ctx, &[u_note.0, u_wba.0]);
+    let rk2 = other
+        .credential
+        .replay_key(&other.ctx, &[u_note.0, u_wba.0]);
     assert_eq!(rk2, rk);
 
     // draft-00 10.3: `BNAP-Credential: AAEBAv0BMQABAQIghi1kHmeBP254sgqB…`.

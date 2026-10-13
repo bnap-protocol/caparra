@@ -527,7 +527,10 @@ fn size_limits() {
     f.sign_with_limit(&offer_key(), Some(&mac()), &AUX0, 8192)
         .unwrap();
     assert_eq!(code(Offer::parse(&[0; 4097])), ErrorCode::TooLarge);
-    assert_eq!(code(Credential::parse(&[0; 16_385])), ErrorCode::TooLarge);
+    assert_eq!(
+        code(Credential::parse(&vec![0; 16_385])),
+        ErrorCode::TooLarge
+    );
     assert_eq!(code(Response::parse(&[0; 8193])), ErrorCode::TooLarge);
     // A limit only grows from the manifest.
     let l = bnap_core::Limits::from_manifest(&ManifestLimits {
@@ -631,27 +634,27 @@ fn offer_and_offer_id_exactly_one() {
 #[test]
 fn credential_unknown_odd_is_ignored_and_ext_is_covered() {
     let (o, c) = credential();
-    let b = c.to_bytes().unwrap();
+    let bytes = c.to_bytes().unwrap();
     let ctx = c.context(&o.offer_id(), &act());
     let dg = c.digest(&ctx);
     // GREASE and other odd records change nothing.
-    let mut g = c.clone();
-    g.unknown = vec![(3_000_000_101, vec![9, 9])];
-    let gp = Credential::parse(&g.to_bytes().unwrap()).unwrap();
+    let mut greased = c.clone();
+    greased.unknown = vec![(3_000_000_101, vec![9, 9])];
+    let gp = Credential::parse(&greased.to_bytes().unwrap()).unwrap();
     assert_eq!(gp.digest(&gp.context(&o.offer_id(), &act())), dg);
     // An unknown even top-level record is malformed.
     assert_eq!(
-        malformed(Credential::parse(&with_record(&b, 14, Some(vec![])))),
+        malformed(Credential::parse(&with_record(&bytes, 14, Some(vec![])))),
         MalformedKind::UnknownEvenType(14)
     );
     // ext enters the Context; unknown even ext types are malformed.
     let ext = TlvStream::from_records([(1, b"hint".to_vec())]).unwrap();
-    let mut e = c.clone();
-    e.ext = ext;
-    let ep = Credential::parse(&e.to_bytes().unwrap()).unwrap();
+    let mut with_ext = c.clone();
+    with_ext.ext = ext;
+    let ep = Credential::parse(&with_ext.to_bytes().unwrap()).unwrap();
     assert_ne!(ep.context(&o.offer_id(), &act()), ctx);
     let even = TlvStream::from_records([(2, b"x".to_vec())]).unwrap();
-    let crafted = with_record(&b, 10, Some(even.to_bytes()));
+    let crafted = with_record(&bytes, 10, Some(even.to_bytes()));
     assert_eq!(
         malformed(Credential::parse(&crafted)),
         MalformedKind::UnknownEvenType(2)
@@ -662,7 +665,7 @@ fn credential_unknown_odd_is_ignored_and_ext_is_covered() {
     };
     Credential::parse_with(&crafted, &opts).unwrap();
     // An empty binding record means no binding.
-    let nb = with_record(&b, 8, Some(vec![]));
+    let nb = with_record(&bytes, 8, Some(vec![]));
     assert_eq!(Credential::parse(&nb).unwrap().binding, None);
 }
 
