@@ -1,0 +1,52 @@
+# release-plz configuration for the Caparra workspace.
+# Reference: https://release-plz.dev/docs/config
+#
+# Releases are owner-gated. No workflow runs release-plz yet; see the
+# "Releases" section of CONTRIBUTING.md for the plan.
+#
+# Split of duties:
+# - release-plz bumps versions, writes one CHANGELOG.md per crate
+#   (crates/<name>/CHANGELOG.md), tags every released crate as
+#   <crate>-v<version> and, once enabled, publishes to crates.io.
+# - dist (see [workspace.metadata.dist] in Cargo.toml) builds the binaries
+#   caparra-gate, bnap and bnap-mcp when the owner pushes a v<version> tag,
+#   and owns the GitHub Release for that tag.
+
+[workspace]
+changelog_update = true
+# Only bump workspace crates in Cargo.lock; dependency updates come through
+# Dependabot pull requests.
+dependencies_update = false
+git_tag_enable = true
+git_tag_name = "{{ package }}-v{{ version }}"
+# GitHub Releases belong to dist (binary archives and attestations); per-crate
+# releases would clutter the release list with one entry per library crate.
+git_release_enable = false
+# Publishing stays off until crates.io trusted publishing is configured for
+# every crate. Then set this to true and give the release-plz workflow
+# `permissions: id-token: write` and no CARGO_REGISTRY_TOKEN secret, so
+# release-plz exchanges the GitHub OIDC token for a short-lived crates.io token.
+publish = false
+# Release only when a release pull request is merged, never on every push.
+release_always = false
+pr_branch_prefix = "release-plz-"
+pr_labels = ["release"]
+semver_check = true
+
+[changelog]
+protect_breaking_commits = true
+sort_commits = "oldest"
+commit_parsers = [
+  { message = "^feat", group = "added" },
+  { message = "^changed", group = "changed" },
+  { message = "^deprecated", group = "deprecated" },
+  { message = "^fix", group = "fixed" },
+  { message = "^security", group = "security" },
+  { message = "^perf", group = "performance" },
+  { message = "^refactor", group = "refactored" },
+  { message = "^docs", group = "documentation" },
+  { message = "^test", group = "tests" },
+  # The commit that merges a release pull request.
+  { message = "^chore(\\(release\\))?: release", skip = true },
+  { message = ".*", group = "other" },
+]
