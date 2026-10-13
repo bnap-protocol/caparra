@@ -19,6 +19,14 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_json_canonicalizer = { workspace = true }
 thiserror = { workspace = true }
+# The UseStore plug trait lives here so the outcome state machine can be
+# generic over it; async-trait is a compile-time macro and brings no I/O.
+async-trait = { workspace = true }
+
+[features]
+# The in-memory UseStore and a minimal block_on, for tests in this and
+# downstream crates. Not durable: never use it in a gate.
+test-support = []
 
 [dev-dependencies]
 proptest = { workspace = true }

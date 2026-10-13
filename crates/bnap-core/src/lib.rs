@@ -17,9 +17,16 @@
 //! | [`http`] | Section 10.1: HTTP action and route scopes |
 //! | [`class`] | Binding classes S, A, O and none |
 //! | [`limits`] | Size limits, clock skew and timeout defaults |
+//! | [`pricing`] | Section 7: `price`, admission, metering, the change cap |
+//! | [`policy`] | Section 11: effective property vectors and route `require` |
+//! | [`store`] | Sections 6.2 to 6.4: use store records, the `UseStore` trait, commit and settle logic |
+//! | [`outcome`] | Section 6: the outcome state machine over any `UseStore` |
+//! | [`sign`] | Sealed messages for the online signer (offer signatures and acks) |
+//! | `test_support` | With the `test-support` feature: an in-memory `UseStore` |
 //!
 //! The crate does no I/O and holds no RNG: callers pass the clock, nonces,
-//! BIP-340 auxiliary randomness and GREASE randomness in.
+//! BIP-340 auxiliary randomness and GREASE randomness in. The use store is a
+//! plug; [`outcome`] only drives it.
 
 pub mod class;
 pub mod credential;
@@ -31,8 +38,15 @@ pub mod ids;
 pub mod limits;
 pub mod manifest;
 pub mod offer;
+pub mod outcome;
+pub mod policy;
+pub mod pricing;
 pub mod response;
 pub mod schnorr;
+pub mod sign;
+pub mod store;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod tlv;
 
 pub use class::BindingClass;
@@ -42,6 +56,11 @@ pub use hash::{Context, CounterKey, Digest, OfferId, RailId, ReplayKey, Scope, U
 pub use limits::Limits;
 pub use manifest::{Manifest, ManifestKey, SignedManifest};
 pub use offer::{AttestEntry, Effect, GateOfferCheck, NativeEntry, Offer, OfferFields, PayEntry};
+pub use outcome::{Admitted, CommitError, SettleError};
+pub use policy::{EffectiveVector, Require, RoutePolicy};
+pub use pricing::{Admission, Charge, PriceDecision, PriceError, VerifiedAttest};
+pub use sign::{CoreMessage, Purpose, UnsignedOffer, UnsignedResponse};
+pub use store::{CommitPlan, OutcomeRecord, OutcomeStatus, Settlement, StoreError, UseModel, UseStore};
 pub use response::{Response, ResponseFields, Status};
 pub use schnorr::{Key, Signature, SigningKey};
 
