@@ -514,9 +514,7 @@ impl From<ErrorCode> for ErrorObject {
 
 impl From<&Error> for ErrorObject {
     fn from(e: &Error) -> Self {
-        let mut o = Self::new(e.code());
-        o = o.with_detail(&e.to_string());
-        o
+        Self::new(e.code()).with_detail(&e.to_string())
     }
 }
 

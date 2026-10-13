@@ -2,12 +2,14 @@
 //! socket core can decide, plus the structural rules of sections 2, 4, 5,
 //! 8 and 9.
 
+#![allow(clippy::too_many_lines)]
+
 use bnap_core::credential::{Credential, CredentialParse, OfferRef, SchemePart};
 use bnap_core::error::{BadOffer, MalformedKind, Stale};
 use bnap_core::hash::sha256;
 use bnap_core::manifest::{self, KeyUse, Manifest, ManifestError, ManifestKey, ManifestLimits};
 use bnap_core::offer::{AttestEntry, Effect, GateOfferCheck, NativeEntry, Offer, OfferFields, PayEntry};
-use bnap_core::response::{Response, ResponseFields, Status};
+use bnap_core::response::{ReceiptError, Response, ResponseFields, Status};
 use bnap_core::tlv::{TlvStream, entry_list, write_record};
 use bnap_core::{BindingClass, Error, ErrorCode, Object, Scope, SigningKey, encoding, http};
 
@@ -617,7 +619,6 @@ fn receipt_client_rules() {
     let dg = bnap_core::Digest([6; 32]);
     let pin = [ManifestKey { kid: k.public_key(), key_use: KeyUse::Receipt, not_after: NOW }];
     r.check_client(&pin, NOW + 60, &id, &dg).unwrap();
-    use bnap_core::response::ReceiptError;
     assert_eq!(r.check_client(&pin, NOW + 61, &id, &dg), Err(ReceiptError::Clock));
     assert_eq!(r.check_client(&pin, NOW, &bnap_core::OfferId([0; 32]), &dg), Err(ReceiptError::WrongRequest));
     let offer_use = [ManifestKey { kid: k.public_key(), key_use: KeyUse::Offer, not_after: NOW }];

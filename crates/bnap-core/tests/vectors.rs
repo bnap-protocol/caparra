@@ -1,6 +1,8 @@
 //! Reproduces every value in `tests/data/vectors.json` byte for byte, by
 //! rebuilding each object from the same inputs `bnap_ref.py` uses.
 
+#![allow(clippy::too_many_lines)]
+
 use std::collections::BTreeMap;
 
 use base64::Engine as _;
@@ -169,7 +171,7 @@ fn offer_vector() {
 
     let offer = route_offer(&k);
     assert_eq!(x(offer.bytes()), s(tv, &["bytes"]));
-    assert_eq!(offer.bytes().len() as u64, tv["len"].as_u64().unwrap());
+    assert_eq!(u64::try_from(offer.bytes().len()).unwrap(), tv["len"].as_u64().unwrap());
     assert_eq!(x(offer.offer_id()), s(tv, &["offer_id"]));
     assert_eq!(x(offer.offer_sig().0), s(tv, &["offer_sig"]));
     assert_eq!(route_offer_fields(&k).offer_id().unwrap(), offer.offer_id());
@@ -278,7 +280,7 @@ fn credential_vector() {
     k.note.public_key().verify(&c.digest.0, &bnap_core::Signature(witness.as_slice().try_into().unwrap())).unwrap();
 
     let bytes = c.cred.to_bytes().unwrap();
-    assert_eq!(bytes.len() as u64, tv["bytes_len"].as_u64().unwrap());
+    assert_eq!(u64::try_from(bytes.len()).unwrap(), tv["bytes_len"].as_u64().unwrap());
     // The bytes are exactly the reference construction.
     let reference = TlvStream::from_records([
         (0, encoding::tu64(1)),

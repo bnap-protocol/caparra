@@ -579,7 +579,7 @@ impl OfferFields {
             return bad("a route-scope offer carries no native record");
         }
         for n in &self.native {
-            if usize::try_from(n.pay_index).map_or(true, |i| i >= self.pay.len()) {
+            if usize::try_from(n.pay_index).ok().is_none_or(|i| i >= self.pay.len()) {
                 return bad("native pay_index outside pay");
             }
         }
@@ -655,7 +655,7 @@ impl Offer {
         let native = parse_list(f.take(t::NATIVE), NativeEntry::parse)?;
         let offer_sig = Signature(f.required_fixed::<64>(t::OFFER_SIG).map_err(&m)?);
         let mac = f.fixed::<32>(t::MAC).map_err(&m)?;
-        let (signature_unknown, unknown) =
+        let (signature_unknown, unknown): (Vec<_>, Vec<_>) =
             f.finish().map_err(&m)?.into_iter().partition(|(t, _)| is_signature_type(*t));
         let fields = OfferFields {
             scope,

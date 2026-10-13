@@ -248,7 +248,7 @@ pub enum ManifestError {
 }
 
 /// RFC 8785 JCS of a serializable value.
-pub fn jcs<T: Serialize + ?Sized>(v: &T) -> Result<Vec<u8>, ManifestError> {
+pub fn jcs<T: Serialize>(v: &T) -> Result<Vec<u8>, ManifestError> {
     serde_json_canonicalizer::to_vec(v).map_err(|e| ManifestError::Json(e.to_string()))
 }
 
