@@ -278,12 +278,19 @@ impl<'a> Fields<'a> {
     /// Starts field access over `stream`.
     #[must_use]
     pub fn new(stream: &'a TlvStream) -> Self {
-        Self { stream, taken: vec![false; stream.records.len()] }
+        Self {
+            stream,
+            taken: vec![false; stream.records.len()],
+        }
     }
 
     /// Takes record `typ`, if present.
     pub fn take(&mut self, typ: u64) -> Option<&'a [u8]> {
-        let i = self.stream.records.binary_search_by_key(&typ, |(t, _)| *t).ok()?;
+        let i = self
+            .stream
+            .records
+            .binary_search_by_key(&typ, |(t, _)| *t)
+            .ok()?;
         self.taken[i] = true;
         Some(self.stream.records[i].1.as_slice())
     }
@@ -295,7 +302,9 @@ impl<'a> Fields<'a> {
 
     /// Takes an optional `tu64` record.
     pub fn tu64(&mut self, typ: u64) -> Result<Option<u64>, MalformedKind> {
-        self.take(typ).map(|v| crate::encoding::read_tu64(v, typ)).transpose()
+        self.take(typ)
+            .map(|v| crate::encoding::read_tu64(v, typ))
+            .transpose()
     }
 
     /// Takes a required `tu64` record.
@@ -406,7 +415,10 @@ mod tests {
             Err(MalformedKind::NonMinimalBigSize)
         );
         // truncated value
-        assert_eq!(TlvStream::parse(&[0, 2, 1], StreamKind::TopLevel), Err(MalformedKind::Truncated));
+        assert_eq!(
+            TlvStream::parse(&[0, 2, 1], StreamKind::TopLevel),
+            Err(MalformedKind::Truncated)
+        );
     }
 
     #[test]
@@ -415,7 +427,10 @@ mod tests {
         s.push(240, vec![]).unwrap();
         let b = s.to_bytes();
         assert!(TlvStream::parse(&b, StreamKind::TopLevel).is_ok());
-        assert_eq!(TlvStream::parse(&b, StreamKind::Nested), Err(MalformedKind::TypeNotAllowed(240)));
+        assert_eq!(
+            TlvStream::parse(&b, StreamKind::Nested),
+            Err(MalformedKind::TypeNotAllowed(240))
+        );
     }
 
     #[test]

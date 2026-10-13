@@ -25,7 +25,12 @@ pub const HTTP_MAX_CREDENTIAL: usize = 9216;
 ///   as received). Names are lower-cased here; an absent field has an empty
 ///   value.
 #[must_use]
-pub fn action_scope(method: &str, target: &str, content: &[u8], headers: &[(&str, &[u8])]) -> Scope {
+pub fn action_scope(
+    method: &str,
+    target: &str,
+    content: &[u8],
+    headers: &[(&str, &[u8])],
+) -> Scope {
     let mut buf = Vec::new();
     write_lp(&mut buf, method.as_bytes());
     write_lp(&mut buf, target.as_bytes());

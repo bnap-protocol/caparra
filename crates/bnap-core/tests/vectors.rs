@@ -9,9 +9,12 @@ use base64::Engine as _;
 use bnap_core::credential::{self, Credential, OfferRef, SchemePart};
 use bnap_core::hash::{sha256, tagged_hash};
 use bnap_core::manifest::{
-    KeyUse, Manifest, ManifestKey, ManifestLimits, Route, RouteAttest, RouteScopeMode, SignedManifest,
+    KeyUse, Manifest, ManifestKey, ManifestLimits, Route, RouteAttest, RouteScopeMode,
+    SignedManifest,
 };
-use bnap_core::offer::{AttestEntry, Effect, GateOfferCheck, NativeEntry, Offer, OfferFields, PayEntry};
+use bnap_core::offer::{
+    AttestEntry, Effect, GateOfferCheck, NativeEntry, Offer, OfferFields, PayEntry,
+};
 use bnap_core::response::{ResponseFields, Status};
 use bnap_core::tlv::{TlvStream, entry_list};
 use bnap_core::{BindingClass, Error, ErrorCode, Scope, SigningKey, encoding, http, ids};
@@ -20,7 +23,8 @@ use serde_json::Value;
 const VECTORS: &str = include_str!("data/vectors.json");
 const AUX0: [u8; 32] = [0; 32];
 const ORIGIN: &str = "https://api.example";
-const BODY: &[u8] = br#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":256}"#;
+const BODY: &[u8] =
+    br#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":256}"#;
 const EXPIRES: u64 = 1_791_700_300;
 const NOW: u64 = 1_791_700_000;
 
@@ -33,7 +37,8 @@ fn s<'a>(v: &'a Value, path: &[&str]) -> &'a str {
     for p in path {
         cur = &cur[*p];
     }
-    cur.as_str().unwrap_or_else(|| panic!("{path:?} is not a string"))
+    cur.as_str()
+        .unwrap_or_else(|| panic!("{path:?} is not a string"))
 }
 
 fn x(b: impl AsRef<[u8]>) -> String {
@@ -93,7 +98,9 @@ fn route_offer_fields(k: &Keys) -> OfferFields {
 }
 
 fn route_offer(k: &Keys) -> Offer {
-    route_offer_fields(k).sign(&k.offer, Some(&k.mac), &AUX0).unwrap()
+    route_offer_fields(k)
+        .sign(&k.offer, Some(&k.mac), &AUX0)
+        .unwrap()
 }
 
 /// The exact-scope offer for `payment:lightning/charge`, 21 sat.
@@ -118,7 +125,10 @@ fn tagged_hash_vector() {
     let tv = &v["tagged_hash"];
     assert_eq!(s(tv, &["tag"]), "bnap/offer");
     assert_eq!(s(tv, &["msg"]), "");
-    assert_eq!(x(tagged_hash(s(tv, &["tag"]), s(tv, &["msg"]).as_bytes())), s(tv, &["out"]));
+    assert_eq!(
+        x(tagged_hash(s(tv, &["tag"]), s(tv, &["msg"]).as_bytes())),
+        s(tv, &["out"])
+    );
 }
 
 #[test]
@@ -154,10 +164,18 @@ fn http_scope_vectors() {
     assert_eq!(s(tv, &["method"]), "POST");
     assert_eq!(s(tv, &["uri"]), target());
     assert_eq!(s(tv, &["content"]).as_bytes(), BODY);
-    let scope = http::action_scope(s(tv, &["method"]), s(tv, &["uri"]), s(tv, &["content"]).as_bytes(), &[]);
+    let scope = http::action_scope(
+        s(tv, &["method"]),
+        s(tv, &["uri"]),
+        s(tv, &["content"]).as_bytes(),
+        &[],
+    );
     assert_eq!(x(scope), s(tv, &["action_scope"]));
     assert_eq!(scope, act());
-    assert_eq!(x(http::route_scope(ORIGIN, s(tv, &["route"]))), s(tv, &["route_scope"]));
+    assert_eq!(
+        x(http::route_scope(ORIGIN, s(tv, &["route"]))),
+        s(tv, &["route_scope"])
+    );
 }
 
 #[test]
@@ -171,7 +189,10 @@ fn offer_vector() {
 
     let offer = route_offer(&k);
     assert_eq!(x(offer.bytes()), s(tv, &["bytes"]));
-    assert_eq!(u64::try_from(offer.bytes().len()).unwrap(), tv["len"].as_u64().unwrap());
+    assert_eq!(
+        u64::try_from(offer.bytes().len()).unwrap(),
+        tv["len"].as_u64().unwrap()
+    );
     assert_eq!(x(offer.offer_id()), s(tv, &["offer_id"]));
     assert_eq!(x(offer.offer_sig().0), s(tv, &["offer_sig"]));
     assert_eq!(route_offer_fields(&k).offer_id().unwrap(), offer.offer_id());
@@ -191,22 +212,44 @@ fn offer_vector() {
         action_scope: act(),
         route_scope: Some(route()),
     };
-    gate.check_bytes(parsed.bytes(), Some("bnap:notes")).unwrap();
+    gate.check_bytes(parsed.bytes(), Some("bnap:notes"))
+        .unwrap();
     assert_eq!(
-        GateOfferCheck { route_scope: None, ..gate }.check(&parsed, None),
+        GateOfferCheck {
+            route_scope: None,
+            ..gate
+        }
+        .check(&parsed, None),
         Err(Error::WrongScope)
     );
     assert_eq!(
-        GateOfferCheck { mac_keys: &[[9; 32]], ..gate }.check(&parsed, None).map_err(|e| e.code()),
+        GateOfferCheck {
+            mac_keys: &[[9; 32]],
+            ..gate
+        }
+        .check(&parsed, None)
+        .map_err(|e| e.code()),
         Err(ErrorCode::BadOffer)
     );
     assert_eq!(
-        GateOfferCheck { now: EXPIRES + 61, ..gate }.check(&parsed, None).map_err(|e| e.code()),
+        GateOfferCheck {
+            now: EXPIRES + 61,
+            ..gate
+        }
+        .check(&parsed, None)
+        .map_err(|e| e.code()),
         Err(ErrorCode::Stale)
     );
     gate.check(&parsed, None).unwrap();
-    GateOfferCheck { now: EXPIRES + 60, ..gate }.check(&parsed, None).unwrap();
-    parsed.check_offered(Some("bnap:notes"), ["httpsig:web-bot-auth"]).unwrap();
+    GateOfferCheck {
+        now: EXPIRES + 60,
+        ..gate
+    }
+    .check(&parsed, None)
+    .unwrap();
+    parsed
+        .check_offered(Some("bnap:notes"), ["httpsig:web-bot-auth"])
+        .unwrap();
     assert_eq!(
         parsed.check_offered(Some("httpauth:L402"), []),
         Err(Error::NotOffered("httpauth:L402".into()))
@@ -225,7 +268,11 @@ fn offer_native_vector() {
     let mut f = exact_offer_fields(&k);
     let id_before = f.offer_id().unwrap();
     let without = f.sign(&k.offer, Some(&k.mac), &AUX0).unwrap();
-    f.native = vec![NativeEntry::new(0, "bolt11", b"lnbc210n1...placeholder".to_vec())];
+    f.native = vec![NativeEntry::new(
+        0,
+        "bolt11",
+        b"lnbc210n1...placeholder".to_vec(),
+    )];
     let with = f.sign(&k.offer, Some(&k.mac), &AUX0).unwrap();
     assert_eq!(x(without.bytes()), s(tv, &["without_native"]));
     assert_eq!(x(with.bytes()), s(tv, &["with_native"]));
@@ -251,18 +298,38 @@ struct Cred {
 fn build_credential(k: &Keys, binding: [u8; 32]) -> Cred {
     let offer = route_offer(k);
     let wba_body = b"sig1=:...placeholder web bot auth signature over the Context...:".to_vec();
-    let ctx = credential::context(&offer.offer_id(), &act(), Some("bnap:notes"), &["httpsig:web-bot-auth"], b"");
+    let ctx = credential::context(
+        &offer.offer_id(),
+        &act(),
+        Some("bnap:notes"),
+        &["httpsig:web-bot-auth"],
+        b"",
+    );
     let note_y = sha256(b"note secret 1");
-    let notes_body = TlvStream::from_records([(0, note_y.to_vec()), (2, b"proofs+outputs placeholder".to_vec())])
-        .unwrap()
-        .to_bytes();
+    let notes_body = TlvStream::from_records([
+        (0, note_y.to_vec()),
+        (2, b"proofs+outputs placeholder".to_vec()),
+    ])
+    .unwrap()
+    .to_bytes();
     let digest = credential::digest(&ctx, Some(&binding), &notes_body, &[&wba_body]);
     let witness = k.note.sign(&digest.0, &AUX0);
     let mut cred = Credential::new(OfferRef::Inline(offer.bytes().to_vec()));
-    cred.pay = Some(SchemePart { scheme: "bnap:notes".into(), body: notes_body.clone(), witness: witness.0.to_vec() });
+    cred.pay = Some(SchemePart {
+        scheme: "bnap:notes".into(),
+        body: notes_body.clone(),
+        witness: witness.0.to_vec(),
+    });
     cred.attest = vec![SchemePart::new("httpsig:web-bot-auth", wba_body.clone())];
     cred.binding = Some(binding);
-    Cred { offer, ctx, digest, notes_body, wba_body, cred }
+    Cred {
+        offer,
+        ctx,
+        digest,
+        notes_body,
+        wba_body,
+        cred,
+    }
 }
 
 #[test]
@@ -277,10 +344,19 @@ fn credential_vector() {
     assert_eq!(x(c.digest), s(tv, &["digest"]));
     let witness = &c.cred.pay.as_ref().unwrap().witness;
     assert_eq!(x(witness), s(tv, &["witness"]));
-    k.note.public_key().verify(&c.digest.0, &bnap_core::Signature(witness.as_slice().try_into().unwrap())).unwrap();
+    k.note
+        .public_key()
+        .verify(
+            &c.digest.0,
+            &bnap_core::Signature(witness.as_slice().try_into().unwrap()),
+        )
+        .unwrap();
 
     let bytes = c.cred.to_bytes().unwrap();
-    assert_eq!(u64::try_from(bytes.len()).unwrap(), tv["bytes_len"].as_u64().unwrap());
+    assert_eq!(
+        u64::try_from(bytes.len()).unwrap(),
+        tv["bytes_len"].as_u64().unwrap()
+    );
     // The bytes are exactly the reference construction.
     let reference = TlvStream::from_records([
         (0, encoding::tu64(1)),
@@ -329,11 +405,19 @@ fn credential_vector() {
     parsed.check_binding_classes(class_of).unwrap();
     parsed.check_tls_binding(Some(&binding)).unwrap();
     assert_eq!(parsed.check_tls_binding(None), Err(Error::Binding));
-    assert_eq!(parsed.check_tls_binding(Some(&[0; 32])), Err(Error::Binding));
+    assert_eq!(
+        parsed.check_tls_binding(Some(&[0; 32])),
+        Err(Error::Binding)
+    );
 
     let u_note = ids::use_id("bnap:notes", &sha256(b"note secret 1"));
     let u_wba = ids::use_id("httpsig:web-bot-auth", &sha256(b"bot key thumbprint"));
-    let want: Vec<&str> = tv["use_ids"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    let want: Vec<&str> = tv["use_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
     assert_eq!(vec![x(u_note), x(u_wba)], want);
     let rk = ids::replay_key(&c.ctx, &c.notes_body, &[&c.wba_body], &[u_note.0, u_wba.0]);
     assert_eq!(x(rk), s(tv, &["replay_key"]));
@@ -356,8 +440,15 @@ fn credential_vector() {
     let by_id = Credential::parse(&by_id.to_bytes().unwrap()).unwrap();
     assert_eq!(by_id.context(&offer.offer_id(), &act()), c.ctx);
     let cached = offer.clone();
-    assert_eq!(gate.check_credential(&by_id, |_| Some(cached)).unwrap(), offer);
-    assert_eq!(gate.check_credential(&by_id, |_| None).map_err(|e| e.code()), Err(ErrorCode::BadOffer));
+    assert_eq!(
+        gate.check_credential(&by_id, |_| Some(cached)).unwrap(),
+        offer
+    );
+    assert_eq!(
+        gate.check_credential(&by_id, |_| None)
+            .map_err(|e| e.code()),
+        Err(ErrorCode::BadOffer)
+    );
 }
 
 #[test]
@@ -378,7 +469,10 @@ fn attest_only_vector() {
     assert_eq!(x(dg), s(tv, &["digest"]));
     let u = ids::use_id("httpauth:DPoP", &sha256(b"client key thumbprint"));
     assert_eq!(x(u), s(tv, &["use_id"]));
-    assert_eq!(x(ids::replay_key(&ctx, b"", &[dpop_body], &[u.0])), s(tv, &["replay_key"]));
+    assert_eq!(
+        x(ids::replay_key(&ctx, b"", &[dpop_body], &[u.0])),
+        s(tv, &["replay_key"])
+    );
 
     // The same values through a parsed Credential envelope.
     let mut cred = Credential::new(OfferRef::Inline(offer.bytes().to_vec()));
@@ -395,10 +489,18 @@ fn native_vector() {
     let v = vectors();
     let tv = &v["native"];
     let k = keys();
-    let offer = exact_offer_fields(&k).sign(&k.offer, Some(&k.mac), &AUX0).unwrap();
+    let offer = exact_offer_fields(&k)
+        .sign(&k.offer, Some(&k.mac), &AUX0)
+        .unwrap();
     let ctx = credential::native_context(&offer.offer_id(), &act(), s(tv, &["scheme"]));
     assert_eq!(x(ctx), s(tv, &["context"]));
-    assert_eq!(x(credential::native_digest(&ctx, s(tv, &["native_bytes"]).as_bytes())), s(tv, &["digest"]));
+    assert_eq!(
+        x(credential::native_digest(
+            &ctx,
+            s(tv, &["native_bytes"]).as_bytes()
+        )),
+        s(tv, &["digest"])
+    );
     let gate = GateOfferCheck {
         now: NOW,
         max_offer: bnap_core::limits::MAX_OFFER,
@@ -407,7 +509,8 @@ fn native_vector() {
         action_scope: act(),
         route_scope: None,
     };
-    gate.check_native(&offer, "payment:lightning/charge").unwrap();
+    gate.check_native(&offer, "payment:lightning/charge")
+        .unwrap();
 }
 
 #[test]
@@ -417,7 +520,10 @@ fn rail_id_vector() {
     let ph = sha256(b"preimage");
     assert_eq!(x(ph), s(tv, &["payment_hash"]));
     assert_eq!(s(tv, &["kind"]), ids::rail::LN);
-    assert_eq!(x(ids::rail_id(ids::rail::LN, &ids::rail::ln(&ph))), s(tv, &["rail_id"]));
+    assert_eq!(
+        x(ids::rail_id(ids::rail::LN, &ids::rail::ln(&ph))),
+        s(tv, &["rail_id"])
+    );
 }
 
 #[test]
@@ -449,8 +555,14 @@ fn response_vector() {
     assert_eq!(parsed.fields(), &fields);
     parsed.verify_ack().unwrap();
     assert!(parsed.answers(&c.offer.offer_id(), &c.digest));
-    let pinned = [ManifestKey { kid: k.receipt.public_key(), key_use: KeyUse::Receipt, not_after: 1_792_304_800 }];
-    parsed.check_client(&pinned, 1_791_700_050, &c.offer.offer_id(), &c.digest).unwrap();
+    let pinned = [ManifestKey {
+        kid: k.receipt.public_key(),
+        key_use: KeyUse::Receipt,
+        not_after: 1_792_304_800,
+    }];
+    parsed
+        .check_client(&pinned, 1_791_700_050, &c.offer.offer_id(), &c.digest)
+        .unwrap();
 
     // draft-00 10.3: `data: AAEBAgAGAgFUCANzYXQKIFyGQCYfbx3jIGounNHC…`.
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(resp.bytes());
@@ -467,8 +579,16 @@ fn vector_manifest(k: &Keys) -> Manifest {
         root: k.root.public_key(),
         backup: k.backup.public_key(),
         keys: vec![
-            ManifestKey { kid: k.offer.public_key(), key_use: KeyUse::Offer, not_after: 1_792_304_800 },
-            ManifestKey { kid: k.receipt.public_key(), key_use: KeyUse::Receipt, not_after: 1_792_304_800 },
+            ManifestKey {
+                kid: k.offer.public_key(),
+                key_use: KeyUse::Offer,
+                not_after: 1_792_304_800,
+            },
+            ManifestKey {
+                kid: k.receipt.public_key(),
+                key_use: KeyUse::Receipt,
+                not_after: 1_792_304_800,
+            },
         ],
         required: true,
         limits: ManifestLimits {

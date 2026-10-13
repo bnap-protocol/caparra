@@ -230,10 +230,18 @@ mod tests {
             hex::encode(tag),
             "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
         );
-        assert!(hmac_sha256_verify(b"Jefe", b"what do ya want for nothing?", &tag));
+        assert!(hmac_sha256_verify(
+            b"Jefe",
+            b"what do ya want for nothing?",
+            &tag
+        ));
         let mut bad = tag;
         bad[31] ^= 1;
-        assert!(!hmac_sha256_verify(b"Jefe", b"what do ya want for nothing?", &bad));
+        assert!(!hmac_sha256_verify(
+            b"Jefe",
+            b"what do ya want for nothing?",
+            &bad
+        ));
     }
 
     #[test]

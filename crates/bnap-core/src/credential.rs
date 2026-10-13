@@ -66,7 +66,11 @@ impl SchemePart {
     /// A part with a body and no witness.
     #[must_use]
     pub fn new(scheme: impl Into<String>, body: impl Into<Vec<u8>>) -> Self {
-        Self { scheme: scheme.into(), body: body.into(), witness: Vec::new() }
+        Self {
+            scheme: scheme.into(),
+            body: body.into(),
+            witness: Vec::new(),
+        }
     }
 
     /// Serializes the part as a nested stream.
@@ -76,12 +80,14 @@ impl SchemePart {
         }
         let m = Error::malformed(Object::CredentialPart);
         let mut s = TlvStream::new();
-        s.push(part_types::SCHEME, self.scheme.as_bytes()).map_err(&m)?;
+        s.push(part_types::SCHEME, self.scheme.as_bytes())
+            .map_err(&m)?;
         if !self.body.is_empty() {
             s.push(part_types::BODY, self.body.clone()).map_err(&m)?;
         }
         if !self.witness.is_empty() {
-            s.push(part_types::WITNESS, self.witness.clone()).map_err(&m)?;
+            s.push(part_types::WITNESS, self.witness.clone())
+                .map_err(&m)?;
         }
         Ok(s.to_bytes())
     }
@@ -99,7 +105,11 @@ impl SchemePart {
         let body = f.take(part_types::BODY).unwrap_or_default().to_vec();
         let witness = f.take(part_types::WITNESS).unwrap_or_default().to_vec();
         f.finish().map_err(&m)?;
-        Ok(Self { scheme, body, witness })
+        Ok(Self {
+            scheme,
+            body,
+            witness,
+        })
     }
 }
 
@@ -115,7 +125,10 @@ pub struct CredentialParse<'a> {
 
 impl Default for CredentialParse<'_> {
     fn default() -> Self {
-        Self { max_credential: MAX_CREDENTIAL, known_ext_types: &[] }
+        Self {
+            max_credential: MAX_CREDENTIAL,
+            known_ext_types: &[],
+        }
     }
 }
 
@@ -147,12 +160,20 @@ impl Credential {
     /// A credential naming `offer`, with no parts yet.
     #[must_use]
     pub fn new(offer: OfferRef) -> Self {
-        Self { offer, pay: None, attest: Vec::new(), binding: None, ext: TlvStream::new(), unknown: Vec::new() }
+        Self {
+            offer,
+            pay: None,
+            attest: Vec::new(),
+            binding: None,
+            ext: TlvStream::new(),
+            unknown: Vec::new(),
+        }
     }
 
     /// Sorts the attestation parts by scheme ID, bytewise.
     pub fn sort_attest(&mut self) {
-        self.attest.sort_by(|a, b| a.scheme.as_bytes().cmp(b.scheme.as_bytes()));
+        self.attest
+            .sort_by(|a, b| a.scheme.as_bytes().cmp(b.scheme.as_bytes()));
     }
 
     /// The pay scheme ID, if the credential has `pay`.
@@ -168,7 +189,10 @@ impl Credential {
 
     fn validate(&self) -> Result<(), Error> {
         if self.pay.is_none() && self.attest.is_empty() {
-            return Err(Error::rule(Object::Credential, "a credential holds pay, attest, or both"));
+            return Err(Error::rule(
+                Object::Credential,
+                "a credential holds pay, attest, or both",
+            ));
         }
         for w in self.attest.windows(2) {
             match w[0].scheme.as_bytes().cmp(w[1].scheme.as_bytes()) {
@@ -202,7 +226,11 @@ impl Credential {
             s.insert(t::PAY, p.to_bytes()?).map_err(&m)?;
         }
         if !self.attest.is_empty() {
-            let items = self.attest.iter().map(SchemePart::to_bytes).collect::<Result<Vec<_>, _>>()?;
+            let items = self
+                .attest
+                .iter()
+                .map(SchemePart::to_bytes)
+                .collect::<Result<Vec<_>, _>>()?;
             s.insert(t::ATTEST, entry_list(&items)).map_err(&m)?;
         }
         if let Some(b) = self.binding {
@@ -211,7 +239,10 @@ impl Credential {
         if !self.ext.is_empty() {
             for (typ, _) in self.ext.records() {
                 if !crate::tlv::nested_type_allowed(*typ) {
-                    return Err(Error::Malformed { object: Object::Ext, kind: MalformedKind::TypeNotAllowed(*typ) });
+                    return Err(Error::Malformed {
+                        object: Object::Ext,
+                        kind: MalformedKind::TypeNotAllowed(*typ),
+                    });
                 }
             }
             s.insert(t::EXT, self.ext.to_bytes()).map_err(&m)?;
@@ -236,14 +267,21 @@ impl Credential {
     pub fn parse_with(bytes: &[u8], opts: &CredentialParse<'_>) -> Result<Self, Error> {
         use types as t;
         if bytes.len() > opts.max_credential {
-            return Err(Error::TooLarge { object: Object::Credential, len: bytes.len(), max: opts.max_credential });
+            return Err(Error::TooLarge {
+                object: Object::Credential,
+                len: bytes.len(),
+                max: opts.max_credential,
+            });
         }
         let m = Error::malformed(Object::Credential);
         let stream = TlvStream::parse(bytes, StreamKind::TopLevel).map_err(&m)?;
         let mut f = Fields::new(&stream);
         let version = f.required_tu64(t::VERSION).map_err(&m)?;
         if version != VERSION {
-            return Err(Error::Version { object: Object::Credential, version });
+            return Err(Error::Version {
+                object: Object::Credential,
+                version,
+            });
         }
         let inline = f.take(t::OFFER);
         let pay = f.take(t::PAY).map(SchemePart::parse).transpose()?;
@@ -270,9 +308,21 @@ impl Credential {
         let offer = match (inline, offer_id) {
             (Some(b), None) => OfferRef::Inline(b.to_vec()),
             (None, Some(id)) => OfferRef::Id(OfferId(id)),
-            _ => return Err(Error::rule(Object::Credential, "exactly one of offer and offer_id")),
+            _ => {
+                return Err(Error::rule(
+                    Object::Credential,
+                    "exactly one of offer and offer_id",
+                ));
+            }
         };
-        let c = Self { offer, pay, attest, binding, ext, unknown };
+        let c = Self {
+            offer,
+            pay,
+            attest,
+            binding,
+            ext,
+            unknown,
+        };
         c.validate()?;
         Ok(c)
     }
@@ -282,7 +332,13 @@ impl Credential {
     #[must_use]
     pub fn context(&self, offer_id: &OfferId, action_scope: &Scope) -> Context {
         let attest: Vec<&str> = self.attest_schemes().collect();
-        context(offer_id, action_scope, self.pay_scheme(), &attest, &self.ext.to_bytes())
+        context(
+            offer_id,
+            action_scope,
+            self.pay_scheme(),
+            &attest,
+            &self.ext.to_bytes(),
+        )
     }
 
     /// The Digest of 5.2 under `ctx`.
@@ -306,11 +362,21 @@ impl Credential {
 
     /// The binding-class rule of 5.1: a `binding` when no chosen scheme is
     /// class S is MALFORMED. A scheme `class_of` does not know is not class S.
-    pub fn check_binding_classes(&self, class_of: impl Fn(&str) -> Option<BindingClass>) -> Result<(), Error> {
+    pub fn check_binding_classes(
+        &self,
+        class_of: impl Fn(&str) -> Option<BindingClass>,
+    ) -> Result<(), Error> {
         if self.binding.is_some()
-            && !self.pay_scheme().into_iter().chain(self.attest_schemes()).any(|s| class_of(s) == Some(BindingClass::S))
+            && !self
+                .pay_scheme()
+                .into_iter()
+                .chain(self.attest_schemes())
+                .any(|s| class_of(s) == Some(BindingClass::S))
         {
-            return Err(Error::rule(Object::Credential, "binding without a class S scheme"));
+            return Err(Error::rule(
+                Object::Credential,
+                "binding without a class S scheme",
+            ));
         }
         Ok(())
     }
@@ -369,7 +435,12 @@ pub fn context(
 /// empty) ‖ H(attest body₁) ‖ … ‖ H(attest bodyₙ))` (5.2). `pay_body` is
 /// empty when the credential has no pay.
 #[must_use]
-pub fn digest(ctx: &Context, binding: Option<&[u8; 32]>, pay_body: &[u8], attest_bodies: &[&[u8]]) -> Digest {
+pub fn digest(
+    ctx: &Context,
+    binding: Option<&[u8; 32]>,
+    pay_body: &[u8],
+    attest_bodies: &[&[u8]],
+) -> Digest {
     let mut h = TaggedHasher::new(tags::CRED);
     h.update(&ctx.0);
     let mut lpb = Vec::with_capacity(33);

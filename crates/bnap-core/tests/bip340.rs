@@ -18,7 +18,9 @@ fn official_bip340_vectors() {
     for line in CSV.lines().skip(1) {
         let cols: Vec<&str> = line.splitn(8, ',').collect();
         assert_eq!(cols.len(), 8, "{line}");
-        let (index, sk, pk, aux, msg, sig, ok) = (cols[0], cols[1], cols[2], cols[3], cols[4], cols[5], cols[6]);
+        let (index, sk, pk, aux, msg, sig, ok) = (
+            cols[0], cols[1], cols[2], cols[3], cols[4], cols[5], cols[6],
+        );
         let msg = hex::decode(msg).unwrap();
         let Ok(msg) = <[u8; 32]>::try_from(msg.as_slice()) else {
             // Rows 15 to 18: messages that are not 32 bytes long; the
@@ -35,7 +37,11 @@ fn official_bip340_vectors() {
             signed += 1;
         }
         let expect = ok == "TRUE";
-        assert_eq!(key.verify(&msg, &sig).is_ok(), expect, "row {index}: verification");
+        assert_eq!(
+            key.verify(&msg, &sig).is_ok(),
+            expect,
+            "row {index}: verification"
+        );
         checked += 1;
     }
     assert_eq!(checked, 15);

@@ -182,7 +182,12 @@ mod tests {
 
     #[test]
     fn bigsize_rejects_truncation() {
-        for bad in [&[][..], &[0xfd, 0x01], &[0xfe, 1, 2, 3], &[0xff, 1, 2, 3, 4, 5, 6, 7]] {
+        for bad in [
+            &[][..],
+            &[0xfd, 0x01],
+            &[0xfe, 1, 2, 3],
+            &[0xff, 1, 2, 3, 4, 5, 6, 7],
+        ] {
             assert_eq!(read_bigsize(bad), Err(MalformedKind::Truncated));
         }
     }

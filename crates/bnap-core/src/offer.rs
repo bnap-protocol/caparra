@@ -207,7 +207,15 @@ impl PayEntry {
         let params = f.take(t::PARAMS).map(<[u8]>::to_vec);
         let rate = f.tu64(t::RATE).map_err(&m)?;
         let unknown = f.finish().map_err(&m)?;
-        Ok(Self { scheme, amount, unit, quote_expires, params, rate, unknown })
+        Ok(Self {
+            scheme,
+            amount,
+            unit,
+            quote_expires,
+            params,
+            rate,
+            unknown,
+        })
     }
 }
 
@@ -233,19 +241,33 @@ impl AttestEntry {
     /// An attest entry with only scheme and effect.
     #[must_use]
     pub fn new(scheme: impl Into<String>, effect: Effect) -> Self {
-        Self { scheme: scheme.into(), effect, value: None, epoch: None, params: None, unknown: Vec::new() }
+        Self {
+            scheme: scheme.into(),
+            effect,
+            value: None,
+            epoch: None,
+            params: None,
+            unknown: Vec::new(),
+        }
     }
 
     /// A discount of `bp` basis points.
     #[must_use]
     pub fn discount(scheme: impl Into<String>, bp: u64) -> Self {
-        Self { value: Some(bp), ..Self::new(scheme, Effect::Discount) }
+        Self {
+            value: Some(bp),
+            ..Self::new(scheme, Effect::Discount)
+        }
     }
 
     /// A quota of `value` actions per `epoch` seconds.
     #[must_use]
     pub fn quota(scheme: impl Into<String>, value: u64, epoch: u64) -> Self {
-        Self { value: Some(value), epoch: Some(epoch), ..Self::new(scheme, Effect::Quota) }
+        Self {
+            value: Some(value),
+            epoch: Some(epoch),
+            ..Self::new(scheme, Effect::Quota)
+        }
     }
 
     /// Serializes the entry as a nested stream.
@@ -264,7 +286,12 @@ impl AttestEntry {
         if let Some(p) = &self.params {
             s.insert(t::PARAMS, p.clone()).map_err(&m)?;
         }
-        insert_unknown(&mut s, &self.unknown, Object::AttestEntry, StreamKind::Nested)?;
+        insert_unknown(
+            &mut s,
+            &self.unknown,
+            Object::AttestEntry,
+            StreamKind::Nested,
+        )?;
         Ok(s.to_bytes())
     }
 
@@ -283,7 +310,14 @@ impl AttestEntry {
         let epoch = f.tu64(t::EPOCH).map_err(&m)?;
         let params = f.take(t::PARAMS).map(<[u8]>::to_vec);
         let unknown = f.finish().map_err(&m)?;
-        let e = Self { scheme, effect, value, epoch, params, unknown };
+        let e = Self {
+            scheme,
+            effect,
+            value,
+            epoch,
+            params,
+            unknown,
+        };
         e.check_ranges()?;
         Ok(e)
     }
@@ -326,7 +360,12 @@ impl NativeEntry {
     /// A native entry.
     #[must_use]
     pub fn new(pay_index: u64, kind: impl Into<String>, data: impl Into<Vec<u8>>) -> Self {
-        Self { pay_index, kind: kind.into(), data: data.into(), unknown: Vec::new() }
+        Self {
+            pay_index,
+            kind: kind.into(),
+            data: data.into(),
+            unknown: Vec::new(),
+        }
     }
 
     /// Serializes the entry as a nested stream.
@@ -337,7 +376,12 @@ impl NativeEntry {
         s.insert(t::PAY_INDEX, tu64(self.pay_index)).map_err(&m)?;
         s.insert(t::KIND, self.kind.as_bytes()).map_err(&m)?;
         s.insert(t::DATA, self.data.clone()).map_err(&m)?;
-        insert_unknown(&mut s, &self.unknown, Object::NativeEntry, StreamKind::Nested)?;
+        insert_unknown(
+            &mut s,
+            &self.unknown,
+            Object::NativeEntry,
+            StreamKind::Nested,
+        )?;
         Ok(s.to_bytes())
     }
 
@@ -351,7 +395,12 @@ impl NativeEntry {
         let kind = f.required_utf8(t::KIND).map_err(&m)?;
         let data = f.required(t::DATA).map_err(&m)?.to_vec();
         let unknown = f.finish().map_err(&m)?;
-        Ok(Self { pay_index, kind, data, unknown })
+        Ok(Self {
+            pay_index,
+            kind,
+            data,
+            unknown,
+        })
     }
 }
 
@@ -366,13 +415,22 @@ fn insert_unknown(
 ) -> Result<(), Error> {
     for (t, v) in unknown {
         if t % 2 == 0 {
-            return Err(Error::Malformed { object, kind: MalformedKind::UnknownEvenType(*t) });
+            return Err(Error::Malformed {
+                object,
+                kind: MalformedKind::UnknownEvenType(*t),
+            });
         }
         if is_signature_type(*t) {
-            return Err(Error::rule(object, "extra records may not use the signature range"));
+            return Err(Error::rule(
+                object,
+                "extra records may not use the signature range",
+            ));
         }
         if kind == StreamKind::Nested && !crate::tlv::nested_type_allowed(*t) {
-            return Err(Error::Malformed { object, kind: MalformedKind::TypeNotAllowed(*t) });
+            return Err(Error::Malformed {
+                object,
+                kind: MalformedKind::TypeNotAllowed(*t),
+            });
         }
         s.insert(*t, v.clone()).map_err(Error::malformed(object))?;
     }
@@ -445,7 +503,8 @@ impl OfferFields {
             s.insert(t::ROUTE_SCOPE, Vec::new()).map_err(&m)?;
         }
         if !self.headers.is_empty() {
-            s.insert(t::HEADERS, self.headers.join(",").into_bytes()).map_err(&m)?;
+            s.insert(t::HEADERS, self.headers.join(",").into_bytes())
+                .map_err(&m)?;
         }
         if self.metered {
             s.insert(t::METERED, Vec::new()).map_err(&m)?;
@@ -457,18 +516,30 @@ impl OfferFields {
         s.insert(t::OFFER_KEY, self.offer_key.0).map_err(&m)?;
         s.insert(t::NONCE, self.nonce).map_err(&m)?;
         if !self.pay.is_empty() {
-            let items = self.pay.iter().map(PayEntry::to_bytes).collect::<Result<Vec<_>, _>>()?;
+            let items = self
+                .pay
+                .iter()
+                .map(PayEntry::to_bytes)
+                .collect::<Result<Vec<_>, _>>()?;
             s.insert(t::PAY, entry_list(&items)).map_err(&m)?;
         }
         if !self.attest.is_empty() {
-            let items = self.attest.iter().map(AttestEntry::to_bytes).collect::<Result<Vec<_>, _>>()?;
+            let items = self
+                .attest
+                .iter()
+                .map(AttestEntry::to_bytes)
+                .collect::<Result<Vec<_>, _>>()?;
             s.insert(t::ATTEST, entry_list(&items)).map_err(&m)?;
         }
         if let Some(i) = self.issued_at {
             s.insert(t::ISSUED_AT, tu64(i)).map_err(&m)?;
         }
         if with_native && !self.native.is_empty() {
-            let items = self.native.iter().map(NativeEntry::to_bytes).collect::<Result<Vec<_>, _>>()?;
+            let items = self
+                .native
+                .iter()
+                .map(NativeEntry::to_bytes)
+                .collect::<Result<Vec<_>, _>>()?;
             s.insert(t::NATIVE, entry_list(&items)).map_err(&m)?;
         }
         insert_unknown(&mut s, &self.unknown, Object::Offer, StreamKind::TopLevel)?;
@@ -481,7 +552,10 @@ impl OfferFields {
     /// Native artifacts that must embed the OfferID are made after this call
     /// and added to [`OfferFields::native`]; the OfferID does not change.
     pub fn offer_id(&self) -> Result<OfferId, Error> {
-        Ok(OfferId(tagged_hash(tags::OFFER, &self.to_stream(false)?.to_bytes())))
+        Ok(OfferId(tagged_hash(
+            tags::OFFER,
+            &self.to_stream(false)?.to_bytes(),
+        )))
     }
 
     /// Signs the offer (4.2 step 4) and returns it parsed, with the default
@@ -491,7 +565,12 @@ impl OfferFields {
     /// current `K_mac`; pass `None` only for an offer published in advance,
     /// which then needs `issued_at`. `aux` is the BIP-340 auxiliary
     /// randomness.
-    pub fn sign(&self, key: &SigningKey, mac_key: Option<&[u8; 32]>, aux: &[u8; 32]) -> Result<Offer, Error> {
+    pub fn sign(
+        &self,
+        key: &SigningKey,
+        mac_key: Option<&[u8; 32]>,
+        aux: &[u8; 32],
+    ) -> Result<Offer, Error> {
         self.sign_with_limit(key, mac_key, aux, MAX_OFFER)
     }
 
@@ -504,10 +583,16 @@ impl OfferFields {
         max: usize,
     ) -> Result<Offer, Error> {
         if key.public_key() != self.offer_key {
-            return Err(Error::rule(Object::Offer, "offer_key is not the signing key"));
+            return Err(Error::rule(
+                Object::Offer,
+                "offer_key is not the signing key",
+            ));
         }
         if mac_key.is_none() && self.issued_at.is_none() {
-            return Err(Error::rule(Object::Offer, "an offer without mac needs issued_at"));
+            return Err(Error::rule(
+                Object::Offer,
+                "an offer without mac needs issued_at",
+            ));
         }
         let mut s = self.to_stream(true)?;
         let signed = s.to_bytes();
@@ -523,7 +608,10 @@ impl OfferFields {
     /// The pay entry for `scheme`, with its index.
     #[must_use]
     pub fn pay_entry(&self, scheme: &str) -> Option<(usize, &PayEntry)> {
-        self.pay.iter().enumerate().find(|(_, e)| e.scheme == scheme)
+        self.pay
+            .iter()
+            .enumerate()
+            .find(|(_, e)| e.scheme == scheme)
     }
 
     /// The attest entry for `scheme`.
@@ -579,7 +667,10 @@ impl OfferFields {
             return bad("a route-scope offer carries no native record");
         }
         for n in &self.native {
-            if usize::try_from(n.pay_index).ok().is_none_or(|i| i >= self.pay.len()) {
+            if usize::try_from(n.pay_index)
+                .ok()
+                .is_none_or(|i| i >= self.pay.len())
+            {
                 return bad("native pay_index outside pay");
             }
         }
@@ -599,9 +690,12 @@ fn parse_headers(s: &str) -> Result<Vec<String>, MalformedKind> {
 
 /// A field name is a non-empty RFC 9110 token without upper-case letters.
 fn check_header_name(h: &str) -> Result<(), MalformedKind> {
-    let tchar = |b: u8| b.is_ascii_digit() || b.is_ascii_lowercase() || b"!#$%&'*+-.^_`|~".contains(&b);
+    let tchar =
+        |b: u8| b.is_ascii_digit() || b.is_ascii_lowercase() || b"!#$%&'*+-.^_`|~".contains(&b);
     if h.is_empty() || !h.bytes().all(tchar) {
-        return Err(MalformedKind::Rule("headers must be comma-separated lower-case field names"));
+        return Err(MalformedKind::Rule(
+            "headers must be comma-separated lower-case field names",
+        ));
     }
     Ok(())
 }
@@ -629,14 +723,21 @@ impl Offer {
     pub fn parse_with_limit(bytes: &[u8], max: usize) -> Result<Self, Error> {
         use types as t;
         if bytes.len() > max {
-            return Err(Error::TooLarge { object: Object::Offer, len: bytes.len(), max });
+            return Err(Error::TooLarge {
+                object: Object::Offer,
+                len: bytes.len(),
+                max,
+            });
         }
         let m = Error::malformed(Object::Offer);
         let stream = TlvStream::parse(bytes, StreamKind::TopLevel).map_err(&m)?;
         let mut f = Fields::new(&stream);
         let version = f.required_tu64(t::VERSION).map_err(&m)?;
         if version != VERSION {
-            return Err(Error::Version { object: Object::Offer, version });
+            return Err(Error::Version {
+                object: Object::Offer,
+                version,
+            });
         }
         let scope = Scope(f.required_fixed::<32>(t::SCOPE).map_err(&m)?);
         let route_scope = f.flag(t::ROUTE_SCOPE).map_err(&m)?;
@@ -655,8 +756,11 @@ impl Offer {
         let native = parse_list(f.take(t::NATIVE), NativeEntry::parse)?;
         let offer_sig = Signature(f.required_fixed::<64>(t::OFFER_SIG).map_err(&m)?);
         let mac = f.fixed::<32>(t::MAC).map_err(&m)?;
-        let (signature_unknown, unknown): (Vec<_>, Vec<_>) =
-            f.finish().map_err(&m)?.into_iter().partition(|(t, _)| is_signature_type(*t));
+        let (signature_unknown, unknown): (Vec<_>, Vec<_>) = f
+            .finish()
+            .map_err(&m)?
+            .into_iter()
+            .partition(|(t, _)| is_signature_type(*t));
         let fields = OfferFields {
             scope,
             route_scope,
@@ -675,7 +779,15 @@ impl Offer {
         fields.validate()?;
         let signed = stream.signed_bytes(&[]);
         let offer_id = OfferId(tagged_hash(tags::OFFER, &stream.signed_bytes(&[t::NATIVE])));
-        Ok(Self { bytes: bytes.to_vec(), fields, offer_sig, mac, offer_id, signed, signature_unknown })
+        Ok(Self {
+            bytes: bytes.to_vec(),
+            fields,
+            offer_sig,
+            mac,
+            offer_id,
+            signed,
+            signature_unknown,
+        })
     }
 
     /// The offer bytes as received.
@@ -744,7 +856,10 @@ impl Offer {
         let Some(tag) = self.mac else {
             return Err(Error::BadOffer(BadOffer::Mac));
         };
-        if mac_keys.iter().any(|k| hmac_sha256_verify(k, &self.signed, &tag)) {
+        if mac_keys
+            .iter()
+            .any(|k| hmac_sha256_verify(k, &self.signed, &tag))
+        {
             Ok(())
         } else {
             Err(Error::BadOffer(BadOffer::Mac))
@@ -758,7 +873,11 @@ impl Offer {
     /// name an `offer_key` in `held_offer_keys` (keys this gate holds for
     /// use `offer` and lists in its current manifest), and its `offer_sig`
     /// must verify. The gate never trusts a key because the offer names it.
-    pub fn check_authenticity(&self, mac_keys: &[[u8; 32]], held_offer_keys: &[Key]) -> Result<(), Error> {
+    pub fn check_authenticity(
+        &self,
+        mac_keys: &[[u8; 32]],
+        held_offer_keys: &[Key],
+    ) -> Result<(), Error> {
         if self.mac.is_some() {
             return self.verify_mac(mac_keys);
         }
@@ -796,7 +915,11 @@ impl Offer {
     /// An exact-scope offer must name `action_scope`, the carrier's scope of
     /// this request. A route-scope offer must name `route_scope`, the scope
     /// of the route this request matched; `None` means no route matched.
-    pub fn check_scope(&self, action_scope: &Scope, route_scope: Option<&Scope>) -> Result<(), Error> {
+    pub fn check_scope(
+        &self,
+        action_scope: &Scope,
+        route_scope: Option<&Scope>,
+    ) -> Result<(), Error> {
         let ok = if self.fields.route_scope {
             route_scope == Some(&self.fields.scope)
         } else {
@@ -833,7 +956,10 @@ impl Offer {
     ///
     /// A gate MUST NOT build an offer that fails this; a client MAY run it
     /// on offers it receives.
-    pub fn check_binding_classes(&self, class_of: impl Fn(&str) -> Option<BindingClass>) -> Result<(), Error> {
+    pub fn check_binding_classes(
+        &self,
+        class_of: impl Fn(&str) -> Option<BindingClass>,
+    ) -> Result<(), Error> {
         check_classes(&self.fields, class_of)
     }
 
@@ -899,30 +1025,48 @@ fn parse_list<T>(v: Option<&[u8]>, parse: fn(&[u8]) -> Result<T, Error>) -> Resu
         .collect()
 }
 
-fn check_classes(f: &OfferFields, class_of: impl Fn(&str) -> Option<BindingClass>) -> Result<(), Error> {
+fn check_classes(
+    f: &OfferFields,
+    class_of: impl Fn(&str) -> Option<BindingClass>,
+) -> Result<(), Error> {
     let class = |s: &str| class_of(s).unwrap_or(BindingClass::None);
     let viol = |scheme: &str, rule| {
         Err(Error::Malformed {
             object: Object::Offer,
-            kind: MalformedKind::ClassViolation { scheme: scheme.to_owned(), rule },
+            kind: MalformedKind::ClassViolation {
+                scheme: scheme.to_owned(),
+                rule,
+            },
         })
     };
     for e in &f.pay {
         let c = class(&e.scheme);
         if f.route_scope && !c.route_scope_allowed() {
-            return viol(&e.scheme, "only class S or A may appear in a route-scope offer");
+            return viol(
+                &e.scheme,
+                "only class S or A may appear in a route-scope offer",
+            );
         }
         if c == BindingClass::None && e.amount > 0 {
-            return viol(&e.scheme, "a class None value scheme is admissible only at price 0");
+            return viol(
+                &e.scheme,
+                "a class None value scheme is admissible only at price 0",
+            );
         }
     }
     for e in &f.attest {
         let c = class(&e.scheme);
         if f.route_scope && !c.route_scope_allowed() {
-            return viol(&e.scheme, "only class S or A may appear in a route-scope offer");
+            return viol(
+                &e.scheme,
+                "only class S or A may appear in a route-scope offer",
+            );
         }
         if e.effect != Effect::Required && !c.may_affect_price() {
-            return viol(&e.scheme, "only class S, A or O may waive, discount or carry a quota");
+            return viol(
+                &e.scheme,
+                "only class S, A or O may waive, discount or carry a quota",
+            );
         }
     }
     for n in &f.native {
@@ -939,7 +1083,10 @@ fn check_classes(f: &OfferFields, class_of: impl Fn(&str) -> Option<BindingClass
 impl OfferFields {
     /// [`Offer::check_binding_classes`] on unsigned fields, for a gate to run
     /// before it signs.
-    pub fn check_binding_classes(&self, class_of: impl Fn(&str) -> Option<BindingClass>) -> Result<(), Error> {
+    pub fn check_binding_classes(
+        &self,
+        class_of: impl Fn(&str) -> Option<BindingClass>,
+    ) -> Result<(), Error> {
         check_classes(self, class_of)
     }
 }
@@ -975,7 +1122,11 @@ impl GateOfferCheck<'_> {
     /// found in the gate's cache by OfferID.
     pub fn check(&self, offer: &Offer, chosen_pay: Option<&str>) -> Result<(), Error> {
         if offer.bytes.len() > self.max_offer {
-            return Err(Error::TooLarge { object: Object::Offer, len: offer.bytes.len(), max: self.max_offer });
+            return Err(Error::TooLarge {
+                object: Object::Offer,
+                len: offer.bytes.len(),
+                max: self.max_offer,
+            });
         }
         offer.check_authenticity(self.mac_keys, self.offer_keys)?;
         offer.check_expiry(self.now, chosen_pay)?;

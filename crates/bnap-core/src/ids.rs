@@ -38,7 +38,12 @@ pub fn rail_id(kind: &str, canonical: &[u8]) -> RailId {
 ///
 /// The ids are sorted but not deduplicated, as in the reference encoder.
 #[must_use]
-pub fn replay_key(ctx: &Context, pay_body: &[u8], attest_bodies: &[&[u8]], ids: &[[u8; 32]]) -> ReplayKey {
+pub fn replay_key(
+    ctx: &Context,
+    pay_body: &[u8],
+    attest_bodies: &[&[u8]],
+    ids: &[[u8; 32]],
+) -> ReplayKey {
     let mut sorted = ids.to_vec();
     sorted.sort_unstable();
     let mut h = TaggedHasher::new(tags::REPLAY);
@@ -140,7 +145,10 @@ mod tests {
         let ctx = Context([1; 32]);
         let a = [[3u8; 32], [2u8; 32]];
         let b = [[2u8; 32], [3u8; 32]];
-        assert_eq!(replay_key(&ctx, b"x", &[], &a), replay_key(&ctx, b"x", &[], &b));
+        assert_eq!(
+            replay_key(&ctx, b"x", &[], &a),
+            replay_key(&ctx, b"x", &[], &b)
+        );
     }
 
     #[test]
@@ -155,7 +163,10 @@ mod tests {
     #[test]
     fn rail_bytes() {
         assert_eq!(rail::onchain(&[0; 32], 1).len(), 36);
-        assert_eq!(rail::evm("eip155:8453", &[1; 20], &[2; 20], &[3; 32]).len(), 12 + 72);
+        assert_eq!(
+            rail::evm("eip155:8453", &[1; 20], &[2; 20], &[3; 32]).len(),
+            12 + 72
+        );
         assert_eq!(rail::card("p", "id"), b"\x01p\x02id");
     }
 }

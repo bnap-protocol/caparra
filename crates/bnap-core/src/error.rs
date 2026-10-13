@@ -138,7 +138,10 @@ impl ErrorCode {
     /// WRONG_SCOPE and REQUIRED).
     #[must_use]
     pub fn sends_fresh_offer(self) -> bool {
-        matches!(self, Self::BadOffer | Self::Stale | Self::WrongScope | Self::Required)
+        matches!(
+            self,
+            Self::BadOffer | Self::Stale | Self::WrongScope | Self::Required
+        )
     }
 
     /// True when the answer carries `retry_after` (PENDING and RATE_LIMITED).
@@ -406,7 +409,10 @@ impl Error {
     }
 
     pub(crate) fn rule(object: Object, rule: &'static str) -> Self {
-        Self::Malformed { object, kind: MalformedKind::Rule(rule) }
+        Self::Malformed {
+            object,
+            kind: MalformedKind::Rule(rule),
+        }
     }
 }
 
@@ -438,7 +444,13 @@ impl ErrorObject {
     /// A bare error with a socket code.
     #[must_use]
     pub fn new(code: ErrorCode) -> Self {
-        Self { code: code.code(), scheme_code: None, detail: None, retry_after: None, unknown: Vec::new() }
+        Self {
+            code: code.code(),
+            scheme_code: None,
+            detail: None,
+            retry_after: None,
+            unknown: Vec::new(),
+        }
     }
 
     /// Sets `detail`, cut at a character boundary to at most 256 bytes.
@@ -461,7 +473,10 @@ impl ErrorObject {
     /// Serializes the Error object.
     pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
         if self.detail.as_ref().is_some_and(|d| d.len() > MAX_DETAIL) {
-            return Err(Error::rule(Object::ErrorObject, "detail longer than 256 bytes"));
+            return Err(Error::rule(
+                Object::ErrorObject,
+                "detail longer than 256 bytes",
+            ));
         }
         let mut s = TlvStream::new();
         let m = Error::malformed(Object::ErrorObject);
@@ -492,17 +507,29 @@ impl ErrorObject {
         let mut f = Fields::new(&s);
         let version = f.required_tu64(0).map_err(&m)?;
         if version != VERSION {
-            return Err(Error::Version { object: Object::ErrorObject, version });
+            return Err(Error::Version {
+                object: Object::ErrorObject,
+                version,
+            });
         }
         let code = f.required_tu64(2).map_err(&m)?;
         let scheme_code = f.utf8(4).map_err(&m)?;
         let detail = f.utf8(6).map_err(&m)?;
         if detail.as_ref().is_some_and(|d| d.len() > MAX_DETAIL) {
-            return Err(Error::rule(Object::ErrorObject, "detail longer than 256 bytes"));
+            return Err(Error::rule(
+                Object::ErrorObject,
+                "detail longer than 256 bytes",
+            ));
         }
         let retry_after = f.tu64(8).map_err(&m)?;
         let unknown = f.finish().map_err(&m)?;
-        Ok(Self { code, scheme_code, detail, retry_after, unknown })
+        Ok(Self {
+            code,
+            scheme_code,
+            detail,
+            retry_after,
+            unknown,
+        })
     }
 }
 
@@ -541,7 +568,10 @@ mod tests {
         // draft-00 10.3: `BNAP-Error: AAEBAgEQ` is 00 01 01 02 01 10.
         let b = ErrorObject::new(ErrorCode::Required).to_bytes().unwrap();
         assert_eq!(b, [0x00, 0x01, 0x01, 0x02, 0x01, 0x10]);
-        assert_eq!(ErrorObject::parse(&b).unwrap().socket_code(), Some(ErrorCode::Required));
+        assert_eq!(
+            ErrorObject::parse(&b).unwrap().socket_code(),
+            Some(ErrorCode::Required)
+        );
     }
 
     #[test]

@@ -42,7 +42,10 @@ fn odd_nested_type() -> impl Strategy<Value = u64> {
 }
 
 fn odd_top_type() -> impl Strategy<Value = u64> {
-    prop_oneof![odd_nested_type(), (1001u64..1_000_000).prop_map(|t| 2 * t + 1)]
+    prop_oneof![
+        odd_nested_type(),
+        (1001u64..1_000_000).prop_map(|t| 2 * t + 1)
+    ]
 }
 
 fn unknown(kind: impl Strategy<Value = u64>) -> impl Strategy<Value = Vec<(u64, Vec<u8>)>> {
@@ -59,15 +62,21 @@ fn pay_entry(metered: bool, expires: u64) -> impl Strategy<Value = PayEntry> {
         prop::option::of(any::<u64>()),
         unknown(odd_nested_type()),
     )
-        .prop_map(move |(scheme, amount, unit, quote_expires, params, rate, unknown)| PayEntry {
-            scheme,
-            amount,
-            unit,
-            quote_expires,
-            params,
-            rate: if metered { Some(rate.unwrap_or(1)) } else { rate },
-            unknown,
-        })
+        .prop_map(
+            move |(scheme, amount, unit, quote_expires, params, rate, unknown)| PayEntry {
+                scheme,
+                amount,
+                unit,
+                quote_expires,
+                params,
+                rate: if metered {
+                    Some(rate.unwrap_or(1))
+                } else {
+                    rate
+                },
+                unknown,
+            },
+        )
 }
 
 fn attest_entry() -> impl Strategy<Value = AttestEntry> {
@@ -94,7 +103,9 @@ fn attest_entry() -> impl Strategy<Value = AttestEntry> {
 
 fn dedup_by_scheme<T>(v: Vec<T>, scheme: impl Fn(&T) -> &str) -> Vec<T> {
     let mut seen = std::collections::BTreeSet::new();
-    v.into_iter().filter(|e| seen.insert(scheme(e).to_owned())).collect()
+    v.into_iter()
+        .filter(|e| seen.insert(scheme(e).to_owned()))
+        .collect()
 }
 
 prop_compose! {
@@ -138,7 +149,11 @@ prop_compose! {
 }
 
 fn scheme_part() -> impl Strategy<Value = SchemePart> {
-    (scheme_id(), bytes(40), bytes(70)).prop_map(|(scheme, body, witness)| SchemePart { scheme, body, witness })
+    (scheme_id(), bytes(40), bytes(70)).prop_map(|(scheme, body, witness)| SchemePart {
+        scheme,
+        body,
+        witness,
+    })
 }
 
 prop_compose! {
@@ -197,7 +212,12 @@ prop_compose! {
 fn tlv_shaped() -> impl Strategy<Value = Vec<u8>> {
     prop::collection::btree_map(
         prop_oneof![0u64..30, 238u64..246, Just(3_000_000_001)],
-        prop_oneof![bytes(40), Just(Vec::new()), Just(vec![1]), any::<[u8; 32]>().prop_map(|a| a.to_vec())],
+        prop_oneof![
+            bytes(40),
+            Just(Vec::new()),
+            Just(vec![1]),
+            any::<[u8; 32]>().prop_map(|a| a.to_vec())
+        ],
         0..14,
     )
     .prop_map(|m| TlvStream::from_records(m).unwrap().to_bytes())
@@ -228,16 +248,26 @@ fn sample_offer() -> Vec<u8> {
     let mut p = PayEntry::new("bnap:notes", 2100, "sat");
     p.rate = Some(500);
     f.pay = vec![p, PayEntry::new("payment:lightning/charge", 21, "sat")];
-    f.attest = vec![AttestEntry::discount("httpsig:web-bot-auth", 2000), AttestEntry::quota("q:x", 5, 60)];
+    f.attest = vec![
+        AttestEntry::discount("httpsig:web-bot-auth", 2000),
+        AttestEntry::quota("q:x", 5, 60),
+    ];
     f.native = vec![NativeEntry::new(1, "bolt11", b"lnbc".to_vec())];
     f.headers = vec!["accept".into()];
     f.unknown = vec![(3_000_000_001, vec![10, 10])];
-    f.sign(&offer_key(), Some(&mac()), &AUX0).unwrap().bytes().to_vec()
+    f.sign(&offer_key(), Some(&mac()), &AUX0)
+        .unwrap()
+        .bytes()
+        .to_vec()
 }
 
 fn sample_credential() -> Vec<u8> {
     let mut c = Credential::new(OfferRef::Inline(sample_offer()));
-    c.pay = Some(SchemePart { scheme: "bnap:notes".into(), body: b"b".to_vec(), witness: vec![7; 64] });
+    c.pay = Some(SchemePart {
+        scheme: "bnap:notes".into(),
+        body: b"b".to_vec(),
+        witness: vec![7; 64],
+    });
     c.attest = vec![SchemePart::new("httpsig:web-bot-auth", b"w".to_vec())];
     c.binding = Some([1; 32]);
     c.ext = TlvStream::from_records([(1, b"e".to_vec())]).unwrap();
@@ -306,7 +336,9 @@ fn json_value() -> impl Strategy<Value = serde_json::Value> {
         any::<bool>().prop_map(Value::Bool),
         any::<i64>().prop_map(Value::from),
         any::<u64>().prop_map(Value::from),
-        any::<f64>().prop_filter("finite", |f| f.is_finite()).prop_map(Value::from),
+        any::<f64>()
+            .prop_filter("finite", |f| f.is_finite())
+            .prop_map(Value::from),
         "[a-z0-9]{0,70}".prop_map(Value::String),
     ];
     leaf.prop_recursive(4, 48, 8, |inner| {
@@ -326,7 +358,9 @@ fn json_value() -> impl Strategy<Value = serde_json::Value> {
                 inner,
                 0..8
             )
-            .prop_map(|m: BTreeMap<String, serde_json::Value>| serde_json::Value::Object(m.into_iter().collect())),
+            .prop_map(|m: BTreeMap<String, serde_json::Value>| {
+                serde_json::Value::Object(m.into_iter().collect())
+            }),
         ]
     })
 }

@@ -164,7 +164,9 @@ impl Route {
     /// ignored) matches this route.
     #[must_use]
     pub fn matches(&self, method: &str, path: &str) -> bool {
-        let Some((m, p)) = self.match_.split_once(' ') else { return false };
+        let Some((m, p)) = self.match_.split_once(' ') else {
+            return false;
+        };
         if m != method {
             return false;
         }
@@ -292,15 +294,15 @@ impl SignedManifest {
     /// members, `bnap == 1`, `max_age` at most 30 days and the origin form.
     /// The signature is not checked; see [`SignedManifest::verify`].
     pub fn parse(bytes: &[u8]) -> Result<Self, ManifestError> {
-        let mut v: Value = serde_json::from_slice(bytes).map_err(|e| ManifestError::Json(e.to_string()))?;
+        let mut v: Value =
+            serde_json::from_slice(bytes).map_err(|e| ManifestError::Json(e.to_string()))?;
         check_values(&v)?;
         let Value::Object(o) = &mut v else {
             return Err(ManifestError::Json("top level is not an object".into()));
         };
         let sig = match o.remove("sig") {
-            Some(Value::String(s)) => {
-                Signature::from_hex(&s).map_err(|_| ManifestError::Member("sig is not 64 hex bytes".into()))?
-            }
+            Some(Value::String(s)) => Signature::from_hex(&s)
+                .map_err(|_| ManifestError::Member("sig is not 64 hex bytes".into()))?,
             _ => return Err(ManifestError::Member("sig missing or not a string".into())),
         };
         let manifest: Manifest =
@@ -314,7 +316,12 @@ impl SignedManifest {
         if !valid_origin(&manifest.origin) {
             return Err(ManifestError::Origin);
         }
-        Ok(Self { manifest, unsigned: v, sig, hash: sha256(bytes) })
+        Ok(Self {
+            manifest,
+            unsigned: v,
+            sig,
+            hash: sha256(bytes),
+        })
     }
 
     /// The typed manifest.
@@ -343,7 +350,10 @@ impl SignedManifest {
     /// Verifies `sig` under the manifest's own `root`.
     pub fn verify(&self) -> Result<(), ManifestError> {
         let msg = tagged_hash(tags::MANIFEST, &self.jcs()?);
-        self.manifest.root.verify(&msg, &self.sig).map_err(|_| ManifestError::Signature)
+        self.manifest
+            .root
+            .verify(&msg, &self.sig)
+            .map_err(|_| ManifestError::Signature)
     }
 }
 
@@ -356,7 +366,13 @@ fn check_values(v: &Value) -> Result<(), ManifestError> {
         Value::Number(n) => {
             let ok = n.as_u64().is_some_and(|u| u <= MAX_JSON_INT)
                 || n.as_i64().is_some_and(|i| i.unsigned_abs() <= MAX_JSON_INT);
-            if ok { Ok(()) } else { Err(ManifestError::Value("number that is not an integer within 2^53")) }
+            if ok {
+                Ok(())
+            } else {
+                Err(ManifestError::Value(
+                    "number that is not an integer within 2^53",
+                ))
+            }
         }
         Value::Array(a) => a.iter().try_for_each(check_values),
         Value::Object(o) => o.values().try_for_each(check_values),
@@ -366,7 +382,9 @@ fn check_values(v: &Value) -> Result<(), ManifestError> {
 /// An RFC 6454 origin serialization as draft-00 9.1 asks: lower case,
 /// `scheme://host[:port]`, no path, default port omitted.
 fn valid_origin(o: &str) -> bool {
-    let Some((scheme, authority)) = o.split_once("://") else { return false };
+    let Some((scheme, authority)) = o.split_once("://") else {
+        return false;
+    };
     if scheme.is_empty() || authority.is_empty() || o.bytes().any(|b| b.is_ascii_uppercase()) {
         return false;
     }
@@ -427,7 +445,12 @@ pub fn accept(
         return Err(ManifestError::Origin);
     }
     sm.verify()?;
-    if now < m.issued.saturating_sub(CLOCK_SKEW) || now > m.issued.saturating_add(m.max_age).saturating_add(CLOCK_SKEW) {
+    if now < m.issued.saturating_sub(CLOCK_SKEW)
+        || now
+            > m.issued
+                .saturating_add(m.max_age)
+                .saturating_add(CLOCK_SKEW)
+    {
         return Err(ManifestError::Time);
     }
     if let Some(p) = pin.filter(|p| p.is_live(now)) {
@@ -447,7 +470,10 @@ pub fn accept(
         hash: sm.hash(),
         required: m.required,
         keys: m.keys.clone(),
-        until: m.issued.saturating_add(m.max_age).min(now.saturating_add(MAX_PIN)),
+        until: m
+            .issued
+            .saturating_add(m.max_age)
+            .min(now.saturating_add(MAX_PIN)),
     };
     Ok((new, sm))
 }
@@ -498,7 +524,10 @@ mod tests {
 
     #[test]
     fn value_rules() {
-        assert!(check_values(&serde_json::json!({"a": [1, true, "x", {"b": 9007199254740992u64}]})).is_ok());
+        assert!(
+            check_values(&serde_json::json!({"a": [1, true, "x", {"b": 9007199254740992u64}]}))
+                .is_ok()
+        );
         assert!(check_values(&serde_json::json!({"a": 9007199254740993u64})).is_err());
         assert!(check_values(&serde_json::json!({"a": 1.5})).is_err());
         assert!(check_values(&serde_json::json!({"a": null})).is_err());

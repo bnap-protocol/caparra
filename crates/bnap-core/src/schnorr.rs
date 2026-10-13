@@ -197,7 +197,6 @@ impl fmt::Debug for SigningKey {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,7 +209,10 @@ mod tests {
         assert_eq!(k.public_key().verify(&msg, &sig), Ok(()));
         let mut other = msg;
         other[0] ^= 1;
-        assert_eq!(k.public_key().verify(&other, &sig), Err(SchnorrError::BadSignature));
+        assert_eq!(
+            k.public_key().verify(&other, &sig),
+            Err(SchnorrError::BadSignature)
+        );
         assert!(SigningKey::from_secret_bytes(&[0u8; 32]).is_err());
         assert!(SigningKey::from_secret_bytes(&[0xff; 32]).is_err());
     }

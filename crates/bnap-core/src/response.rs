@@ -116,7 +116,10 @@ impl ResponseFields {
                 return Err(m(MalformedKind::UnknownEvenType(*typ)));
             }
             if is_signature_type(*typ) {
-                return Err(Error::rule(Object::Response, "extra records may not use the signature range"));
+                return Err(Error::rule(
+                    Object::Response,
+                    "extra records may not use the signature range",
+                ));
             }
             s.insert(*typ, v.clone()).map_err(&m)?;
         }
@@ -130,13 +133,22 @@ impl ResponseFields {
     }
 
     /// [`ResponseFields::sign`] with a size limit raised by the manifest.
-    pub fn sign_with_limit(&self, key: &SigningKey, aux: &[u8; 32], max: usize) -> Result<Response, Error> {
+    pub fn sign_with_limit(
+        &self,
+        key: &SigningKey,
+        aux: &[u8; 32],
+        max: usize,
+    ) -> Result<Response, Error> {
         if key.public_key() != self.receipt_key {
-            return Err(Error::rule(Object::Response, "receipt_key is not the signing key"));
+            return Err(Error::rule(
+                Object::Response,
+                "receipt_key is not the signing key",
+            ));
         }
         let mut s = self.to_stream()?;
         let ack = key.sign(&tagged_hash(tags::ACK, &s.to_bytes()), aux);
-        s.insert(types::ACK, ack.0).map_err(Error::malformed(Object::Response))?;
+        s.insert(types::ACK, ack.0)
+            .map_err(Error::malformed(Object::Response))?;
         Response::parse_with_limit(&s.to_bytes(), max)
     }
 }
@@ -180,14 +192,21 @@ impl Response {
     pub fn parse_with_limit(bytes: &[u8], max: usize) -> Result<Self, Error> {
         use types as t;
         if bytes.len() > max {
-            return Err(Error::TooLarge { object: Object::Response, len: bytes.len(), max });
+            return Err(Error::TooLarge {
+                object: Object::Response,
+                len: bytes.len(),
+                max,
+            });
         }
         let m = Error::malformed(Object::Response);
         let stream = TlvStream::parse(bytes, StreamKind::TopLevel).map_err(&m)?;
         let mut f = Fields::new(&stream);
         let version = f.required_tu64(t::VERSION).map_err(&m)?;
         if version != VERSION {
-            return Err(Error::Version { object: Object::Response, version });
+            return Err(Error::Version {
+                object: Object::Response,
+                version,
+            });
         }
         let status = match f.required_tu64(t::STATUS).map_err(&m)? {
             0 => Status::Ok,
@@ -204,7 +223,12 @@ impl Response {
         let receipt_key = Key(f.required_fixed::<32>(t::RECEIPT_KEY).map_err(&m)?);
         let settled_at = f.required_tu64(t::SETTLED_AT).map_err(&m)?;
         let ack = Signature(f.required_fixed::<64>(t::ACK).map_err(&m)?);
-        let unknown = f.finish().map_err(&m)?.into_iter().filter(|(t, _)| !is_signature_type(*t)).collect();
+        let unknown = f
+            .finish()
+            .map_err(&m)?
+            .into_iter()
+            .filter(|(t, _)| !is_signature_type(*t))
+            .collect();
         let fields = ResponseFields {
             status,
             replayed,
@@ -218,7 +242,12 @@ impl Response {
             settled_at,
             unknown,
         };
-        Ok(Self { bytes: bytes.to_vec(), fields, ack, signed: stream.signed_bytes(&[]) })
+        Ok(Self {
+            bytes: bytes.to_vec(),
+            fields,
+            ack,
+            signed: stream.signed_bytes(&[]),
+        })
     }
 
     /// The bytes as received.
@@ -248,7 +277,10 @@ impl Response {
 
     /// Verifies the ack under the Response's own `receipt_key`.
     pub fn verify_ack(&self) -> Result<(), ReceiptError> {
-        self.fields.receipt_key.verify(&self.ack_message(), &self.ack).map_err(|_| ReceiptError::Ack)
+        self.fields
+            .receipt_key
+            .verify(&self.ack_message(), &self.ack)
+            .map_err(|_| ReceiptError::Ack)
     }
 
     /// True when the Response answers the request with this OfferID and
@@ -271,9 +303,9 @@ impl Response {
     ) -> Result<(), ReceiptError> {
         self.verify_ack()?;
         let f = &self.fields;
-        let listed = pinned_keys
-            .iter()
-            .any(|k| k.kid == f.receipt_key && k.key_use == KeyUse::Receipt && k.not_after >= f.settled_at);
+        let listed = pinned_keys.iter().any(|k| {
+            k.kid == f.receipt_key && k.key_use == KeyUse::Receipt && k.not_after >= f.settled_at
+        });
         if !listed {
             return Err(ReceiptError::NotPinned);
         }
