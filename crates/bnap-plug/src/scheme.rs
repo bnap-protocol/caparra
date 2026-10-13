@@ -280,6 +280,11 @@ pub trait CredentialScheme: Send + Sync {
 
     /// Settles a value scheme: change or refund, within the signer's cap.
     /// Returns the `scheme_result` bytes. The default returns none.
+    ///
+    /// `signer` is a change budget for this one settlement: every
+    /// `blind_sign` call takes from the same cap, clones share it, and it
+    /// closes when `settle` returns, so a clone kept for later signs
+    /// nothing.
     async fn settle(
         &self,
         part: &SchemePart,

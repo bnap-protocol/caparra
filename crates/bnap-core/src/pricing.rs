@@ -577,24 +577,42 @@ pub fn backed_value(
     Ok((narrow(total / scale), seen.into_iter().collect()))
 }
 
-/// The most change a scheme may sign at settlement: `value - charged`.
+/// The most change a scheme may sign at settlement: `value - charged`, in
+/// the pay entry's unit, for an OK or a FAILED settlement.
 ///
 /// Only [`Admission::settle`] makes one, and an [`Admission`] comes only
 /// from [`admit`], so the cap a signer enforces is always the one this
-/// module computed from an admitted value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChangeCap(u64);
+/// module computed from an admitted value. The signer side keeps a running
+/// total per settlement against it (`bnap_plug::CappedSigner::for_change`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeCap {
+    amount: u64,
+    unit: String,
+    status: Status,
+}
 
 impl ChangeCap {
     /// The cap in the pay entry's unit.
     #[must_use]
-    pub fn get(self) -> u64 {
-        self.0
+    pub fn get(&self) -> u64 {
+        self.amount
+    }
+
+    /// The pay entry's unit; empty without pay (the cap is then 0).
+    #[must_use]
+    pub fn unit(&self) -> &str {
+        &self.unit
+    }
+
+    /// The settlement the cap is for: OK pays change, FAILED a refund.
+    #[must_use]
+    pub fn status(&self) -> Status {
+        self.status
     }
 }
 
 /// The charge settlement writes and the Response reports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Charge {
     /// OK or FAILED.
     pub status: Status,
@@ -631,7 +649,11 @@ impl Admission {
             status,
             charged,
             metered_units,
-            cap: ChangeCap(value.saturating_sub(charged)),
+            cap: ChangeCap {
+                amount: value.saturating_sub(charged),
+                unit: self.pay.as_ref().map_or_else(String::new, |p| p.unit.clone()),
+                status,
+            },
         }
     }
 

@@ -2,10 +2,11 @@
 //! fake Lightning rail, a key-holding test signer and the in-memory store.
 
 use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Barrier, Mutex};
 
 use bnap_core::credential::{Credential, OfferRef, SchemePart};
-use bnap_core::hash::{Scope, sha256};
+use bnap_core::hash::{ReplayKey, Scope, sha256};
 use bnap_core::ids::{rail, rail_id};
 use bnap_core::limits::Limits;
 use bnap_core::manifest::KeyUse;
@@ -19,8 +20,9 @@ use bnap_core::store::{CommitPlan, PlanInput, Settlement, UseModel};
 use bnap_core::test_support::{MemoryStore, block_on};
 use bnap_core::{ErrorCode, Offer};
 use bnap_plug::{
-    Action, BlindSignature, BlindedOutput, Budget, CappedSigner, Carrier, Challenge, Confirmed,
-    CoreMessage, CredentialScheme, Decision, Dleq, Entry, FundingRail, KeysetId, OfferCtx, PayId,
+    Action, BlindSignature, BlindedOutput, Budget, CappedSigner, Carrier, Challenge, ChangeLedger,
+    ChangeLimit, Confirmed, CoreMessage, CredentialScheme, Decision, Dleq, Entry, FundingRail,
+    KeysetId, OfferCtx, PayId,
     PayRequest, PayState, Point, RailError, RailPayment, RailRef, RawCredential, SchemeError,
     SchemeOffer, SettleCtx, Signer, SignerError, UseStore, Verified, VerifyCtx, confirm_rail_id,
 };
@@ -30,11 +32,14 @@ const AUX0: [u8; 32] = [0; 32];
 
 // ---------------------------------------------------------------- signer
 
-/// A signer that holds keys by use and records every blind-sign call.
+/// A signer that holds keys by use, keeps the running change total per
+/// settlement in a [`ChangeLedger`], and records every blind-sign call.
 struct TestSigner {
     offer: SigningKey,
     receipt: SigningKey,
     blind_calls: Mutex<Vec<u64>>,
+    ledger: ChangeLedger,
+    signed: AtomicU64,
     short_answer: bool,
 }
 
@@ -44,12 +49,20 @@ impl TestSigner {
             offer: SigningKey::from_secret_bytes(&sha256(b"test offer key")).unwrap(),
             receipt: SigningKey::from_secret_bytes(&sha256(b"test receipt key")).unwrap(),
             blind_calls: Mutex::new(Vec::new()),
+            ledger: ChangeLedger::new(),
+            signed: AtomicU64::new(0),
             short_answer: false,
         }
     }
 
+    /// The cap of every blind-sign call that reached the signer.
     fn calls(&self) -> Vec<u64> {
         self.blind_calls.lock().unwrap().clone()
+    }
+
+    /// What the signer signed, over every settlement.
+    fn signed(&self) -> u64 {
+        self.signed.load(Ordering::SeqCst)
     }
 }
 
@@ -79,15 +92,19 @@ impl Signer for TestSigner {
 
     async fn blind_sign(
         &self,
-        _keyset: &KeysetId,
+        keyset: &KeysetId,
         outputs: &[BlindedOutput],
-        cap: u64,
+        limit: &ChangeLimit,
     ) -> Result<Vec<BlindSignature>, SignerError> {
-        self.blind_calls.lock().unwrap().push(cap);
-        let sum: u64 = outputs.iter().map(|o| o.amount).sum();
-        if sum > cap {
-            return Err(SignerError::OverCap { sum, cap });
+        self.blind_calls.lock().unwrap().push(limit.cap);
+        if limit.unit != "sat" {
+            return Err(SignerError::Refused("the keyset is in sat".into()));
         }
+        self.ledger.reserve(keyset, outputs, limit)?;
+        self.signed.fetch_add(
+            outputs.iter().map(|o| o.amount).sum::<u64>(),
+            Ordering::SeqCst,
+        );
         let n = if self.short_answer {
             outputs.len().saturating_sub(1)
         } else {
@@ -107,14 +124,26 @@ impl Signer for TestSigner {
     }
 }
 
-fn outputs(amounts: &[u64]) -> Vec<BlindedOutput> {
+/// Blinded outputs of these amounts; `tag` keeps the points of one batch
+/// apart from every other batch's.
+fn outputs(tag: u16, amounts: &[u64]) -> Vec<BlindedOutput> {
     amounts
         .iter()
-        .map(|a| BlindedOutput {
-            amount: *a,
-            blinded: Point([2; 33]),
+        .enumerate()
+        .map(|(i, a)| {
+            let mut p = [2; 33];
+            p[1..3].copy_from_slice(&tag.to_be_bytes());
+            p[3] = u8::try_from(i).unwrap();
+            BlindedOutput {
+                amount: *a,
+                blinded: Point(p),
+            }
         })
         .collect()
+}
+
+fn rk(n: u8) -> ReplayKey {
+    ReplayKey([n; 32])
 }
 
 fn ks() -> KeysetId {
@@ -124,8 +153,13 @@ fn ks() -> KeysetId {
 /// A change cap the way the gate gets one: from bnap-core's settlement of
 /// notes worth `value` that the signer verified.
 fn cap_of(value: u64, price: u64) -> bnap_plug::ChangeCap {
+    settled_cap(value, price, "sat", Status::Ok)
+}
+
+/// The same, for a pay entry in `unit` and a settlement of `status`.
+fn settled_cap(value: u64, price: u64, unit: &str, status: Status) -> bnap_plug::ChangeCap {
     let mut o = OfferFields::new(Scope([1; 32]), NOW + 300, Key([9; 32]), [0; 16]);
-    o.pay.push(PayEntry::new("bnap:notes", price, "sat"));
+    o.pay.push(PayEntry::new("bnap:notes", price, unit));
     let adm = bnap_core::pricing::admit(
         &AdmitInput {
             offer: &o,
@@ -135,7 +169,7 @@ fn cap_of(value: u64, price: u64) -> bnap_plug::ChangeCap {
                 backing: vec![Backing {
                     source: BackingSource::Note(vec![3; 33]),
                     amount: value,
-                    unit: "sat".into(),
+                    unit: unit.into(),
                 }],
             }),
             attest: &[],
@@ -144,24 +178,20 @@ fn cap_of(value: u64, price: u64) -> bnap_plug::ChangeCap {
         |_| 0,
     )
     .unwrap();
-    adm.settle(Status::Ok, 0).cap
+    adm.settle(status, 0).cap
 }
 
 #[test]
 fn the_capped_signer_refuses_outputs_above_the_cap() {
     let inner = Arc::new(TestSigner::new());
-    let capped = CappedSigner::for_change(inner.clone(), cap_of(150, 50));
-    assert_eq!(capped.cap(), Some(100));
-    // 64 + 32 + 4 = 100: signed, and the cap goes to the signer too.
-    let sigs = block_on(capped.blind_sign(&ks(), &outputs(&[64, 32, 4]))).unwrap();
-    assert_eq!(sigs.len(), 3);
-    assert_eq!(inner.calls(), vec![100]);
+    let (capped, guard) = CappedSigner::for_change(inner.clone(), &cap_of(150, 50), rk(1));
+    assert_eq!((capped.cap(), capped.remaining()), (Some(100), Some(100)));
     // 64 + 32 + 8 = 104: refused before the signer is called.
-    let err = block_on(capped.blind_sign(&ks(), &outputs(&[64, 32, 8]))).unwrap_err();
+    let err = block_on(capped.blind_sign(&ks(), &outputs(1, &[64, 32, 8]))).unwrap_err();
     assert_eq!(err, SignerError::OverCap { sum: 104, cap: 100 });
     assert_eq!(err.code(), ErrorCode::Unavailable);
     // An amount sum that overflows u64 is above any cap.
-    let err = block_on(capped.blind_sign(&ks(), &outputs(&[u64::MAX, 1]))).unwrap_err();
+    let err = block_on(capped.blind_sign(&ks(), &outputs(2, &[u64::MAX, 1]))).unwrap_err();
     assert_eq!(
         err,
         SignerError::OverCap {
@@ -169,14 +199,160 @@ fn the_capped_signer_refuses_outputs_above_the_cap() {
             cap: 100
         }
     );
+    assert_eq!(inner.calls(), Vec::<u64>::new());
+    // 64 + 32 + 4 = 100: signed, and the signer gets the settlement's
+    // whole cap.
+    let sigs = block_on(capped.blind_sign(&ks(), &outputs(3, &[64, 32, 4]))).unwrap();
+    assert_eq!(sigs.len(), 3);
     assert_eq!(inner.calls(), vec![100]);
+    assert_eq!(capped.remaining(), Some(0));
+    guard.close();
+}
+
+#[test]
+fn two_calls_whose_sum_exceeds_the_cap_are_refused() {
+    // The review's probe signed the full cap twice inside one settle.
+    let inner = Arc::new(TestSigner::new());
+    let (capped, _guard) = CappedSigner::for_change(inner.clone(), &cap_of(150, 50), rk(1));
+    block_on(capped.blind_sign(&ks(), &outputs(1, &[64]))).unwrap();
+    assert_eq!(
+        block_on(capped.blind_sign(&ks(), &outputs(2, &[64]))),
+        Err(SignerError::OverCap { sum: 64, cap: 36 })
+    );
+    block_on(capped.blind_sign(&ks(), &outputs(3, &[32, 4]))).unwrap();
+    assert_eq!(capped.remaining(), Some(0));
+    assert_eq!(
+        block_on(capped.blind_sign(&ks(), &outputs(4, &[1]))),
+        Err(SignerError::OverCap { sum: 1, cap: 0 })
+    );
+    assert_eq!(inner.signed(), 100);
+    assert_eq!(inner.ledger.total(&rk(1), Status::Ok), 100);
+}
+
+#[test]
+fn concurrent_clones_never_exceed_the_cap_in_total() {
+    let inner = Arc::new(TestSigner::new());
+    let (capped, guard) = CappedSigner::for_change(inner.clone(), &cap_of(150, 50), rk(1));
+    let barrier = Barrier::new(16);
+    let signed = AtomicU64::new(0);
+    std::thread::scope(|s| {
+        for t in 0..16u16 {
+            let clone = capped.clone();
+            let (barrier, signed) = (&barrier, &signed);
+            s.spawn(move || {
+                barrier.wait();
+                for i in 0..20u16 {
+                    let batch = outputs(t * 20 + i, &[3]);
+                    if let Ok(sigs) = block_on(clone.blind_sign(&ks(), &batch)) {
+                        let sum: u64 = sigs.iter().map(|s| s.amount).sum();
+                        signed.fetch_add(sum, Ordering::SeqCst);
+                    }
+                }
+            });
+        }
+    });
+    // 320 attempts of 3 sat against a cap of 100: 33 are signed.
+    assert_eq!(signed.load(Ordering::SeqCst), 99);
+    assert_eq!(inner.signed(), 99);
+    assert_eq!(capped.remaining(), Some(1));
+    drop(guard);
+}
+
+#[test]
+fn a_clone_used_after_settle_returns_is_refused() {
+    let inner = Arc::new(TestSigner::new());
+    let (capped, guard) = CappedSigner::for_change(inner.clone(), &cap_of(150, 50), rk(1));
+    let kept = capped.clone();
+    block_on(kept.blind_sign(&ks(), &outputs(1, &[10]))).unwrap();
+    // settle returned: the gate drops the guard.
+    drop(guard);
+    assert_eq!(kept.remaining(), Some(0));
+    for (i, s) in [&kept, &capped].into_iter().enumerate() {
+        let batch = outputs(2 + u16::try_from(i).unwrap(), &[1]);
+        assert!(matches!(
+            block_on(s.blind_sign(&ks(), &batch)),
+            Err(SignerError::Refused(_))
+        ));
+    }
+    // Dropping the guard at once fails closed: nothing can be signed.
+    let (unguarded, _) = CappedSigner::for_change(inner.clone(), &cap_of(150, 50), rk(2));
+    assert!(matches!(
+        block_on(unguarded.blind_sign(&ks(), &outputs(4, &[1]))),
+        Err(SignerError::Refused(_))
+    ));
+    assert_eq!(inner.signed(), 10);
+}
+
+#[test]
+fn the_signer_keeps_a_running_total_per_settlement() {
+    let inner = Arc::new(TestSigner::new());
+    let cap = cap_of(150, 50);
+    // Two budgets for one settlement: the signer's total bounds them
+    // together, whatever each budget has left.
+    let (a, _ga) = CappedSigner::for_change(inner.clone(), &cap, rk(1));
+    let (b, _gb) = CappedSigner::for_change(inner.clone(), &cap, rk(1));
+    block_on(a.blind_sign(&ks(), &outputs(1, &[64, 16]))).unwrap();
+    assert_eq!(
+        block_on(b.blind_sign(&ks(), &outputs(2, &[64]))),
+        Err(SignerError::OverCap { sum: 144, cap: 100 })
+    );
+    // The same outputs again make the same notes: they count nothing.
+    let (c, _gc) = CappedSigner::for_change(inner.clone(), &cap, rk(1));
+    block_on(c.blind_sign(&ks(), &outputs(1, &[64, 16]))).unwrap();
+    assert_eq!(inner.ledger.total(&rk(1), Status::Ok), 80);
+    // The refund of the same ReplayKey and another outcome have their own
+    // totals.
+    let refund = settled_cap(150, 50, "sat", Status::Failed);
+    assert_eq!((refund.get(), refund.status()), (150, Status::Failed));
+    let (d, _gd) = CappedSigner::for_change(inner.clone(), &refund, rk(1));
+    block_on(d.blind_sign(&ks(), &outputs(3, &[128, 16]))).unwrap();
+    let (e, _ge) = CappedSigner::for_change(inner.clone(), &cap, rk(2));
+    block_on(e.blind_sign(&ks(), &outputs(4, &[64]))).unwrap();
+    assert_eq!(
+        (
+            inner.ledger.total(&rk(1), Status::Ok),
+            inner.ledger.total(&rk(1), Status::Failed),
+            inner.ledger.total(&rk(2), Status::Ok)
+        ),
+        (80, 144, 64)
+    );
+    inner.ledger.forget(&rk(1));
+    assert_eq!(inner.ledger.total(&rk(1), Status::Failed), 0);
+    // The signer refuses a settlement in a unit its keyset is not in.
+    let msat = settled_cap(150, 50, "msat", Status::Ok);
+    let (f, _gf) = CappedSigner::for_change(inner.clone(), &msat, rk(3));
+    assert_eq!(f.unit(), "msat");
+    assert!(matches!(
+        block_on(f.blind_sign(&ks(), &outputs(5, &[1]))),
+        Err(SignerError::Refused(_))
+    ));
+}
+
+#[test]
+fn concurrent_refunds_of_one_outcome_sign_its_value_once() {
+    // Two replays that both found the refund missing: a deterministic
+    // settle signs the same outputs twice, which makes the same notes.
+    let inner = Arc::new(TestSigner::new());
+    let refund = settled_cap(150, 50, "sat", Status::Failed);
+    let (a, _ga) = CappedSigner::for_change(inner.clone(), &refund, rk(9));
+    let (b, _gb) = CappedSigner::for_change(inner.clone(), &refund, rk(9));
+    let same = outputs(1, &[128, 16, 4, 2]);
+    block_on(a.blind_sign(&ks(), &same)).unwrap();
+    block_on(b.blind_sign(&ks(), &same)).unwrap();
+    // A settle that signs other outputs for the same refund is refused.
+    let (c, _gc) = CappedSigner::for_change(inner.clone(), &refund, rk(9));
+    assert_eq!(
+        block_on(c.blind_sign(&ks(), &outputs(2, &[1]))),
+        Err(SignerError::OverCap { sum: 151, cap: 150 })
+    );
+    assert_eq!(inner.ledger.total(&rk(9), Status::Failed), 150);
 }
 
 #[test]
 fn the_verify_only_view_signs_nothing() {
     let inner = Arc::new(TestSigner::new());
     let view = CappedSigner::verify_only(inner.clone(), "sat");
-    assert_eq!(view.cap(), None);
+    assert_eq!((view.cap(), view.remaining()), (None, None));
     assert!(block_on(view.verify_unblinded(&ks(), 8, &Point([3; 33]), &Point([3; 33]))).unwrap());
     assert!(matches!(
         block_on(view.blind_sign(&ks(), &[])),
@@ -189,9 +365,9 @@ fn the_verify_only_view_signs_nothing() {
 fn a_signer_answer_that_does_not_match_the_outputs_is_refused() {
     let mut s = TestSigner::new();
     s.short_answer = true;
-    let capped = CappedSigner::for_change(Arc::new(s), cap_of(100, 0));
+    let (capped, _guard) = CappedSigner::for_change(Arc::new(s), &cap_of(100, 0), rk(1));
     assert!(matches!(
-        block_on(capped.blind_sign(&ks(), &outputs(&[1, 2]))),
+        block_on(capped.blind_sign(&ks(), &outputs(1, &[1, 2]))),
         Err(SignerError::Refused(_))
     ));
 }
@@ -379,9 +555,22 @@ fn mpp() -> Arc<dyn CredentialScheme> {
 /// A notes scheme: the body is notes of 74 bytes each (amount, `Y`, `C`),
 /// each checked through the verify-only view. It reports `claim` as its
 /// value, which may be more than the notes are worth. Its `settle` returns
-/// the cap it was given.
+/// the cap it was given; a greedy one also tries to sign the whole cap
+/// twice and keeps a clone of its signer for later.
 struct Notes {
     claim: u64,
+    greedy: bool,
+    kept: Mutex<Option<CappedSigner>>,
+}
+
+impl Notes {
+    fn claiming(claim: u64) -> Self {
+        Self {
+            claim,
+            greedy: false,
+            kept: Mutex::new(None),
+        }
+    }
 }
 
 fn notes_body(notes: &[(u64, u8)]) -> Vec<u8> {
@@ -430,7 +619,16 @@ impl CredentialScheme for Notes {
         _cx: &SettleCtx<'_>,
         signer: &CappedSigner,
     ) -> Result<Option<Vec<u8>>, SchemeError> {
-        Ok(Some(format!("cap {}", signer.cap().unwrap()).into_bytes()))
+        let cap = signer.cap().unwrap();
+        if !self.greedy {
+            return Ok(Some(format!("cap {cap}").into_bytes()));
+        }
+        let first = signer.blind_sign(&ks(), &outputs(1, &[cap])).await;
+        let second = signer.blind_sign(&ks(), &outputs(2, &[cap])).await;
+        *self.kept.lock().unwrap() = Some(signer.clone());
+        Ok(Some(
+            format!("first {} second {}", first.is_ok(), second.is_ok()).into_bytes(),
+        ))
     }
 }
 
@@ -593,7 +791,11 @@ impl Gate {
             Ok(Admitted::New) => {
                 // The action runs here.
                 let charge = admission.settle(Status::Ok, 0);
-                let capped = CappedSigner::for_change(self.signer.clone(), charge.cap);
+                let (capped, guard) = CappedSigner::for_change(
+                    self.signer.clone(),
+                    &charge.cap,
+                    *plan.replay_key(),
+                );
                 let result = block_on(scheme.settle(
                     part,
                     &verified,
@@ -606,8 +808,10 @@ impl Gate {
                         digest: &digest,
                     },
                     &capped,
-                ))
-                .map_err(|e| e.code())?;
+                ));
+                // settle returned: no clone of its signer signs from here.
+                guard.close();
+                let result = result.map_err(|e| e.code())?;
                 let s = Settlement::new(&charge, now).with_scheme_result(result);
                 let rec = block_on(outcome::settle(store, plan.replay_key(), &s)).unwrap();
                 outcome::receipt(&rec, &receipt_input, false).unwrap()
@@ -717,7 +921,7 @@ fn a_payment_that_is_not_final_never_reaches_commit() {
 #[test]
 fn a_notes_value_larger_than_the_verified_notes_is_cut_to_them() {
     let gate = Gate::new([0; 32]);
-    let liar = Notes { claim: 1_000 };
+    let liar = Notes::claiming(1_000);
     // Notes of 64 and 32 sat, the first listed twice, for a 50 sat entry:
     // the value is 96, so the change cap is 46, never 950.
     let mut cred = Credential::new(OfferRef::Id(gate.offer.offer_id()));
@@ -732,6 +936,34 @@ fn a_notes_value_larger_than_the_verified_notes_is_cut_to_them() {
     let mut cred = Credential::new(OfferRef::Id(gate.offer.offer_id()));
     cred.pay = Some(SchemePart::new("bnap:notes", notes_body(&[(32, 5)])));
     assert_eq!(gate.handle(&liar, &cred, NOW), Err(ErrorCode::Underpaid));
+}
+
+#[test]
+fn a_scheme_cannot_sign_past_its_cap_or_after_settle() {
+    // The review's probe through the gate: a settle that signs the whole
+    // cap twice and keeps its signer. Notes of 64 and 32 sat for a 50 sat
+    // entry: the cap is 46.
+    let gate = Gate::new([0; 32]);
+    let greedy = Notes {
+        greedy: true,
+        ..Notes::claiming(96)
+    };
+    let mut cred = Credential::new(OfferRef::Id(gate.offer.offer_id()));
+    cred.pay = Some(SchemePart::new("bnap:notes", notes_body(&[(64, 3), (32, 4)])));
+    let r = gate.handle(&greedy, &cred, NOW).unwrap();
+    assert_eq!(
+        r.fields().scheme_result.as_deref(),
+        Some(&b"first true second false"[..])
+    );
+    let kept = greedy.kept.lock().unwrap().take().unwrap();
+    assert_eq!(kept.remaining(), Some(0));
+    for i in 0..10 {
+        assert!(matches!(
+            block_on(kept.blind_sign(&ks(), &outputs(10 + i, &[1]))),
+            Err(SignerError::Refused(_))
+        ));
+    }
+    assert_eq!(gate.signer.signed(), 46);
 }
 
 #[test]

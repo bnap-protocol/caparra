@@ -42,7 +42,8 @@ pub use scheme::{
     OfferRole, RailRef, SchemeError, SchemeOffer, SettleCtx, Verified, VerifyCtx,
 };
 pub use signer::{
-    BlindSignature, BlindedOutput, CappedSigner, Dleq, KeysetId, Point, Signer, SignerError,
+    BlindSignature, BlindedOutput, CappedSigner, ChangeLedger, ChangeLimit, Dleq, KeysetId, Point,
+    SettleGuard, Signer, SignerError,
 };
 
 /// The use store plug, defined in `bnap-core` so the outcome state machine
