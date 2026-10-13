@@ -4,10 +4,14 @@
 //! never from the scheme (draft-00 6.1): a scheme names a payment with a
 //! [`RailRef`], the rail of that kind confirms it, and bnap-core computes
 //! the `RailId` from the rail's own kind and bytes ([`confirm_rail_id`]).
+//! What the payment is worth comes from the rail too: admission counts the
+//! smaller of the scheme's claim and the confirmed amounts
+//! ([`bnap_core::pricing::admit`]).
 
 use bnap_core::ErrorCode;
 use bnap_core::hash::RailId;
 use bnap_core::ids::rail_id;
+use bnap_core::pricing::{Backing, BackingSource};
 
 use crate::scheme::RailRef;
 
@@ -50,10 +54,36 @@ pub enum PayState {
 pub struct Confirmed {
     /// The canonical payment bytes of the rail kind (6.1).
     pub canonical: Vec<u8>,
+    /// The payment's state. Only [`PayState::Paid`] backs any value.
+    pub state: PayState,
     /// What was paid.
     pub amount: u64,
     /// In this unit.
     pub unit: String,
+}
+
+/// A final payment, as [`confirm_rail_id`] returns it: the `RailId`
+/// bnap-core computed and what the rail says was paid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RailPayment {
+    /// The `RailId`, committed with the use IDs.
+    pub rail_id: RailId,
+    /// What was paid, as the rail reported it.
+    pub amount: u64,
+    /// In this unit.
+    pub unit: String,
+}
+
+impl RailPayment {
+    /// The payment as admission's backing ([`bnap_core::pricing::PayValue`]).
+    #[must_use]
+    pub fn backing(&self) -> Backing {
+        Backing {
+            source: BackingSource::Rail(self.rail_id),
+            amount: self.amount,
+            unit: self.unit.clone(),
+        }
+    }
 }
 
 /// Why a rail did not confirm or create a payment.
@@ -106,17 +136,20 @@ pub trait FundingRail: Send + Sync {
     /// The state of a request this rail made.
     async fn status(&self, id: &PayId) -> Result<PayState, RailError>;
 
-    /// Confirms a payment a scheme referred to and returns its canonical
-    /// bytes.
+    /// Looks up a payment a scheme referred to and returns its canonical
+    /// bytes, its state, and what was paid in which unit, all as the rail
+    /// itself knows them.
     async fn confirm(&self, reference: &RailRef) -> Result<Confirmed, RailError>;
 }
 
-/// Confirms `reference` with `rail` and computes the `RailId` from the
-/// rail's own kind and canonical bytes, never from the scheme's.
+/// Confirms `reference` with `rail`: refuses a payment that is not final,
+/// computes the `RailId` from the rail's own kind and canonical bytes,
+/// never from the scheme's, and keeps the amount and unit the rail
+/// reported, for admission to count instead of the scheme's claim.
 pub async fn confirm_rail_id(
     rail: &dyn FundingRail,
     reference: &RailRef,
-) -> Result<RailId, RailError> {
+) -> Result<RailPayment, RailError> {
     if reference.kind != rail.kind() {
         return Err(RailError::WrongKind {
             want: rail.kind().to_owned(),
@@ -124,5 +157,15 @@ pub async fn confirm_rail_id(
         });
     }
     let c = rail.confirm(reference).await?;
-    Ok(rail_id(rail.kind(), &c.canonical))
+    if c.state != PayState::Paid {
+        return Err(RailError::NotConfirmed(format!(
+            "payment is {:?}, not final",
+            c.state
+        )));
+    }
+    Ok(RailPayment {
+        rail_id: rail_id(rail.kind(), &c.canonical),
+        amount: c.amount,
+        unit: c.unit,
+    })
 }

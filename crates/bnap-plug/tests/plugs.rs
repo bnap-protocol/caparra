@@ -11,7 +11,7 @@ use bnap_core::limits::Limits;
 use bnap_core::manifest::KeyUse;
 use bnap_core::offer::{OfferFields, PayEntry};
 use bnap_core::outcome::{self, Admitted, CommitError, ReceiptInput};
-use bnap_core::pricing::{AdmitInput, PayValue};
+use bnap_core::pricing::{AdmitInput, Backing, BackingSource, PayValue};
 use bnap_core::response::{Response, Status};
 use bnap_core::schnorr::{Key, Signature, SigningKey};
 use bnap_core::sign::{UnsignedOffer, UnsignedResponse};
@@ -21,8 +21,8 @@ use bnap_core::{ErrorCode, Offer};
 use bnap_plug::{
     Action, BlindSignature, BlindedOutput, Budget, CappedSigner, Carrier, Challenge, Confirmed,
     CoreMessage, CredentialScheme, Decision, Dleq, Entry, FundingRail, KeysetId, OfferCtx, PayId,
-    PayRequest, PayState, Point, RailError, RailRef, RawCredential, SchemeError, SchemeOffer,
-    SettleCtx, Signer, SignerError, UseStore, Verified, VerifyCtx, confirm_rail_id,
+    PayRequest, PayState, Point, RailError, RailPayment, RailRef, RawCredential, SchemeError,
+    SchemeOffer, SettleCtx, Signer, SignerError, UseStore, Verified, VerifyCtx, confirm_rail_id,
 };
 
 const NOW: u64 = 1_791_700_000;
@@ -68,12 +68,13 @@ impl Signer for TestSigner {
     async fn verify_unblinded(
         &self,
         _keyset: &KeysetId,
+        unit: &str,
         _amount: u64,
         y: &Point,
         c: &Point,
     ) -> Result<bool, SignerError> {
-        // Stand-in for C == k·Y.
-        Ok(y == c)
+        // Stand-in for C == k·Y; the test keyset is in sat.
+        Ok(unit == "sat" && y == c)
     }
 
     async fn blind_sign(
@@ -120,7 +121,8 @@ fn ks() -> KeysetId {
     KeysetId(vec![0, 1, 2, 3, 4, 5, 6, 7])
 }
 
-/// A change cap the way the gate gets one: from bnap-core's settlement.
+/// A change cap the way the gate gets one: from bnap-core's settlement of
+/// notes worth `value` that the signer verified.
 fn cap_of(value: u64, price: u64) -> bnap_plug::ChangeCap {
     let mut o = OfferFields::new(Scope([1; 32]), NOW + 300, Key([9; 32]), [0; 16]);
     o.pay.push(PayEntry::new("bnap:notes", price, "sat"));
@@ -129,7 +131,12 @@ fn cap_of(value: u64, price: u64) -> bnap_plug::ChangeCap {
             offer: &o,
             pay: Some(PayValue {
                 scheme: "bnap:notes",
-                value,
+                claimed: value,
+                backing: vec![Backing {
+                    source: BackingSource::Note(vec![3; 33]),
+                    amount: value,
+                    unit: "sat".into(),
+                }],
             }),
             attest: &[],
             now: NOW,
@@ -168,7 +175,7 @@ fn the_capped_signer_refuses_outputs_above_the_cap() {
 #[test]
 fn the_verify_only_view_signs_nothing() {
     let inner = Arc::new(TestSigner::new());
-    let view = CappedSigner::verify_only(inner.clone());
+    let view = CappedSigner::verify_only(inner.clone(), "sat");
     assert_eq!(view.cap(), None);
     assert!(block_on(view.verify_unblinded(&ks(), 8, &Point([3; 33]), &Point([3; 33]))).unwrap());
     assert!(matches!(
@@ -211,11 +218,39 @@ fn the_signer_signs_core_messages_with_the_key_for_their_use() {
 
 // ------------------------------------------------------- schemes and rail
 
+#[test]
+fn the_verify_only_view_keeps_each_accepted_note_once() {
+    let view = CappedSigner::verify_only(Arc::new(TestSigner::new()), "sat");
+    let (y1, y2, bad) = (Point([3; 33]), Point([4; 33]), Point([5; 33]));
+    for (amount, y, c) in [(64, &y1, &y1), (32, &y2, &y2), (64, &y1, &y1), (1_000, &bad, &y1)] {
+        let _ = block_on(view.verify_unblinded(&ks(), amount, y, c)).unwrap();
+    }
+    // A clone adds to the same notes.
+    let clone = view.clone();
+    assert!(block_on(clone.verify_unblinded(&ks(), 64, &y1, &y1)).unwrap());
+    let notes = view.notes();
+    assert_eq!(
+        notes
+            .iter()
+            .map(|b| (b.amount, b.unit.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(64, "sat"), (32, "sat")],
+        "Y1 counts once, the bad note not at all"
+    );
+    assert_eq!(notes[0].source, BackingSource::Note(y1.0.to_vec()));
+    // A view in another unit: the signer accepts no sat keyset for it.
+    let msat = CappedSigner::verify_only(Arc::new(TestSigner::new()), "msat");
+    assert!(!block_on(msat.verify_unblinded(&ks(), 64, &y1, &y1)).unwrap());
+    assert!(msat.notes().is_empty());
+}
+
 /// A class O scheme whose local ID is its payment hash, like L402, or a
-/// challenge ID, like MPP; both refer to the Lightning payment.
+/// challenge ID, like MPP; both refer to the Lightning payment. `claim`
+/// overrides the value it reports, as a dishonest scheme would.
 struct LnScheme {
     id: &'static str,
     local: fn(&[u8; 32]) -> Vec<u8>,
+    claim: Option<u64>,
 }
 
 #[async_trait::async_trait]
@@ -243,7 +278,7 @@ impl CredentialScheme for LnScheme {
                 kind: rail::LN.into(),
                 reference: hash.to_vec(),
             }],
-            value: entry.amount,
+            value: self.claim.unwrap_or(entry.amount),
             quota_id: None,
         })
     }
@@ -261,9 +296,24 @@ impl CredentialScheme for LnScheme {
     }
 }
 
-/// A Lightning rail that knows which payment hashes were paid.
+/// A Lightning rail that knows which payment hashes were paid, and reports
+/// each as `amount` in `unit`, in `state`.
 struct FakeLn {
     paid: BTreeSet<[u8; 32]>,
+    amount: u64,
+    unit: &'static str,
+    state: PayState,
+}
+
+impl FakeLn {
+    fn paid(hash: [u8; 32]) -> Self {
+        Self {
+            paid: BTreeSet::from([hash]),
+            amount: 21,
+            unit: "sat",
+            state: PayState::Paid,
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -303,8 +353,9 @@ impl FundingRail for FakeLn {
         }
         Ok(Confirmed {
             canonical: rail::ln(&hash),
-            amount: 21,
-            unit: "sat".into(),
+            state: self.state,
+            amount: self.amount,
+            unit: self.unit.into(),
         })
     }
 }
@@ -313,6 +364,7 @@ fn l402() -> Arc<dyn CredentialScheme> {
     Arc::new(LnScheme {
         id: "httpauth:L402",
         local: |h| h.to_vec(),
+        claim: None,
     })
 }
 
@@ -320,22 +372,83 @@ fn mpp() -> Arc<dyn CredentialScheme> {
     Arc::new(LnScheme {
         id: "payment:lightning/charge",
         local: |h| sha256(&[&b"mpp id "[..], h].concat()).to_vec(),
+        claim: None,
     })
+}
+
+/// A notes scheme: the body is notes of 74 bytes each (amount, `Y`, `C`),
+/// each checked through the verify-only view. It reports `claim` as its
+/// value, which may be more than the notes are worth. Its `settle` returns
+/// the cap it was given.
+struct Notes {
+    claim: u64,
+}
+
+fn notes_body(notes: &[(u64, u8)]) -> Vec<u8> {
+    let mut b = Vec::new();
+    for (amount, y) in notes {
+        b.extend_from_slice(&amount.to_be_bytes());
+        b.extend_from_slice(&[*y; 33]);
+        b.extend_from_slice(&[*y; 33]);
+    }
+    b
+}
+
+#[async_trait::async_trait]
+impl CredentialScheme for Notes {
+    fn id(&self) -> &str {
+        "bnap:notes"
+    }
+
+    async fn offer(&self, _cx: &OfferCtx<'_>) -> Result<SchemeOffer, SchemeError> {
+        Ok(SchemeOffer::default())
+    }
+
+    async fn verify(&self, part: &SchemePart, cx: &VerifyCtx<'_>) -> Result<Verified, SchemeError> {
+        let mut ys = Vec::new();
+        for n in part.body.chunks(74) {
+            let amount = u64::from_be_bytes(n[..8].try_into().unwrap());
+            let y = Point(n[8..41].try_into().unwrap());
+            let c = Point(n[41..74].try_into().unwrap());
+            if !cx.signer.verify_unblinded(&ks(), amount, &y, &c).await.unwrap() {
+                return Err(SchemeError::rejected("bnap:notes", "BAD_NOTE", "C != kY"));
+            }
+            ys.push(y.0.to_vec());
+        }
+        Ok(Verified {
+            use_ids: ys,
+            rail_ids: Vec::new(),
+            value: self.claim,
+            quota_id: None,
+        })
+    }
+
+    async fn settle(
+        &self,
+        _part: &SchemePart,
+        _verified: &Verified,
+        _cx: &SettleCtx<'_>,
+        signer: &CappedSigner,
+    ) -> Result<Option<Vec<u8>>, SchemeError> {
+        Ok(Some(format!("cap {}", signer.cap().unwrap()).into_bytes()))
+    }
 }
 
 #[test]
 fn the_rail_supplies_the_rail_id() {
     let hash = sha256(b"preimage");
-    let ln = FakeLn {
-        paid: BTreeSet::from([hash]),
-    };
+    let ln = FakeLn::paid(hash);
     let r = RailRef {
         kind: "ln".into(),
         reference: hash.to_vec(),
     };
     assert_eq!(
         block_on(confirm_rail_id(&ln, &r)).unwrap(),
-        rail_id(rail::LN, &hash)
+        RailPayment {
+            rail_id: rail_id(rail::LN, &hash),
+            amount: 21,
+            unit: "sat".into(),
+        }
     );
     // A scheme cannot point an ln payment at another rail kind's space.
     let lie = RailRef {
@@ -352,6 +465,16 @@ fn the_rail_supplies_the_rail_id() {
         block_on(confirm_rail_id(&ln, &unpaid)),
         Err(RailError::NotConfirmed(_))
     ));
+    // A payment the rail knows but that is not final backs nothing.
+    for state in [PayState::Pending, PayState::Expired, PayState::Failed] {
+        let ln = FakeLn {
+            state,
+            ..FakeLn::paid(hash)
+        };
+        let err = block_on(confirm_rail_id(&ln, &r)).unwrap_err();
+        assert!(matches!(err, RailError::NotConfirmed(_)), "{state:?}");
+        assert_eq!(err.code(), ErrorCode::BadCredential);
+    }
 }
 
 // ------------------------------------------------------------------ gate
@@ -367,12 +490,17 @@ struct Gate {
 
 impl Gate {
     fn new(paid: [u8; 32]) -> Self {
+        Self::with_rail(FakeLn::paid(paid))
+    }
+
+    fn with_rail(rail: FakeLn) -> Self {
         let signer = Arc::new(TestSigner::new());
         let scope = Scope(sha256(b"POST /v1/thing"));
         let mut f = OfferFields::new(scope, NOW + 300, signer.offer.public_key(), [5; 16]);
         f.pay = vec![
             PayEntry::new("httpauth:L402", 21, "sat"),
             PayEntry::new("payment:lightning/charge", 21, "sat"),
+            PayEntry::new("bnap:notes", 50, "sat"),
         ];
         let unsigned = UnsignedOffer::new(&f, Some(&[7; 32])).unwrap();
         let sig = block_on(signer.schnorr(unsigned.message())).unwrap();
@@ -380,9 +508,7 @@ impl Gate {
         Self {
             store: MemoryStore::new(),
             signer,
-            rail: FakeLn {
-                paid: BTreeSet::from([paid]),
-            },
+            rail,
             offer,
             scope,
             limits: Limits::default(),
@@ -402,7 +528,7 @@ impl Gate {
         let digest = cred.digest(&ctx);
         let part = cred.pay.as_ref().unwrap();
         let (_, entry) = self.offer.fields().pay_entry(scheme.id()).unwrap();
-        let view = CappedSigner::verify_only(self.signer.clone());
+        let view = CappedSigner::verify_only(self.signer.clone(), &entry.unit);
         let verified = block_on(scheme.verify(
             part,
             &VerifyCtx {
@@ -416,12 +542,17 @@ impl Gate {
             },
         ))
         .map_err(|e| e.code())?;
-        let rail_ids = verified
+        // The rails confirm every payment; the view kept every note the
+        // signer accepted. Admission counts those, not the scheme's claim.
+        let payments = verified
             .rail_ids
             .iter()
             .map(|r| block_on(confirm_rail_id(&self.rail, r)))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.code())?;
+        let rail_ids: Vec<_> = payments.iter().map(|p| p.rail_id).collect();
+        let mut backing: Vec<_> = payments.iter().map(RailPayment::backing).collect();
+        backing.extend(view.notes());
         let store: &dyn UseStore = &self.store;
         let admission = block_on(outcome::admit(
             store,
@@ -429,7 +560,8 @@ impl Gate {
                 offer: self.offer.fields(),
                 pay: Some(PayValue {
                     scheme: scheme.id(),
-                    value: verified.value,
+                    claimed: verified.value,
+                    backing,
                 }),
                 attest: &[],
                 now,
@@ -520,6 +652,86 @@ fn one_lightning_payment_under_two_schemes_admits_one_action() {
     assert_eq!(again.fields().settled_at, NOW);
     assert_eq!(again.fields().charged, 21);
     again.verify_ack().unwrap();
+}
+
+#[test]
+fn an_underpaying_rail_reference_is_underpaid() {
+    // The review's probe: the rail confirmed 21 msat, the scheme claimed
+    // 1,000,000 sat. Admission counts the rail's 0 sat.
+    let hash = sha256(b"preimage");
+    let gate = Gate::with_rail(FakeLn {
+        amount: 21,
+        unit: "msat",
+        ..FakeLn::paid(hash)
+    });
+    let liar = LnScheme {
+        id: "httpauth:L402",
+        local: |h| h.to_vec(),
+        claim: Some(1_000_000),
+    };
+    let cred = credential(liar.id(), hash, &gate);
+    assert_eq!(gate.handle(&liar, &cred, NOW), Err(ErrorCode::Underpaid));
+    gate.store.inspect(|t| assert_eq!(t.outcomes_len(), 0));
+    // 20 sat confirmed for a 21 sat entry: still underpaid.
+    let gate = Gate::with_rail(FakeLn {
+        amount: 20,
+        ..FakeLn::paid(hash)
+    });
+    let cred = credential(liar.id(), hash, &gate);
+    assert_eq!(gate.handle(&liar, &cred, NOW), Err(ErrorCode::Underpaid));
+}
+
+#[test]
+fn a_payment_in_another_unit_is_refused() {
+    let hash = sha256(b"preimage");
+    let gate = Gate::with_rail(FakeLn {
+        amount: 21,
+        unit: "USD",
+        ..FakeLn::paid(hash)
+    });
+    let l402 = l402();
+    let cred = credential(l402.id(), hash, &gate);
+    assert_eq!(
+        gate.handle(&*l402, &cred, NOW),
+        Err(ErrorCode::BadCredential)
+    );
+    gate.store.inspect(|t| assert_eq!(t.outcomes_len(), 0));
+}
+
+#[test]
+fn a_payment_that_is_not_final_never_reaches_commit() {
+    let hash = sha256(b"preimage");
+    let gate = Gate::with_rail(FakeLn {
+        state: PayState::Pending,
+        ..FakeLn::paid(hash)
+    });
+    let l402 = l402();
+    let cred = credential(l402.id(), hash, &gate);
+    assert_eq!(
+        gate.handle(&*l402, &cred, NOW),
+        Err(ErrorCode::BadCredential)
+    );
+    gate.store.inspect(|t| assert_eq!(t.outcomes_len(), 0));
+}
+
+#[test]
+fn a_notes_value_larger_than_the_verified_notes_is_cut_to_them() {
+    let gate = Gate::new([0; 32]);
+    let liar = Notes { claim: 1_000 };
+    // Notes of 64 and 32 sat, the first listed twice, for a 50 sat entry:
+    // the value is 96, so the change cap is 46, never 950.
+    let mut cred = Credential::new(OfferRef::Id(gate.offer.offer_id()));
+    cred.pay = Some(SchemePart::new(
+        "bnap:notes",
+        notes_body(&[(64, 3), (32, 4), (64, 3)]),
+    ));
+    let r = gate.handle(&liar, &cred, NOW).unwrap();
+    assert_eq!(r.fields().charged, 50);
+    assert_eq!(r.fields().scheme_result.as_deref(), Some(&b"cap 46"[..]));
+    // Notes worth 32 sat for the same entry: UNDERPAID, whatever it claims.
+    let mut cred = Credential::new(OfferRef::Id(gate.offer.offer_id()));
+    cred.pay = Some(SchemePart::new("bnap:notes", notes_body(&[(32, 5)])));
+    assert_eq!(gate.handle(&liar, &cred, NOW), Err(ErrorCode::Underpaid));
 }
 
 #[test]

@@ -1,12 +1,12 @@
 //! Pricing table tests (draft-00 section 7).
 
 use bnap_core::class::BindingClass;
-use bnap_core::hash::{CounterKey, Scope};
+use bnap_core::hash::{CounterKey, RailId, Scope};
 use bnap_core::ids::use_id;
 use bnap_core::offer::{AttestEntry, Effect, OfferFields, PayEntry};
 use bnap_core::pricing::{
-    AdmitInput, PayValue, PriceError, VerifiedAttest, admit, decide, metered_entry_allowed,
-    quota_candidates,
+    AdmitInput, Backing, BackingSource, PayValue, PriceError, VerifiedAttest, admit,
+    backed_value, decide, metered_entry_allowed, quota_candidates,
 };
 use bnap_core::response::Status;
 use bnap_core::schnorr::Key;
@@ -142,6 +142,26 @@ fn ignored_price_effects_are_reported() {
     assert_eq!(d.discounts, Vec::<(String, u64)>::new());
 }
 
+/// A payment a rail confirmed, `amount` in `unit`.
+fn paid(n: u8, amount: u64, unit: &str) -> Backing {
+    Backing {
+        source: BackingSource::Rail(RailId([n; 32])),
+        amount,
+        unit: unit.into(),
+    }
+}
+
+/// A note the signer verified.
+fn note(y: &[u8], amount: u64) -> Backing {
+    Backing {
+        source: BackingSource::Note(y.to_vec()),
+        amount,
+        unit: "sat".into(),
+    }
+}
+
+/// A credential whose pay part claims `value` and is backed by one
+/// payment of exactly that much.
 fn input<'a>(
     o: &'a OfferFields,
     value: Option<u64>,
@@ -151,7 +171,8 @@ fn input<'a>(
         offer: o,
         pay: value.map(|value| PayValue {
             scheme: "bnap:notes",
-            value,
+            claimed: value,
+            backing: vec![paid(1, value, "sat")],
         }),
         attest: verified,
         now: NOW,
@@ -194,11 +215,147 @@ fn admission_rules() {
     let mut i = input(&o, Some(100), &[]);
     i.pay = Some(PayValue {
         scheme: "httpauth:L402",
-        value: 100,
+        claimed: 100,
+        backing: vec![paid(1, 100, "sat")],
     });
     assert_eq!(
         admit(&i, empty),
         Err(PriceError::NotOffered("httpauth:L402".into()))
+    );
+}
+
+#[test]
+fn the_value_is_what_the_rails_and_the_signer_confirmed() {
+    let o = offer(100, vec![]);
+    let pay = |claimed, backing| AdmitInput {
+        offer: &o,
+        pay: Some(PayValue {
+            scheme: "bnap:notes",
+            claimed,
+            backing,
+        }),
+        attest: &[],
+        now: NOW,
+    };
+    let under = |value| PriceError::Underpaid { price: 100, value };
+    // The review's probe: the rail confirmed 21 msat and the scheme claimed
+    // 1,000,000 sat. 21 msat is 0 sat.
+    assert_eq!(
+        admit(&pay(1_000_000, vec![paid(1, 21, "msat")]), empty),
+        Err(under(0))
+    );
+    // An underpaying rail reference: 99 sat confirmed.
+    assert_eq!(
+        admit(&pay(1_000_000, vec![paid(1, 99, "sat")]), empty),
+        Err(under(99))
+    );
+    // No backing at all counts nothing.
+    assert_eq!(admit(&pay(1_000_000, vec![]), empty), Err(under(0)));
+    // The same payment named twice counts once.
+    assert_eq!(
+        admit(&pay(120, vec![paid(1, 60, "sat"), paid(1, 60, "sat")]), empty),
+        Err(under(60))
+    );
+    // Two payments add up.
+    let a = admit(&pay(120, vec![paid(1, 60, "sat"), paid(2, 60, "sat")]), empty).unwrap();
+    assert_eq!(a.pay().unwrap().value(), 120);
+    // An overclaim on enough backing is cut to the backing, and so is the
+    // change cap: backed minus price, never claimed minus price.
+    let a = admit(&pay(1_000_000, vec![paid(1, 150, "sat")]), empty).unwrap();
+    let p = a.pay().unwrap();
+    assert_eq!((p.claimed(), p.backed(), p.value()), (1_000_000, 150, 150));
+    assert_eq!(p.backing(), &[BackingSource::Rail(RailId([1; 32]))]);
+    assert_eq!(a.settle(Status::Ok, 0).cap.get(), 50);
+    assert_eq!(a.settle(Status::Failed, 0).cap.get(), 150);
+    // A claim below the backing is the value: the scheme gives up the rest.
+    let a = admit(&pay(120, vec![paid(1, 150, "sat")]), empty).unwrap();
+    assert_eq!(a.pay().unwrap().value(), 120);
+    // msat backing converts exactly, rounded down to the entry's unit.
+    let a = admit(&pay(100, vec![paid(1, 100_999, "msat")]), empty).unwrap();
+    assert_eq!(a.pay().unwrap().backed(), 100);
+    assert_eq!(
+        admit(&pay(100, vec![paid(1, 99_999, "msat")]), empty),
+        Err(under(99))
+    );
+}
+
+#[test]
+fn a_wrong_unit_is_refused() {
+    let o = offer(100, vec![]);
+    let i = AdmitInput {
+        offer: &o,
+        pay: Some(PayValue {
+            scheme: "bnap:notes",
+            claimed: 100,
+            backing: vec![paid(1, 100, "USD")],
+        }),
+        attest: &[],
+        now: NOW,
+    };
+    let e = admit(&i, empty).unwrap_err();
+    assert_eq!(
+        e,
+        PriceError::UnitMismatch {
+            want: "sat".into(),
+            got: "USD".into()
+        }
+    );
+    assert_eq!(e.code(), bnap_core::ErrorCode::BadCredential);
+}
+
+#[test]
+fn a_value_larger_than_the_verified_notes_is_cut_to_them() {
+    let o = offer(50, vec![]);
+    let notes = vec![note(b"Y1", 64), note(b"Y2", 32), note(b"Y1", 64)];
+    let i = AdmitInput {
+        offer: &o,
+        pay: Some(PayValue {
+            scheme: "bnap:notes",
+            claimed: 1_000,
+            backing: notes.clone(),
+        }),
+        attest: &[],
+        now: NOW,
+    };
+    let a = admit(&i, empty).unwrap();
+    let p = a.pay().unwrap();
+    assert_eq!((p.claimed(), p.value()), (1_000, 96), "Y1 counts once");
+    assert_eq!(
+        p.backing(),
+        &[
+            BackingSource::Note(b"Y1".to_vec()),
+            BackingSource::Note(b"Y2".to_vec())
+        ]
+    );
+    assert_eq!(a.settle(Status::Ok, 0).cap.get(), 46);
+    // A price above the notes: UNDERPAID at the notes' value.
+    let o = offer(100, vec![]);
+    let mut i = i;
+    i.offer = &o;
+    assert_eq!(
+        admit(&i, empty),
+        Err(PriceError::Underpaid {
+            price: 100,
+            value: 96
+        })
+    );
+}
+
+#[test]
+fn backing_converts_only_between_sat_and_msat() {
+    let sum = |unit: &str, b: &[Backing]| backed_value(unit, b).map(|(v, _)| v);
+    assert_eq!(sum("msat", &[paid(1, 2, "sat"), paid(2, 5, "msat")]), Ok(2_005));
+    // 1 sat + 999 msat is 1,999 msat: 1 sat.
+    assert_eq!(sum("sat", &[paid(1, 1, "sat"), paid(2, 999, "msat")]), Ok(1));
+    assert_eq!(sum("sat", &[paid(1, 1, "sat"), paid(2, 1_000, "msat")]), Ok(2));
+    assert_eq!(sum("USD", &[paid(1, 5, "USD"), paid(2, 6, "USD")]), Ok(11));
+    assert!(sum("USD", &[paid(1, 5, "sat")]).is_err());
+    assert!(sum("sat", &[paid(1, 5, "USD")]).is_err());
+    assert!(sum("sat", &[paid(1, 5, "SAT")]).is_err(), "units are exact");
+    // The sum saturates.
+    assert_eq!(
+        sum("sat", &[paid(1, u64::MAX, "sat"), paid(2, u64::MAX, "msat")]),
+        Ok(u64::MAX)
     );
 }
 

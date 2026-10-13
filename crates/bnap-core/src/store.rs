@@ -27,7 +27,7 @@ use crate::error::ErrorCode;
 use crate::hash::{Context, CounterKey, RailId, ReplayKey};
 use crate::ids::{rate_key, use_id};
 use crate::limits::CLOCK_SKEW;
-use crate::pricing::{Admission, epoch_end};
+use crate::pricing::{Admission, BackingSource, epoch_end};
 use crate::response::Status;
 
 /// The state of an outcome record.
@@ -224,6 +224,11 @@ impl CommitPlan {
     /// - Rate-model `UseId`s become `rate(k, epoch)` counters.
     /// - The quota counter the admission chose joins the counters, always:
     ///   the plan takes it from the [`Admission`], not from the caller.
+    /// - Every payment and note the admission counted as value is a single
+    ///   use too (`RailId`, or the note's `UseId` under the pay scheme), so
+    ///   value is never counted for a request without being consumed by it.
+    ///   They join the singles only; the `ReplayKey` covers what the schemes
+    ///   and `rail_ids` name, as 6.1 defines it.
     /// - The `ReplayKey` covers every `UseId` and `RailId`, whatever its
     ///   model, sorted and not deduplicated (ERRATA N3a-9).
     /// - Single uses and counters are sets: an ID the request names twice is
@@ -261,6 +266,14 @@ impl CommitPlan {
         }
         if let Some(q) = input.admission.decision().quota_counter() {
             counters.insert(*q);
+        }
+        if let Some(pay) = input.admission.pay() {
+            for b in pay.backing() {
+                singles.insert(match b {
+                    BackingSource::Rail(r) => r.0,
+                    BackingSource::Note(local) => use_id(pay.scheme(), local).0,
+                });
+            }
         }
         if singles.is_empty()
             && input.offer_expires.saturating_add(CLOCK_SKEW)

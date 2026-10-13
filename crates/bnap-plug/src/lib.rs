@@ -34,7 +34,9 @@ pub mod signer;
 pub use carrier::{Carrier, Challenge, NativeChallenge, RawCredential};
 pub use pay::{Budget, PayError, PayProof, PaySource};
 pub use policy::{Action, Decision, Judge, Pricer, PricerError};
-pub use rail::{Confirmed, FundingRail, PayId, PayRequest, PayState, RailError, confirm_rail_id};
+pub use rail::{
+    Confirmed, FundingRail, PayId, PayRequest, PayState, RailError, RailPayment, confirm_rail_id,
+};
 pub use scheme::{
     CredentialScheme, Entry, LocalId, NativeArtifact, NativeCredential, NativeCtx, OfferCtx,
     OfferRole, RailRef, SchemeError, SchemeOffer, SettleCtx, Verified, VerifyCtx,

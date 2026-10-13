@@ -19,12 +19,18 @@
 //!   change cap bnap-core computed (`value - charged`), and nothing more: it
 //!   has no way to sign a message at all, so a scheme can never get an
 //!   offer or a receipt signed.
+//! - The verify-only view a scheme's `verify` gets keeps the notes the
+//!   signer accepted, each once, in the view's unit
+//!   ([`CappedSigner::notes`]). The gate passes them to admission as
+//!   backing, so a notes scheme's value is never more than the notes the
+//!   signer checked.
 
+use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use bnap_core::ErrorCode;
-use bnap_core::pricing::ChangeCap;
+use bnap_core::pricing::{Backing, BackingSource, ChangeCap};
 use bnap_core::schnorr::Signature;
 use bnap_core::sign::CoreMessage;
 
@@ -113,10 +119,14 @@ pub trait Signer: Send + Sync {
     async fn schnorr(&self, msg: &CoreMessage) -> Result<Signature, SignerError>;
 
     /// Checks an unblinded note: `c` is the keyset's key for `amount` times
-    /// `y`.
+    /// `y`, and the keyset is in `unit`.
+    ///
+    /// MUST answer `false` for a keyset of another unit: admission counts
+    /// the accepted amount in `unit`.
     async fn verify_unblinded(
         &self,
         keyset: &KeysetId,
+        unit: &str,
         amount: u64,
         y: &Point,
         c: &Point,
@@ -132,28 +142,50 @@ pub trait Signer: Send + Sync {
     ) -> Result<Vec<BlindSignature>, SignerError>;
 }
 
+/// The notes a verify-only view accepted: amount by `Y`, each note once.
+type Tally = Mutex<BTreeMap<[u8; 33], u64>>;
+
+/// What a [`CappedSigner`] may do.
+#[derive(Clone)]
+enum Mode {
+    /// Check notes, keep the accepted ones, sign nothing.
+    Verify(Arc<Tally>),
+    /// Sign change up to the cap.
+    Change(ChangeCap),
+}
+
 /// The signer as a scheme sees it: unblinded-note checks, and blind
 /// signatures up to the change cap. See the module docs.
+///
+/// Clones share their state: a clone of a verify-only view adds to the
+/// same notes.
 #[derive(Clone)]
 pub struct CappedSigner {
     inner: Arc<dyn Signer>,
-    cap: Option<ChangeCap>,
+    unit: String,
+    mode: Mode,
 }
 
 impl fmt::Debug for CappedSigner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CappedSigner")
+            .field("unit", &self.unit)
             .field("cap", &self.cap())
             .finish_non_exhaustive()
     }
 }
 
 impl CappedSigner {
-    /// The view a scheme's `verify` gets: it can check notes and sign
-    /// nothing.
+    /// The view a scheme's `verify` gets: it can check notes in `unit` (the
+    /// pay entry's) and sign nothing. It keeps every note the signer
+    /// accepted; read them with [`Self::notes`] once `verify` returned.
     #[must_use]
-    pub fn verify_only(inner: Arc<dyn Signer>) -> Self {
-        Self { inner, cap: None }
+    pub fn verify_only(inner: Arc<dyn Signer>, unit: impl Into<String>) -> Self {
+        Self {
+            inner,
+            unit: unit.into(),
+            mode: Mode::Verify(Arc::new(Mutex::new(BTreeMap::new()))),
+        }
     }
 
     /// The view a scheme's `settle` gets: blind signatures worth at most
@@ -162,17 +194,29 @@ impl CappedSigner {
     pub fn for_change(inner: Arc<dyn Signer>, cap: ChangeCap) -> Self {
         Self {
             inner,
-            cap: Some(cap),
+            unit: String::new(),
+            mode: Mode::Change(cap),
         }
     }
 
     /// The change cap; `None` for a verify-only view.
     #[must_use]
     pub fn cap(&self) -> Option<u64> {
-        self.cap.map(ChangeCap::get)
+        match &self.mode {
+            Mode::Verify(_) => None,
+            Mode::Change(cap) => Some(cap.get()),
+        }
     }
 
-    /// Checks an unblinded note (see [`Signer::verify_unblinded`]).
+    /// The unit notes are checked in.
+    #[must_use]
+    pub fn unit(&self) -> &str {
+        &self.unit
+    }
+
+    /// Checks an unblinded note in the view's unit (see
+    /// [`Signer::verify_unblinded`]). A verify-only view keeps a note the
+    /// signer accepted, once per `Y`.
     pub async fn verify_unblinded(
         &self,
         keyset: &KeysetId,
@@ -180,7 +224,38 @@ impl CappedSigner {
         y: &Point,
         c: &Point,
     ) -> Result<bool, SignerError> {
-        self.inner.verify_unblinded(keyset, amount, y, c).await
+        let ok = self
+            .inner
+            .verify_unblinded(keyset, &self.unit, amount, y, c)
+            .await?;
+        if ok && let Mode::Verify(tally) = &self.mode {
+            tally
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .entry(y.0)
+                .or_insert(amount);
+        }
+        Ok(ok)
+    }
+
+    /// The notes this verify-only view accepted, each once, as admission's
+    /// backing ([`bnap_core::pricing::PayValue`]); the local ID of a note is
+    /// its 33-byte `Y`. Empty for a change view.
+    #[must_use]
+    pub fn notes(&self) -> Vec<Backing> {
+        let Mode::Verify(tally) = &self.mode else {
+            return Vec::new();
+        };
+        tally
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|(y, amount)| Backing {
+                source: BackingSource::Note(y.to_vec()),
+                amount: *amount,
+                unit: self.unit.clone(),
+            })
+            .collect()
     }
 
     /// Signs blinded outputs worth at most the cap.

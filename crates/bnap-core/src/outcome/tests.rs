@@ -8,7 +8,7 @@ use crate::credential::{Credential, OfferRef, SchemePart};
 use crate::hash::{Context, RailId, Scope, UseId, sha256};
 use crate::ids::{self, rail};
 use crate::offer::{AttestEntry, OfferFields, PayEntry};
-use crate::pricing::{AdmitInput, PayValue, VerifiedAttest};
+use crate::pricing::{AdmitInput, Backing, BackingSource, PayValue, VerifiedAttest};
 use crate::response::Status;
 use crate::store::{PlanInput, SchemeUses, UseModel};
 use crate::test_support::{MemoryStore, block_on};
@@ -32,7 +32,8 @@ fn no_quota() -> Admission {
         offer: &o,
         pay: Some(PayValue {
             scheme: "bnap:notes",
-            value: 0,
+            claimed: 0,
+            backing: Vec::new(),
         }),
         attest: &[],
         now: T0,
@@ -747,7 +748,8 @@ fn a_quota_with_room_at_pricing_but_full_at_commit_is_rate_limited() {
         offer: &offer,
         pay: Some(PayValue {
             scheme: "bnap:notes",
-            value: 0,
+            claimed: 0,
+            backing: Vec::new(),
         }),
         attest: &att,
         now: T0,
@@ -856,4 +858,72 @@ fn a_quota_priced_admission_always_commits_its_counter() {
     for a in &answers[1..] {
         assert!(matches!(a, Err(CommitError::RateLimited { .. })), "{a:?}");
     }
+}
+
+#[test]
+fn every_payment_and_note_counted_as_value_is_consumed() {
+    // A scheme that counts notes and a payment as value but names none of
+    // them as use IDs: the plan consumes them anyway.
+    let store = MemoryStore::new();
+    let mut o = OfferFields::new(Scope([1; 32]), T0 + 300, Key([9; 32]), [0; 16]);
+    o.pay.push(PayEntry::new("bnap:notes", 50, "sat"));
+    let admit_with = |backing: Vec<Backing>| {
+        let input = AdmitInput {
+            offer: &o,
+            pay: Some(PayValue {
+                scheme: "bnap:notes",
+                claimed: 1_000,
+                backing,
+            }),
+            attest: &[],
+            now: T0,
+        };
+        pricing::admit(&input, |_| 0).unwrap()
+    };
+    let note = |y: &[u8], amount| Backing {
+        source: BackingSource::Note(y.to_vec()),
+        amount,
+        unit: "sat".into(),
+    };
+    let rail_pay = Backing {
+        source: BackingSource::Rail(RailId([4; 32])),
+        amount: 10,
+        unit: "sat".into(),
+    };
+    let first = admit_with(vec![note(b"Y1", 64), rail_pay.clone()]);
+    let plan = |c: u8, a: &Admission| {
+        CommitPlan::build(&PlanInput {
+            context: &ctx(c),
+            pay_body: b"body",
+            attest_bodies: &[],
+            schemes: &[],
+            rail_ids: &[],
+            admission: a,
+            offer_expires: T0 + 300,
+            now: T0,
+            replay_window: limits().replay_window,
+        })
+        .unwrap()
+    };
+    let p1 = plan(1, &first);
+    let y1 = ids::use_id("bnap:notes", b"Y1").0;
+    let mut want = vec![y1, [4; 32]];
+    want.sort_unstable();
+    assert_eq!(p1.singles(), &want[..]);
+    assert!(p1.ids().is_empty(), "the ReplayKey keeps what 6.1 names");
+    assert_eq!(
+        block_on(commit(&store, &p1, &limits())),
+        Ok(Admitted::New)
+    );
+    // The same note, or the same payment, counted again: SPENT.
+    let again = admit_with(vec![note(b"Y1", 64)]);
+    assert_eq!(
+        block_on(commit(&store, &plan(2, &again), &limits())),
+        Err(CommitError::Spent)
+    );
+    let again = admit_with(vec![note(b"Y2", 64), rail_pay]);
+    assert_eq!(
+        block_on(commit(&store, &plan(3, &again), &limits())),
+        Err(CommitError::Spent)
+    );
 }

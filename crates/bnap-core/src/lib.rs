@@ -58,7 +58,9 @@ pub use manifest::{Manifest, ManifestKey, SignedManifest};
 pub use offer::{AttestEntry, Effect, GateOfferCheck, NativeEntry, Offer, OfferFields, PayEntry};
 pub use outcome::{Admitted, CommitError, SettleError};
 pub use policy::{EffectiveVector, Require, RoutePolicy};
-pub use pricing::{Admission, Charge, PriceDecision, PriceError, VerifiedAttest};
+pub use pricing::{
+    Admission, Backing, BackingSource, Charge, PriceDecision, PriceError, VerifiedAttest,
+};
 pub use response::{Response, ResponseFields, Status};
 pub use schnorr::{Key, Signature, SigningKey};
 pub use sign::{CoreMessage, Purpose, UnsignedOffer, UnsignedResponse};

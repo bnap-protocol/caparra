@@ -28,6 +28,16 @@
 //! attestations alone bring the price to 0, through a waive, a full
 //! discount or a quota with room (ERRATA N3b-1, owner decision needed).
 //!
+//! **The verified value is what the operator-trusted plugs confirmed.**
+//! Draft-00 compares the price with "the scheme's verified value", but a
+//! scheme is contained, not trusted (6.1), so [`admit`] does not take its
+//! word for it: the value it counts is the smaller of what the scheme
+//! claimed and what its [`Backing`] adds up to, in the pay entry's unit.
+//! Backing is a payment a rail confirmed as final, or a note the signer
+//! verified; each counts once, and every one is committed as a single use
+//! with the request ([`crate::store::CommitPlan::build`]). A payment in a
+//! unit that does not convert to the entry's is refused (ERRATA N3b-15).
+//!
 //! [`admit`] makes the attestation and quota decision once, at admission,
 //! and returns it inside the [`Admission`]. [`Admission::settle`] reuses
 //! that decision for the charge, so settlement never consumes a quota
@@ -38,9 +48,11 @@
 //! holds every `units × rate` product, so a product beyond 2⁶⁴ simply
 //! yields the ceiling.
 
+use std::collections::BTreeSet;
+
 use crate::class::BindingClass;
 use crate::error::ErrorCode;
-use crate::hash::{CounterKey, UseId};
+use crate::hash::{CounterKey, RailId, UseId};
 use crate::ids::quota_key;
 use crate::offer::{AttestEntry, Effect, MAX_DISCOUNT_BP, OfferFields};
 use crate::response::Status;
@@ -248,18 +260,46 @@ pub fn decide(
 /// (ERRATA N3b-1).
 pub const NO_PAY_BASE: u64 = u64::MAX;
 
-/// The value scheme the credential pays with and the value its `verify`
-/// returned, in the chosen pay entry's unit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Which payment or note backs a pay part. Each counts once.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BackingSource {
+    /// A payment a rail confirmed as final, by the `RailId` bnap-core
+    /// computed from the rail's own kind and canonical bytes.
+    Rail(RailId),
+    /// A note the signer verified, by its local ID (its `Y`) under the pay
+    /// scheme.
+    Note(Vec<u8>),
+}
+
+/// What an operator-trusted plug confirmed a pay part is worth: a rail's
+/// final payment (`bnap_plug::confirm_rail_id`) or a note the signer's
+/// verify-only view accepted (`CappedSigner::notes`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Backing {
+    /// The payment or note.
+    pub source: BackingSource,
+    /// What it is worth, in `unit`.
+    pub amount: u64,
+    /// The unit the rail or the signer reported.
+    pub unit: String,
+}
+
+/// The value scheme the credential pays with: what its `verify` claimed,
+/// and what the rails and the signer confirmed.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PayValue<'a> {
     /// Scheme ID of the credential's `pay` part.
     pub scheme: &'a str,
-    /// Verified value, in the pay entry's unit.
-    pub value: u64,
+    /// The value the scheme's `verify` returned, in the pay entry's unit.
+    /// Never counted beyond `backing`.
+    pub claimed: u64,
+    /// Every payment and note behind the part, as the rails and the signer
+    /// confirmed them.
+    pub backing: Vec<Backing>,
 }
 
 /// What [`admit`] needs.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct AdmitInput<'a> {
     /// The offer the credential uses, already checked (4.4).
     pub offer: &'a OfferFields,
@@ -282,7 +322,10 @@ pub struct AdmittedPay {
     unit: String,
     amount: u64,
     rate: Option<u64>,
+    claimed: u64,
+    backed: u64,
     value: u64,
+    backing: Vec<BackingSource>,
 }
 
 impl AdmittedPay {
@@ -316,10 +359,30 @@ impl AdmittedPay {
         self.rate
     }
 
-    /// The value admission counted, in the entry's unit.
+    /// What the scheme's `verify` claimed.
+    #[must_use]
+    pub fn claimed(&self) -> u64 {
+        self.claimed
+    }
+
+    /// What the backing adds up to, in the entry's unit.
+    #[must_use]
+    pub fn backed(&self) -> u64 {
+        self.backed
+    }
+
+    /// The value admission counted, in the entry's unit: the smaller of
+    /// [`Self::claimed`] and [`Self::backed`]. The change cap comes from it.
     #[must_use]
     pub fn value(&self) -> u64 {
         self.value
+    }
+
+    /// The payments and notes behind the value, each once, sorted. The
+    /// commit plan consumes every one of them as a single use.
+    #[must_use]
+    pub fn backing(&self) -> &[BackingSource] {
+        &self.backing
     }
 }
 
@@ -394,6 +457,15 @@ pub enum PriceError {
     /// `NOT_OFFERED`: the pay scheme has no entry in the offer.
     #[error("scheme {0} is not offered")]
     NotOffered(String),
+    /// `BAD_CREDENTIAL`: a payment or note in a unit that does not convert
+    /// to the pay entry's (ERRATA N3b-15).
+    #[error("backing in {got} for an entry in {want}")]
+    UnitMismatch {
+        /// The pay entry's unit.
+        want: String,
+        /// The unit the rail or signer reported.
+        got: String,
+    },
 }
 
 impl PriceError {
@@ -404,13 +476,17 @@ impl PriceError {
             Self::Policy(_) => ErrorCode::Policy,
             Self::Underpaid { .. } => ErrorCode::Underpaid,
             Self::NotOffered(_) => ErrorCode::NotOffered,
+            Self::UnitMismatch { .. } => ErrorCode::BadCredential,
         }
     }
 }
 
 /// Admission (section 7): required attestations, `price`, and the value
-/// check; without pay, see [`NO_PAY_BASE`]. `counter` returns a counter's current value from the use store,
-/// for the quota candidates of [`quota_candidates`].
+/// check; without pay, see [`NO_PAY_BASE`].
+///
+/// The value checked is `min(claimed, backed)` (see the module docs and
+/// [`backed_value`]). `counter` returns a counter's current value from the
+/// use store, for the quota candidates of [`quota_candidates`].
 pub fn admit(
     input: &AdmitInput<'_>,
     counter: impl Fn(&CounterKey) -> u64,
@@ -421,19 +497,23 @@ pub fn admit(
             return Err(PriceError::Policy(e.scheme.clone()));
         }
     }
-    let pay = match input.pay {
+    let pay = match &input.pay {
         None => None,
         Some(pv) => {
             let (index, e) = offer
                 .pay_entry(pv.scheme)
                 .ok_or_else(|| PriceError::NotOffered(pv.scheme.to_owned()))?;
+            let (backed, backing) = backed_value(&e.unit, &pv.backing)?;
             Some(AdmittedPay {
                 index,
                 scheme: e.scheme.clone(),
                 unit: e.unit.clone(),
                 amount: e.amount,
                 rate: e.rate,
-                value: pv.value,
+                claimed: pv.claimed,
+                backed,
+                value: pv.claimed.min(backed),
+                backing,
             })
         }
     };
@@ -450,6 +530,51 @@ pub fn admit(
         pay,
         metered: offer.metered,
     })
+}
+
+/// Millisatoshis per unit, for the two Lightning units that convert
+/// exactly; `None` for every other unit.
+fn msat_per(unit: &str) -> Option<u128> {
+    match unit {
+        "sat" => Some(1000),
+        "msat" => Some(1),
+        _ => None,
+    }
+}
+
+/// What `backing` adds up to in `unit`, and its sources, each once.
+///
+/// A source named twice counts once. Amounts in the entry's own unit add
+/// as they are; `sat` and `msat` convert into each other exactly, summed in
+/// millisatoshis and rounded down to the entry's unit at the end. Any
+/// other unit is refused with [`PriceError::UnitMismatch`]. The sum
+/// saturates at `u64::MAX`.
+pub fn backed_value(
+    unit: &str,
+    backing: &[Backing],
+) -> Result<(u64, Vec<BackingSource>), PriceError> {
+    let scale = msat_per(unit).unwrap_or(1);
+    let mut seen = BTreeSet::new();
+    let mut total: u128 = 0;
+    for b in backing {
+        let per = if b.unit == unit {
+            scale
+        } else {
+            match (msat_per(unit), msat_per(&b.unit)) {
+                (Some(_), Some(per)) => per,
+                _ => {
+                    return Err(PriceError::UnitMismatch {
+                        want: unit.to_owned(),
+                        got: b.unit.clone(),
+                    });
+                }
+            }
+        };
+        if seen.insert(b.source.clone()) {
+            total = total.saturating_add(u128::from(b.amount) * per);
+        }
+    }
+    Ok((narrow(total / scale), seen.into_iter().collect()))
 }
 
 /// The most change a scheme may sign at settlement: `value - charged`.
