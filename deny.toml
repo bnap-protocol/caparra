@@ -43,7 +43,12 @@ allow = [
   # webpki-roots, which rustls-based TLS stacks (sqlx, reqwest) can pull in.
   "CDLA-Permissive-2.0",
 ]
-exceptions = []
+# Licenses allowed for one crate only, each with the reason.
+exceptions = [
+  # hex_lit is a required dependency of bitcoin (and so of bnap-core). Its
+  # MITNFA license is MIT plus a clause against false attribution.
+  { crate = "hex_lit", allow = ["MITNFA"] },
+]
 
 [licenses.private]
 # Unpublished workspace members (publish = false, such as test harnesses)
