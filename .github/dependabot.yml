@@ -14,6 +14,7 @@ updates:
       # bumps stay separate so each is reviewed on its own: most of the tree
       # is 0.x, where Cargo treats a minor bump as breaking.
       cargo-patch:
+        patterns: ["*"]
         update-types: [patch]
 
   - package-ecosystem: github-actions
