@@ -1047,3 +1047,121 @@ fn a_late_settle_answers_from_the_recorded_failed_outcome() {
     assert_eq!(f.scheme_result.as_deref(), Some(&b"refund"[..]));
     assert!(!f.replayed);
 }
+
+#[test]
+fn limits_refuse_a_replay_window_that_loses_the_refund() {
+    use crate::limits::{LimitsError, REFUND_MARGIN};
+    use crate::manifest::ManifestLimits;
+    let m = |rw: Option<u64>, pt: Option<u64>| ManifestLimits {
+        replay_window: rw,
+        pending_timeout: pt,
+        ..ManifestLimits::default()
+    };
+    assert_eq!(REFUND_MARGIN, 120);
+    // The defaults, and the minimum: pending_timeout + 120.
+    assert_eq!(Limits::from_manifest(&m(None, None)), Ok(Limits::default()));
+    let min = Limits::from_manifest(&m(Some(420), Some(300))).unwrap();
+    assert_eq!(min.record_window(), 420);
+    // Shorter windows are refused, the review's probe (window <= timeout)
+    // among them, and so is a short window under the default timeout.
+    for (rw, pt) in [
+        (Some(419), Some(300)),
+        (Some(300), Some(300)),
+        (Some(100), Some(300)),
+        (Some(100), None),
+        (None, Some(86_400)),
+    ] {
+        let e = Limits::from_manifest(&m(rw, pt)).unwrap_err();
+        assert!(
+            matches!(
+                e,
+                LimitsError::ReplayWindowTooShort {
+                    offer_lifetime: 0,
+                    ..
+                }
+            ),
+            "{rw:?} {pt:?}: {e}"
+        );
+    }
+    // The offer lifetime check: every replay an offer allows finds its
+    // record, past the timeout included.
+    let d = Limits::default();
+    assert_eq!(d.check_offer_lifetime(3_600), Ok(()));
+    assert_eq!(d.check_offer_lifetime(86_400 - 420), Ok(()));
+    assert_eq!(
+        d.check_offer_lifetime(86_400 - 419),
+        Err(LimitsError::ReplayWindowTooShort {
+            replay_window: 86_400,
+            pending_timeout: 300,
+            offer_lifetime: 85_981,
+            min: 86_401,
+        })
+    );
+    assert!(d.check_offer_lifetime(u64::MAX).is_err(), "saturates");
+}
+
+#[test]
+fn a_timed_out_refund_stays_collectable_under_the_minimum_window() {
+    // A crash leaves the outcome PENDING. Under the shortest window the
+    // limits allow (pending_timeout 300, replay_window 420), every replay
+    // from the timeout to the window's end collects the refund, and the
+    // sweep keeps the record until then (6.4: the crash costs the
+    // operator, never the client).
+    let l = Limits::from_manifest(&crate::manifest::ManifestLimits {
+        replay_window: Some(420),
+        pending_timeout: Some(300),
+        ..Default::default()
+    })
+    .unwrap();
+    for at in [T0 + 301, T0 + 419] {
+        let store = MemoryStore::new();
+        let plan = note_plan(&ctx(1), b"Y", T0);
+        assert_eq!(block_on(commit(&store, &plan, &l)), Ok(Admitted::New));
+        // The gate crashed. The sweep runs, then the client replays.
+        let swept = block_on(sweep(&store, at, &l)).unwrap();
+        assert_eq!((swept.timed_out.len(), swept.purged), (1, 0));
+        let Ok(Admitted::Replay(r)) = block_on(commit(&store, &note_plan(&ctx(1), b"Y", at), &l))
+        else {
+            panic!("expected the refund at {at}");
+        };
+        assert!(r.needs_refund());
+        let rec = block_on(record_refund(&store, plan.replay_key(), Some(b"refund"))).unwrap();
+        let f = receipt(&rec, &receipt_input(Digest([1; 32])), true).unwrap();
+        assert_eq!((f.status, f.charged), (Status::Failed, 0));
+        assert_eq!(f.scheme_result.as_deref(), Some(&b"refund"[..]));
+    }
+    // At the window's end the record goes, as for any outcome.
+    let store = MemoryStore::new();
+    let plan = note_plan(&ctx(1), b"Y", T0);
+    block_on(commit(&store, &plan, &l)).unwrap();
+    assert_eq!(
+        block_on(commit(&store, &note_plan(&ctx(1), b"Y", T0 + 420), &l)),
+        Err(CommitError::Spent)
+    );
+}
+
+#[test]
+fn hand_built_limits_never_lose_a_timed_out_refund() {
+    // The review's probe with limits built by hand, not from a manifest:
+    // replay_window 300 = pending_timeout 300. The first replay after the
+    // timeout used to time the outcome out and then answer SPENT, and the
+    // sweep deleted the refund with the record. The record window has a
+    // floor of pending_timeout + 120, so the refund is collected.
+    let l = Limits {
+        replay_window: 300,
+        pending_timeout: 300,
+        ..Limits::default()
+    };
+    assert!(l.validate().is_err());
+    assert_eq!(l.record_window(), 420);
+    let store = MemoryStore::new();
+    let plan = note_plan(&ctx(1), b"Y", T0);
+    block_on(commit(&store, &plan, &l)).unwrap();
+    let late = T0 + 301;
+    assert_eq!(block_on(sweep(&store, late, &l)).unwrap().purged, 0);
+    let Ok(Admitted::Replay(r)) = block_on(commit(&store, &note_plan(&ctx(1), b"Y", late), &l))
+    else {
+        panic!("expected the refund, not SPENT");
+    };
+    assert!(r.needs_refund());
+}

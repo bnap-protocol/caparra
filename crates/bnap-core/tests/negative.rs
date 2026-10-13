@@ -536,12 +536,14 @@ fn size_limits() {
     let l = bnap_core::Limits::from_manifest(&ManifestLimits {
         max_offer: Some(100),
         ..Default::default()
-    });
+    })
+    .unwrap();
     assert_eq!(l.max_offer, 4096);
     let l = bnap_core::Limits::from_manifest(&ManifestLimits {
         max_offer: Some(9000),
         ..Default::default()
-    });
+    })
+    .unwrap();
     assert_eq!(l.max_offer, 9000);
 }
 

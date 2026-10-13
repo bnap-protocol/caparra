@@ -660,7 +660,7 @@ fn manifest_vector() {
         .unwrap();
 
     // Limits from the manifest.
-    let l = bnap_core::Limits::from_manifest(&m.limits);
+    let l = bnap_core::Limits::from_manifest(&m.limits).unwrap();
     assert_eq!(l, bnap_core::Limits::default());
 }
 

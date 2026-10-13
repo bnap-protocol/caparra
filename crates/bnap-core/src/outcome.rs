@@ -246,7 +246,7 @@ async fn replay<S: UseStore + ?Sized>(
             return Err(CommitError::Pending { retry_after: 1 });
         }
     }
-    if now.saturating_sub(rec.created) >= limits.replay_window {
+    if now.saturating_sub(rec.created) >= limits.record_window() {
         return Err(CommitError::Spent);
     }
     Ok(Admitted::Replay(Replay { record: rec }))
@@ -320,8 +320,9 @@ pub struct Sweep {
 }
 
 /// The maintenance sweep: PENDING past `pending_timeout` moves to FAILED,
-/// and settled records past `replay_window` are deleted. Single-use records
-/// are never deleted here (section 12, "Retention").
+/// and settled records past `replay_window` ([`Limits::record_window`]) are
+/// deleted. Single-use records are never deleted here (section 12,
+/// "Retention").
 pub async fn sweep<S: UseStore + ?Sized>(
     store: &S,
     now: u64,
@@ -331,7 +332,7 @@ pub async fn sweep<S: UseStore + ?Sized>(
         .expire_pending(now.saturating_sub(limits.pending_timeout), now)
         .await?;
     let purged = store
-        .purge(now.saturating_sub(limits.replay_window))
+        .purge(now.saturating_sub(limits.record_window()))
         .await?;
     Ok(Sweep { timed_out, purged })
 }
