@@ -291,6 +291,7 @@ fn a_pool_dropped_mid_transaction_leaves_a_consistent_store() {
     let schema = Schema::create(&exec, &url);
     for round in 0..3 {
         let store = Arc::new(schema.open(&exec));
+        let pool = store.pool().clone();
         let tried = Arc::new(Mutex::new(Vec::new()));
         let acked = Arc::new(Mutex::new(Vec::new()));
         let gates: Vec<_> = (0..8)
@@ -305,7 +306,14 @@ fn a_pool_dropped_mid_transaction_leaves_a_consistent_store() {
             .collect();
         // Let the gates write, then cut them off while transactions are
         // open, kill their server sessions and drop the pool.
-        std::thread::sleep(Duration::from_millis(300));
+        let start = std::time::Instant::now();
+        while acked.lock().unwrap().len() < 24 && start.elapsed() < Duration::from_secs(60) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            gates.iter().all(|g| !g.is_finished()),
+            "no gate stopped on its own"
+        );
         let mut seen = false;
         for _ in 0..1_000 {
             let open = schema.admin(
@@ -332,6 +340,12 @@ fn a_pool_dropped_mid_transaction_leaves_a_consistent_store() {
             }
         }
         drop(Arc::into_inner(store).expect("the gates let go of the store"));
+        // Connections the aborted calls dropped are still being closed in
+        // the background (their transactions rolled back, or a COMMIT that
+        // was already sent finishing); wait for that before reading, so the
+        // check sees one quiet state.
+        exec.block_on(pool.close());
+        drop(pool);
 
         let store = schema.open(&exec);
         let d = dump(&exec, &store);
@@ -341,7 +355,7 @@ fn a_pool_dropped_mid_transaction_leaves_a_consistent_store() {
         for rk in acked.lock().unwrap().iter() {
             assert!(committed.contains(rk), "an acknowledged commit survives");
         }
-        assert!(acked.lock().unwrap().len() >= 8, "the gates got going");
+        assert!(acked.lock().unwrap().len() >= 24, "the gates got going");
         // The reconnected store keeps working.
         let r = Req::note(900_000 + round, &note(900_000 + round), 96, 50, None);
         let p = scenarios::new(exec.block_on(r.process(&store)));
