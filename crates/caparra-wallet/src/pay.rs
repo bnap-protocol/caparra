@@ -1589,8 +1589,12 @@ impl Wallet {
             q.state = QuoteState::Redeemed;
             tx.put(kind::QUOTE, qid, &q).await?;
         }
-        let cost =
-            (op.face + quote_value + quote_fee + op.lightning_sat).saturating_sub(change_sat);
+        // Change and refunds are notes of this operator, its IOU. They give
+        // back only the face of the notes this request spent; what went out
+        // over Lightning (a quote funded in the 402, a fee) counts in full,
+        // or an operator could hand the value back as notes again and again
+        // and take sats past the caps.
+        let cost = op.face.saturating_sub(change_sat) + quote_value + quote_fee + op.lightning_sat;
         if let Some(mut e) = tx
             .get::<policy::LedgerEntry>(kind::LEDGER, &op.ledger)
             .await?
