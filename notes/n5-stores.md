@@ -87,7 +87,11 @@ where drift would hide.
 - `outcome`: `REPEATABLE READ, READ ONLY` (one snapshot, never aborted,
   never blocks a writer). `counter`: one `SELECT`.
 - `connect_with` appends `-c synchronous_commit=on` to the connection
-  options, whatever the server default.
+  options, whatever the server default. A startup option outranks
+  `ALTER DATABASE` / `ALTER ROLE` defaults and the server's
+  `postgresql.conf`, and the store's comes after any `synchronous_commit`
+  the caller put in its own options, so the last one wins. Two tests pin
+  this (item 7 below).
 - The schema lives in the connection's `search_path` (`public` by
   default): one database can hold several stores in separate schemas (the
   tests do this). `sqlx`'s Postgres migrator takes an advisory lock, so
@@ -178,7 +182,9 @@ checks checksums); add `0002_...`.
    `the_schema_is_applied_once_and_a_store_reopens_its_file` asserts.)
 5. `the_schema_is_applied_once_...`: reopen or reconnect, replay a settled
    outcome, assert WAL + `synchronous = FULL` (SQLite) and
-   `synchronous_commit = on` (Postgres).
+   `synchronous_commit = on` (Postgres). The Postgres half of that last
+   assertion cannot fail on a stock server, whose default is already `on`;
+   item 7 is what pins the forced setting.
 6. `pruning_spares_live_counters` (repair round 1; the generic body is
    `scenarios::pruning_spares_live_counters`, which takes the store's
    `prune_counters` and a raw row writer as closures, since pruning is not
@@ -189,6 +195,20 @@ checks checksums); add `0002_...`.
    at `resets_at + 61` exactly one (the rate counter reads 0, the live
    quota counter 1); the quota counter goes at its own epoch end + 61; at
    `u64::MAX` nothing more, and every planted row still reads 1.
+
+7. Postgres only, repair round 2 (draft-00 section 12: a commit that is
+   not durable lets a crash re-admit a spent credential):
+   - `synchronous_commit_stays_on_when_the_client_asks_for_off`: the
+     caller's own `PgConnectOptions` carry `synchronous_commit=off`; a plain
+     pool with those options reads `off` (so the check can fail), the
+     store's pool reads `on` on 4 connections held at once.
+   - `synchronous_commit_stays_on_when_the_role_default_is_off`: a
+     dedicated login role (`<schema>_off`, dropped with what it owns after
+     the test, so concurrent tests keep the stock default) with
+     `ALTER ROLE ... SET synchronous_commit = off` and `CREATE` on the
+     test's schema; a plain pool as that role reads `off`, the store
+     connected as it migrates, reads `on` on 4 connections, and admits and
+     settles.
 
 Unit tests in each store crate: `TxTable` (miss guard, diff, counter
 deletes at 0, refused updates) and `sql` (u64 round trip, `below`
@@ -210,6 +230,7 @@ superset), plus `backoff` bounds for Postgres.
 | Repair round 1, both backends: `prune_counters` DELETE also takes live epochs (`resets_at <= ? OR 1 = 1`) | `pruning_spares_live_counters` only (before it, every test passed) |
 | Same: no `resets_at >= 0` guard; NULL read as 0 (`coalesce`); `<` for `<=`; no clock skew subtracted from `now` | `pruning_spares_live_counters` (4 of 4 per backend) |
 | Repair round 1, both backends: `outputs_among` matches on `replay_key` and `blinded` only; without `amount`; without `keyset` | `change_outputs_are_matched_whole` (3 of 3 per backend). The conformance suite still passes under all three |
+| Repair round 2, Postgres: `connect_with` no longer forces `synchronous_commit` (`let options = options;`) | `synchronous_commit_stays_on_when_the_client_asks_for_off` and `..._when_the_role_default_is_off` (both: left `["off"; 4]`). Before them all 12 Postgres tests passed, `the_schema_is_applied_once_...` included, since the stock default is `on` |
 
 ### Running
 
@@ -231,11 +252,12 @@ connections and `-j 4` ran clean.
 
 Status at hand-off: `cargo-q nextest run -p bnap-store-tests -p
 bnap-store-sqlite -p bnap-store-postgres --locked -j 4` with `DATABASE_URL`
-set: 45 tests (26 in `bnap-store-tests`, 19 unit tests in the store
-crates), all passing, in about 20 s, twice in a row after repair round 1
+set: 47 tests (28 in `bnap-store-tests`, 19 unit tests in the store
+crates), all passing, in about 20 s, twice in a row after repair round 2
 (the writer child is the one skipped, ignored, test). The Postgres tests
 use the default retry budget. Without `DATABASE_URL` the Postgres tests,
-the two new ones included, print the skip line and pass.
+the ones added in both repair rounds included, print the skip line and
+pass.
 `cargo-q clippy --workspace --all-targets --locked -- -D warnings` clean,
 `cargo-q fmt --all --check` clean, `RUSTDOCFLAGS="-D warnings" cargo-q doc`
 clean for the three crates, doctests pass, `RUSTUP_TOOLCHAIN=1.94 cargo-q
@@ -271,7 +293,10 @@ toolchain and nextest setup as the Test job:
 
 Service containers take no server arguments, so the stock
 `max_connections = 100` applies: `--test-threads 3` keeps it at 72 plus
-admin connections. The tests need `CREATE SCHEMA` rights on the database.
+admin connections. The tests need `CREATE SCHEMA` rights on the database,
+and `CREATEROLE` (the image's `postgres` superuser has both) for the
+role-default `synchronous_commit` test, which uses password login over TCP
+(the image's `pg_hba.conf` allows it).
 
 ## Decisions
 
