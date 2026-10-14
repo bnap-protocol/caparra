@@ -511,6 +511,14 @@ impl Inner {
                     Ok(o) => o,
                     Err(e2) => return self.auth_status(error_response(&self.carrier, &e2)),
                 };
+                if offers.is_empty() {
+                    // Every offer of the route mints an invoice and the
+                    // address used up its mint limit: a 402 without a fresh
+                    // offer would mislead, so say when to come back.
+                    let mut limited = err(ErrorCode::RateLimited);
+                    limited.retry_after = Some(crate::limiter::WINDOW);
+                    return self.auth_status(error_response(&self.carrier, &limited));
+                }
                 challenge_response(
                     &self.carrier,
                     &Challenge {

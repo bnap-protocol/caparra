@@ -424,3 +424,32 @@ fn the_example_configuration_resolves() {
     let plans = cfg.plan(&registry).unwrap();
     assert_eq!(plans[0].manifest.pay.len(), 3);
 }
+
+#[tokio::test]
+async fn invoices_are_minted_under_a_per_address_limit() {
+    let w = World::with_extra("\n[limits]\nmints_per_minute = 1\n").await;
+    let a = read(w.send("POST", "/v1/fixed", "{}", &[]).await).await;
+    assert_eq!(a.status, 402);
+    assert_eq!(w.fake().invoice_count(), 1);
+    // The second 402 of this address in the window would mint again.
+    let b = read(w.send("POST", "/v1/fixed", "{}", &[]).await).await;
+    assert_eq!(b.status, 429);
+    assert_eq!(b.error(), Some(ErrorCode::RateLimited));
+    assert!(b.headers.contains_key("retry-after"));
+    // A refusal that owes a fresh offer says so too, instead of a 402
+    // without one.
+    let offer = a.exact_offer();
+    let mut c = Credential::new(OfferRef::Id(offer.offer_id()));
+    c.pay = Some(SchemePart::new("httpauth:L402", b"x:y".to_vec()));
+    let r = read(
+        w.send("POST", "/v1/fixed", "{\"other\":1}", &[cred_header(&c)])
+            .await,
+    )
+    .await;
+    assert_eq!(r.error(), Some(ErrorCode::RateLimited));
+    assert_eq!(w.fake().invoice_count(), 1, "nothing more was minted");
+    // Route offers mint nothing and are never limited.
+    let chat = read(w.send("POST", CHAT, "{}", &[]).await).await;
+    assert_eq!(chat.status, 402);
+    assert!(chat.offers().iter().all(|o| o.fields().route_scope));
+}

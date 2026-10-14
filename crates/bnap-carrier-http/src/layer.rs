@@ -352,11 +352,24 @@ where
             );
         }
     };
+    // 10.2: every answer to a request that carried a credential is
+    // private and never stored, whoever wrote it.
+    let carried = parts.headers.contains_key(crate::fields::BNAP_CREDENTIAL);
     match gate.admit(GateRequest { parts, body }).await {
-        Admit::Answer(r) => full(r),
+        Admit::Answer(mut r) => {
+            if carried {
+                r.headers_mut()
+                    .insert(CACHE_CONTROL, HeaderValue::from_static(NO_STORE));
+            }
+            full(r)
+        }
         Admit::Forward(r) => match call(inner, r).await {
             Ok(mut resp) => {
                 strip_fields(resp.headers_mut());
+                if carried {
+                    resp.headers_mut()
+                        .insert(CACHE_CONTROL, HeaderValue::from_static(NO_STORE));
+                }
                 resp.map(|b| b.map_err(Into::into).boxed_unsync())
             }
             Err(e) => {
@@ -675,6 +688,29 @@ mod tests {
         assert!(r.headers().get("bnap-error").is_none());
         let (r, _) = send(false, "/free-inject").await;
         assert!(r.headers().get("bnap-receipt").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_forwarded_request_with_a_credential_is_not_stored() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let gate = Arc::new(TestGate {
+            metered: false,
+            log,
+        });
+        let svc = BnapLayer::<_, Full<Bytes>>::new(gate).layer(tower::service_fn(upstream));
+        let req = Request::builder()
+            .uri("/free")
+            .header("bnap-credential", "AAEB")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let r = svc.clone().oneshot(req).await.unwrap();
+        assert_eq!(r.headers()[CACHE_CONTROL], NO_STORE);
+        let req = Request::builder()
+            .uri("/free")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let r = svc.oneshot(req).await.unwrap();
+        assert!(r.headers().get(CACHE_CONTROL).is_none());
     }
 
     #[tokio::test]
