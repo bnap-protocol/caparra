@@ -194,14 +194,87 @@ fn the_schema_is_applied_once_and_a_store_reopens_its_file() {
     let again = open(&exec, &path);
     let rec = scenarios::replay(exec.block_on(r.at(T0 + 2).process(&again)));
     assert_eq!(rec.record(), done.record());
-    let mode: String = exec
-        .block_on(sqlx::query_scalar("PRAGMA journal_mode").fetch_one(again.pool()))
-        .unwrap();
-    assert_eq!(mode, "wal");
-    let sync: i64 = exec
-        .block_on(sqlx::query_scalar("PRAGMA synchronous").fetch_one(again.pool()))
-        .unwrap();
-    assert_eq!(sync, 2, "synchronous = FULL");
+    assert_every_connection_durable(&exec, &again, &config());
+}
+
+/// What one connection actually runs with, read back with `PRAGMA`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Durability {
+    journal_mode: String,
+    /// 2 = FULL.
+    synchronous: i64,
+    /// 1 = `F_FULLFSYNC` on commit (macOS: plain fsync leaves the drive
+    /// cache unflushed, so a power loss can drop an acknowledged commit).
+    fullfsync: i64,
+    /// 1 = `F_FULLFSYNC` on WAL checkpoints too.
+    checkpoint_fullfsync: i64,
+    busy_timeout_ms: i64,
+}
+
+/// [`Durability`] on `n` connections of `pool` held at once, so the answer
+/// is not one connection's: every pragma here but `journal_mode` is per
+/// connection, set by the pool on each connection it opens.
+fn durability(exec: &Tokio, pool: &sqlx::SqlitePool, n: usize) -> Vec<Durability> {
+    async fn pragma<T>(conn: &mut sqlx::SqliteConnection, sql: &'static str) -> T
+    where
+        T: Send + Unpin + sqlx::Type<sqlx::Sqlite> + for<'r> sqlx::Decode<'r, sqlx::Sqlite>,
+    {
+        sqlx::query_scalar(sql)
+            .fetch_one(conn)
+            .await
+            .unwrap_or_else(|e| panic!("{sql}: {e}"))
+    }
+    exec.block_on(async {
+        let mut held = Vec::with_capacity(n);
+        for _ in 0..n {
+            held.push(pool.acquire().await.unwrap());
+        }
+        let mut seen = Vec::with_capacity(n);
+        for conn in &mut held {
+            let c = &mut **conn;
+            seen.push(Durability {
+                journal_mode: pragma(c, "PRAGMA journal_mode").await,
+                synchronous: pragma(c, "PRAGMA synchronous").await,
+                fullfsync: pragma(c, "PRAGMA fullfsync").await,
+                checkpoint_fullfsync: pragma(c, "PRAGMA checkpoint_fullfsync").await,
+                busy_timeout_ms: pragma(c, "PRAGMA busy_timeout").await,
+            });
+        }
+        seen
+    })
+}
+
+/// Holds every connection `store`'s pool may open (`max_connections` of
+/// them) and asserts each runs WAL, `synchronous = FULL`, `fullfsync`,
+/// `checkpoint_fullfsync` and the configured busy timeout (draft-00
+/// section 12: stores MUST make commits durable synchronously).
+fn assert_every_connection_durable(exec: &Tokio, store: &SqliteStore, config: &SqliteConfig) {
+    let n = usize::try_from(config.max_connections).unwrap();
+    let want = Durability {
+        journal_mode: "wal".into(),
+        synchronous: 2,
+        fullfsync: 1,
+        checkpoint_fullfsync: 1,
+        busy_timeout_ms: i64::try_from(config.busy_timeout.as_millis()).unwrap(),
+    };
+    let seen = durability(exec, store.pool(), n);
+    assert_eq!(seen.len(), n);
+    for (i, got) in seen.iter().enumerate() {
+        assert_eq!(got, &want, "connection {i} of {n}");
+    }
+}
+
+/// The production entry point, [`SqliteStore::open`] with the default
+/// [`SqliteConfig`], on a new file: every connection is durable.
+#[test]
+fn every_connection_of_a_default_store_syncs_fully() {
+    let exec = Tokio::new();
+    let dir = tempfile::tempdir().unwrap();
+    let store = exec
+        .block_on(SqliteStore::open(dir.path().join("uses.sqlite")))
+        .expect("the store opens");
+    assert_every_connection_durable(&exec, &store, &SqliteConfig::default());
+    exec.block_on(store.close());
 }
 
 /// True while another connection holds the write lock: a write
