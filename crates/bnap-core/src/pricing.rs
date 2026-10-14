@@ -698,25 +698,46 @@ pub fn backed_value(
 /// with, and `outcome::Recorded::refund_cap` from the cap the commit
 /// recorded. So the cap a signer enforces, and the `ReplayKey` it is
 /// enforced for, always come from the same outcome
-/// (`bnap_plug::CappedSigner::for_change` takes both from here). The
-/// signer side keeps a running total per outcome against it.
+/// (`bnap_plug::CappedSigner::for_change` takes both from here). Every
+/// output signed under it is first reserved in the use store against the
+/// outcome's one running total (`crate::store::UseStore::reserve_change`),
+/// and the signer keeps a total of its own as a second line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeCap {
     replay_key: ReplayKey,
     amount: u64,
     unit: String,
     status: Status,
+    keep_until: u64,
 }
 
 impl ChangeCap {
-    /// A cap bnap-core computed for the outcome under `replay_key`.
-    pub(crate) fn new(replay_key: ReplayKey, amount: u64, unit: String, status: Status) -> Self {
+    /// A cap bnap-core computed for the outcome under `replay_key`, whose
+    /// record the store keeps at least until `keep_until`.
+    pub(crate) fn new(
+        replay_key: ReplayKey,
+        amount: u64,
+        unit: String,
+        status: Status,
+        keep_until: u64,
+    ) -> Self {
         Self {
             replay_key,
             amount,
             unit,
             status,
+            keep_until,
         }
+    }
+
+    /// The earliest time the store may purge the outcome's record: its
+    /// record window from commit, and a clock skew past its offer's
+    /// `expires + 60` (`crate::store::UseStore::purge`). Until then a replay
+    /// can still settle the outcome, so a signer that keeps its own total
+    /// for the `ReplayKey` keeps it at least this long.
+    #[must_use]
+    pub fn keep_until(&self) -> u64 {
+        self.keep_until
     }
 
     /// The outcome the cap is for: the change budget's settlement.
@@ -791,9 +812,16 @@ impl Charge {
         &self.unit
     }
 
-    /// The change cap of this charge for the outcome under `replay_key`.
-    pub(crate) fn cap_for(&self, replay_key: ReplayKey) -> ChangeCap {
-        ChangeCap::new(replay_key, self.change, self.unit.clone(), self.status)
+    /// The change cap of this charge for the outcome under `replay_key`,
+    /// whose record is kept at least until `keep_until`.
+    pub(crate) fn cap_for(&self, replay_key: ReplayKey, keep_until: u64) -> ChangeCap {
+        ChangeCap::new(
+            replay_key,
+            self.change,
+            self.unit.clone(),
+            self.status,
+            keep_until,
+        )
     }
 }
 

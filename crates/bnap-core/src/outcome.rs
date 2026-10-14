@@ -75,10 +75,19 @@
 //! made for another outcome; a [`ChangeCap`] carries the `ReplayKey` it was
 //! computed for, so a change budget's cap and its settlement always come
 //! from one outcome.
+//!
+//! **One change ledger per outcome, in the store.** Every blinded output a
+//! scheme gets signed as change or a refund is first reserved with
+//! [`reserve_change`], in `outcome[rk]`, in one store transaction: one
+//! running total per `ReplayKey` across the OK change and the FAILED
+//! refund, each distinct output once, never above the admitted value. The
+//! store is durable and every gate instance shares it, so a signer that
+//! restarts, or a second signer instance, can never open a new budget for
+//! an outcome whose value was already signed (ERRATA N3b-29).
 
 use crate::error::{ErrorCode, ErrorObject, Stale};
 use crate::hash::{Context, CounterKey, Digest, OfferId, RailId, ReplayKey};
-use crate::limits::{Limits, expired};
+use crate::limits::{CLOCK_SKEW, Limits, expired};
 use crate::offer::OfferFields;
 use crate::pricing::{
     self, Admission, AdmitInput, ChangeCap, Charge, PayValue, PriceError, VerifiedAttest,
@@ -86,8 +95,9 @@ use crate::pricing::{
 use crate::response::{ResponseFields, Status};
 use crate::schnorr::Key;
 use crate::store::{
-    Commit, CommitPlan, OutcomeRecord, OutcomeStatus, PlanError, RefundRequest, SchemeUses, Settle,
-    SettleRequest, Settlement, StoreError, SweepWindow, UseStore, Uses,
+    ChangeOutput, ChangeRequest, Commit, CommitPlan, OutcomeRecord, OutcomeStatus, PlanError,
+    RefundRequest, Reserve, SchemeUses, Settle, SettleRequest, Settlement, StoreError, SweepWindow,
+    UseStore, Uses,
 };
 
 /// Everything the gate verified about one request, for [`process`].
@@ -207,7 +217,7 @@ pub enum Admitted {
 /// ```compile_fail,E0451
 /// use bnap_core::outcome::Pending;
 /// fn forge(rk: bnap_core::ReplayKey, admission: bnap_core::Admission) -> Pending {
-///     Pending { replay_key: rk, admission }
+///     Pending { replay_key: rk, admission, keep_until: 0 }
 /// }
 /// ```
 ///
@@ -220,6 +230,7 @@ pub enum Admitted {
 pub struct Pending {
     replay_key: ReplayKey,
     admission: Admission,
+    keep_until: u64,
 }
 
 impl Pending {
@@ -241,9 +252,19 @@ impl Pending {
     #[must_use]
     pub fn charge(&self, status: Status, units: u64) -> OutcomeCharge {
         let charge = self.admission.settle(status, units);
-        let cap = charge.cap_for(self.replay_key);
+        let cap = charge.cap_for(self.replay_key, self.keep_until);
         OutcomeCharge { charge, cap }
     }
+}
+
+/// The earliest time the store may purge an outcome's record
+/// ([`UseStore::purge`]): `record_window` after `created`, and a clock skew
+/// past the offer's `keep_until`. A replay can settle the outcome until
+/// then, so its change ledger must last as long ([`ChangeCap::keep_until`]).
+fn kept_until(rec_created: u64, rec_keep_until: u64, limits: &Limits) -> u64 {
+    rec_created
+        .saturating_add(limits.record_window())
+        .max(rec_keep_until.saturating_add(CLOCK_SKEW))
 }
 
 /// The charge of one committed outcome, as [`Pending::charge`] computed it:
@@ -298,6 +319,7 @@ pub struct Recorded {
     replay_key: ReplayKey,
     record: OutcomeRecord,
     replayed: bool,
+    keep_until: u64,
 }
 
 impl Recorded {
@@ -346,6 +368,7 @@ impl Recorded {
                 self.record.refund_cap,
                 self.record.unit.clone(),
                 Status::Failed,
+                self.keep_until,
             )
         })
     }
@@ -451,10 +474,12 @@ pub async fn process<S: UseStore + ?Sized>(
             };
         }
     };
+    let keep_until = kept_until(plan.now(), plan.keep_until(), limits);
     match store.commit(&plan).await? {
         Commit::New => Ok(Admitted::New(Pending {
             replay_key: rk,
             admission,
+            keep_until,
         })),
         // The same credential committed between the lookup and this commit.
         Commit::Replay(rec) => classify(store, rk, rec, now, limits).await,
@@ -542,6 +567,7 @@ async fn classify<S: UseStore + ?Sized>(
     }
     Ok(Admitted::Replay(Recorded {
         replay_key: rk,
+        keep_until: kept_until(rec.created, rec.keep_until, limits),
         record: rec,
         replayed: true,
     }))
@@ -623,6 +649,7 @@ pub async fn settle<S: UseStore + ?Sized>(
         replay_key: pending.replay_key,
         record,
         replayed: false,
+        keep_until: pending.keep_until,
     };
     match store
         .settle(&SettleRequest::new(s, limits.pending_timeout))
@@ -657,7 +684,31 @@ pub async fn record_refund<S: UseStore + ?Sized>(
         replay_key: recorded.replay_key,
         record,
         replayed: recorded.replayed,
+        keep_until: recorded.keep_until,
     })
+}
+
+/// Reserves `outputs` in the store as change or a refund under `cap`,
+/// before any of them is signed (see [`UseStore::reserve_change`]).
+///
+/// The change view of the signer (`bnap_plug::CappedSigner`) calls this
+/// before every blind signature, with the cap of the settlement it was made
+/// for. The outcome's change ledger lives in its record: one running total
+/// per `ReplayKey`, across the OK change and the FAILED refund, each
+/// distinct output once, never above the admitted value. Because the store
+/// is durable and shared, the bound holds across signer restarts, gate
+/// restarts and every gate and signer instance on the store, which a
+/// signer's own in-memory total cannot promise. Sign only on
+/// [`Reserve::Reserved`]; a reservation whose signing then fails stays
+/// counted, since the signer may have signed before failing.
+pub async fn reserve_change<S: UseStore + ?Sized>(
+    store: &S,
+    cap: &ChangeCap,
+    outputs: &[ChangeOutput],
+) -> Result<Reserve, StoreError> {
+    store
+        .reserve_change(&ChangeRequest::new(cap, outputs))
+        .await
 }
 
 /// What one maintenance sweep did.

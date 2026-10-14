@@ -13,8 +13,8 @@ use std::task::{Poll, Waker};
 
 use crate::hash::{CounterKey, ReplayKey};
 use crate::store::{
-    Commit, CommitPlan, OutcomeRecord, RefundRequest, Settle, SettleRequest, StoreError,
-    SweepWindow, UseStore, UseTable, logic,
+    ChangeRequest, Commit, CommitPlan, OutcomeRecord, RefundRequest, Reserve, Settle,
+    SettleRequest, StoreError, SweepWindow, UseStore, UseTable, logic,
 };
 
 /// The three tables of a use store, in memory.
@@ -119,6 +119,16 @@ impl MemoryStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner))
     }
 
+    /// A new store holding what this one holds, as a gate that restarted
+    /// finds its durable store: every table, nothing of any process.
+    #[must_use]
+    pub fn reloaded(&self) -> Self {
+        Self {
+            table: Mutex::new(self.inspect(Clone::clone)),
+            down: AtomicBool::new(false),
+        }
+    }
+
     fn tx(&self) -> Result<MutexGuard<'_, MemoryTable>, StoreError> {
         if self.down.load(Ordering::SeqCst) {
             return Err(StoreError("memory store set unavailable".into()));
@@ -156,6 +166,10 @@ impl UseStore for MemoryStore {
         req: &RefundRequest<'_>,
     ) -> Result<Option<OutcomeRecord>, StoreError> {
         Ok(logic::record_refund(&mut *self.tx()?, req))
+    }
+
+    async fn reserve_change(&self, req: &ChangeRequest<'_>) -> Result<Reserve, StoreError> {
+        Ok(logic::reserve_change(&mut *self.tx()?, req))
     }
 
     async fn purge(&self, window: &SweepWindow) -> Result<u64, StoreError> {
@@ -205,20 +219,22 @@ pub mod conformance {
     use crate::hash::ReplayKey;
     use crate::hash::{Context, Scope};
     use crate::offer::{OfferFields, PayEntry};
-    use crate::pricing::{self, AdmitInput, PayValue, Refund};
+    use crate::pricing::{self, AdmitInput, Backing, BackingSource, ChangeCap, PayValue, Refund};
     use crate::response::Status;
     use crate::schnorr::Key;
     use crate::store::{
-        Commit, CommitPlan, OutcomeRecord, OutcomeStatus, RefundRequest, SchemeUses, Settle,
-        SettleRequest, Settlement, SweepWindow, UseModel, UseStore, Uses,
+        ChangeOutput, ChangeRequest, Commit, CommitPlan, OutcomeRecord, OutcomeStatus,
+        RefundRequest, Reserve, SchemeUses, Settle, SettleRequest, Settlement, SweepWindow,
+        UseModel, UseStore, Uses,
     };
 
     const T0: u64 = 1_791_700_000;
     const TIMEOUT: u64 = 300;
-    /// Calls released together in each concurrent round.
-    const THREADS: usize = 8;
+    /// Calls a concurrent scenario releases together, behind a barrier, in
+    /// each round.
+    pub const THREADS: usize = 8;
     /// Rounds of each concurrent scenario, each on fresh outcomes.
-    const ROUNDS: u8 = 10;
+    pub const ROUNDS: u8 = 10;
 
     /// Runs a store's futures to completion on the calling thread. The
     /// concurrent scenario calls it from several threads at once.
@@ -281,6 +297,79 @@ pub mod conformance {
         let uses = Uses::collect(&Context([c; 32]), b"body", &[], &schemes, &[], now)
             .expect("no zero epoch");
         CommitPlan::build(uses, &admission, o.expires, now, 86_400).expect("the plan builds")
+    }
+
+    /// A committed outcome's plan with value: credential `c`, backed by one
+    /// note worth `value` sat on a `bnap:notes` entry of `price` sat whose
+    /// refund is `atomic`. Its record keeps a refund cap of `value`; with
+    /// it come the OK cap (`value - price`) and the FAILED cap (`value`).
+    fn valued(c: u8, value: u64, price: u64) -> (CommitPlan, ChangeCap, ChangeCap) {
+        let mut o = OfferFields::new(Scope([1; 32]), T0 + 300, Key([9; 32]), [0; 16]);
+        o.pay.push(PayEntry::new("bnap:notes", price, "sat"));
+        let y = [&[2u8, c][..], &[7; 31]].concat();
+        let admission = pricing::admit(
+            &AdmitInput {
+                offer: &o,
+                pay: Some(PayValue {
+                    scheme: "bnap:notes",
+                    claimed: value,
+                    backing: vec![Backing {
+                        source: BackingSource::Note(y.clone()),
+                        amount: value,
+                        unit: "sat".into(),
+                    }],
+                    refund: Refund::Atomic,
+                }),
+                attest: &[],
+                now: T0,
+            },
+            |_| 0,
+        )
+        .expect("the note pays the price");
+        let ids = [y];
+        let schemes = [SchemeUses {
+            scheme: "bnap:notes",
+            model: UseModel::Single,
+            local_ids: &ids,
+        }];
+        let uses = Uses::collect(&Context([c; 32]), b"valued", &[], &schemes, &[], T0)
+            .expect("no zero epoch");
+        let plan = CommitPlan::build(uses, &admission, o.expires, T0, 86_400).expect("builds");
+        let rk = *plan.replay_key();
+        let keep = T0 + 86_400;
+        let ok = admission.settle(Status::Ok, 0).cap_for(rk, keep);
+        let failed = admission.settle(Status::Failed, 0).cap_for(rk, keep);
+        (plan, ok, failed)
+    }
+
+    /// Outputs of these amounts on one keyset; `tag` keeps each batch's
+    /// points apart.
+    fn outs(tag: u8, amounts: &[u64]) -> Vec<ChangeOutput> {
+        amounts
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let mut blinded = [2; 33];
+                blinded[1] = tag;
+                blinded[2] = u8::try_from(i).unwrap();
+                ChangeOutput {
+                    keyset: b"keyset".to_vec(),
+                    amount: *a,
+                    blinded,
+                }
+            })
+            .collect()
+    }
+
+    /// The store's `reserve_change` of `outputs` under `cap`.
+    fn reserve<S: UseStore + ?Sized>(
+        store: &S,
+        exec: &impl Executor,
+        cap: &ChangeCap,
+        outputs: &[ChangeOutput],
+    ) -> Reserve {
+        exec.block_on(store.reserve_change(&ChangeRequest::new(cap, outputs)))
+            .unwrap()
     }
 
     fn settlement(plan: &CommitPlan, status: Status, at: u64) -> Settlement {
@@ -351,6 +440,8 @@ pub mod conformance {
         settle_and_timeout_race_to_one_transition(&make(), exec);
         timeout_and_refund(&make(), exec);
         concurrent_refunds_record_once(&make(), exec);
+        change_is_one_total_per_outcome(&make(), exec);
+        concurrent_reservations_keep_one_total(&make(), exec);
         purge_keeps_what_must_stay(&make(), exec);
     }
 
@@ -529,7 +620,7 @@ pub mod conformance {
     #[derive(Debug)]
     enum Raced {
         /// A settle with this status, and the store's answer.
-        Settle(Status, Settle),
+        Settle(Status, Box<Settle>),
         /// A sweep; true when it timed the outcome out.
         Expire(bool),
     }
@@ -568,7 +659,7 @@ pub mod conformance {
                         Status::Failed
                     };
                     let s = settlement(&pending, status, T0 + TIMEOUT);
-                    Raced::Settle(status, settle(store, exec, &s))
+                    Raced::Settle(status, Box::new(settle(store, exec, &s)))
                 } else {
                     let expired = exec
                         .block_on(store.expire_pending(&past_the_deadline()))
@@ -594,8 +685,11 @@ pub mod conformance {
     /// Exactly one of `raced` moved the outcome, and `rec` is what it wrote.
     fn one_transition(raced: &[Raced], rec: &OutcomeRecord) {
         let mut won = raced.iter().filter_map(|r| match r {
-            Raced::Settle(status, Settle::Settled(after)) => Some((*status, after)),
-            _ => None,
+            Raced::Settle(status, answer) => match &**answer {
+                Settle::Settled(after) => Some((*status, after)),
+                _ => None,
+            },
+            Raced::Expire(_) => None,
         });
         let settled = won.next();
         let expired = raced
@@ -617,12 +711,14 @@ pub mod conformance {
             assert!(rec.timed_out && rec.needs_refund(), "{rec:?}");
         }
         for r in raced {
-            match r {
-                Raced::Settle(_, Settle::AlreadySettled(seen)) => {
-                    assert_eq!(seen, rec, "a refused settle sees the record left");
+            if let Raced::Settle(_, answer) = r {
+                match &**answer {
+                    Settle::AlreadySettled(seen) => {
+                        assert_eq!(seen, rec, "a refused settle sees the record left");
+                    }
+                    Settle::Unknown => panic!("the outcome exists"),
+                    Settle::Settled(_) => {}
                 }
-                Raced::Settle(_, Settle::Unknown) => panic!("the outcome exists"),
-                _ => {}
             }
         }
     }
@@ -696,6 +792,140 @@ pub mod conformance {
         }
     }
 
+    /// The change ledger (ERRATA N3b-29): an outcome worth 96 sat on a
+    /// 50 sat entry. Its OK change (cap 46) and its FAILED refund (cap 96)
+    /// share one total of at most 96; an output reserved before counts
+    /// nothing; the first OK cap holds, and no cap passes the value the
+    /// record keeps. Empty batches, outputs of 0 and unknown outcomes are
+    /// refused. The ledger lives in the record: settle, timeout and refund
+    /// keep it, and only a purge removes it, after which nothing more can
+    /// be reserved for the outcome.
+    pub fn change_is_one_total_per_outcome<S: UseStore + ?Sized>(store: &S, exec: &impl Executor) {
+        let (p, ok, failed) = valued(1, 96, 50);
+        let rk = *p.replay_key();
+        assert_eq!(reserve(store, exec, &ok, &outs(1, &[1])), Reserve::Unknown);
+        assert_eq!(exec.block_on(store.commit(&p)).unwrap(), Commit::New);
+        let change = outs(1, &[32, 8, 4, 2]);
+        assert_eq!(
+            reserve(store, exec, &ok, &change),
+            Reserve::Reserved { total: 46 }
+        );
+        assert_eq!(
+            reserve(store, exec, &ok, &outs(2, &[1])),
+            Reserve::OverCap { total: 47, cap: 46 }
+        );
+        // A refund of fresh outputs for the whole value after the change.
+        assert_eq!(
+            reserve(store, exec, &failed, &outs(3, &[64, 32])),
+            Reserve::OverCap {
+                total: 142,
+                cap: 96
+            }
+        );
+        let mut superset = change.clone();
+        superset.extend(outs(4, &[32, 16, 2]));
+        assert_eq!(
+            reserve(store, exec, &failed, &superset),
+            Reserve::Reserved { total: 96 }
+        );
+        assert_eq!(
+            reserve(store, exec, &failed, &superset),
+            Reserve::Reserved { total: 96 }
+        );
+        assert_eq!(
+            reserve(store, exec, &failed, &outs(5, &[1])),
+            Reserve::OverCap { total: 97, cap: 96 }
+        );
+        assert_eq!(reserve(store, exec, &failed, &[]), Reserve::NoValue);
+        assert_eq!(
+            reserve(store, exec, &failed, &outs(6, &[0])),
+            Reserve::NoValue
+        );
+        let rec = outcome(store, exec, &rk);
+        assert_eq!((rec.change_total, rec.change_cap_ok), (96, Some(46)));
+        assert_eq!(rec.change_outputs.len(), 7);
+        // A larger cap named later for the same outcome raises nothing.
+        let (q, ok_q, _) = valued(2, 96, 50);
+        let rq = *q.replay_key();
+        exec.block_on(store.commit(&q)).unwrap();
+        reserve(store, exec, &ok_q, &outs(7, &[32]));
+        let wide = |status| ChangeCap::new(rq, 1_000, "sat".into(), status, T0);
+        assert_eq!(
+            reserve(store, exec, &wide(Status::Ok), &outs(8, &[32])),
+            Reserve::OverCap { total: 64, cap: 46 }
+        );
+        assert_eq!(
+            reserve(store, exec, &wide(Status::Failed), &outs(9, &[32, 32, 1])),
+            Reserve::OverCap { total: 97, cap: 96 }
+        );
+        // The ledger survives every write to its record.
+        settle(store, exec, &settlement(&p, Status::Ok, T0 + 1));
+        assert_eq!(outcome(store, exec, &rk).change_total, 96);
+        exec.block_on(store.expire_pending(&past_the_deadline()))
+            .unwrap();
+        refund(store, exec, &rq, b"refund");
+        let rec = outcome(store, exec, &rq);
+        assert!(rec.timed_out && rec.refund_recorded);
+        assert_eq!((rec.change_total, rec.change_outputs.len()), (32, 1));
+        // Purged with its record: nothing more for that outcome.
+        let late = p.keep_until() + 61;
+        exec.block_on(store.purge(&SweepWindow::from_parts(late, T0 + 1, T0 + 1)))
+            .unwrap();
+        assert_eq!(reserve(store, exec, &failed, &superset), Reserve::Unknown);
+    }
+
+    /// The change ledger, concurrently: on an outcome worth 96 sat, four
+    /// calls each reserve a fresh 32 sat output for its refund while a
+    /// settle and a sweep move the record, all behind a barrier, the roles
+    /// rotating each round. Exactly three reservations are let through, and
+    /// the record holds all three and their total: a reservation is never
+    /// lost to a write that read the record before it. A store whose
+    /// reservation, or whose settle or timeout, decides on a snapshot and
+    /// writes in a second step fails here.
+    pub fn concurrent_reservations_keep_one_total<S: UseStore + ?Sized>(
+        store: &S,
+        exec: &impl Executor,
+    ) {
+        for round in 0..ROUNDS {
+            let (p, _, failed) = valued(round, 96, 50);
+            exec.block_on(store.commit(&p)).unwrap();
+            let answers = race(THREADS, |i| match (i + usize::from(round)) % 4 {
+                0 => {
+                    exec.block_on(store.expire_pending(&past_the_deadline()))
+                        .unwrap();
+                    None
+                }
+                1 => {
+                    settle(store, exec, &settlement(&p, Status::Ok, T0 + TIMEOUT));
+                    None
+                }
+                _ => {
+                    let out = outs(round, &[32])
+                        .into_iter()
+                        .map(|mut o| {
+                            o.blinded[3] = u8::try_from(i).unwrap();
+                            o
+                        })
+                        .collect::<Vec<_>>();
+                    let r = reserve(store, exec, &failed, &out);
+                    Some((r, out))
+                }
+            });
+            let reserved: Vec<&ChangeOutput> = answers
+                .iter()
+                .flatten()
+                .filter(|(r, _)| matches!(r, Reserve::Reserved { .. }))
+                .flat_map(|(_, out)| out)
+                .collect();
+            assert_eq!(reserved.len(), 3, "three of four fit in 96: {answers:?}");
+            let rec = outcome(store, exec, p.replay_key());
+            assert_eq!(rec.change_total, 96, "no reservation lost: {rec:?}");
+            assert_eq!(rec.change_outputs.len(), 3);
+            assert!(reserved.iter().all(|o| rec.change_outputs.contains(*o)));
+            assert_ne!(rec.status, OutcomeStatus::Pending);
+        }
+    }
+
     /// Section 12 "Retention", 6.1: purge deletes settled records past the
     /// window and a clock skew past `keep_until`, never PENDING ones and
     /// never `used` entries.
@@ -750,6 +980,7 @@ mod tests {
         Settle,
         Timeout,
         Refund,
+        Reserve,
     }
 
     /// A store that runs one of its writes in two steps: it decides on a
@@ -840,6 +1071,13 @@ mod tests {
             self.inner.record_refund(req).await
         }
 
+        async fn reserve_change(&self, req: &ChangeRequest<'_>) -> Result<Reserve, StoreError> {
+            if self.split == Split::Reserve {
+                return self.two_steps(|t| logic::reserve_change(t, req));
+            }
+            self.inner.reserve_change(req).await
+        }
+
         async fn purge(&self, window: &SweepWindow) -> Result<u64, StoreError> {
             self.inner.purge(window).await
         }
@@ -854,9 +1092,16 @@ mod tests {
     fn a_two_step_store_passes_every_scenario_one_call_at_a_time() {
         // The negative stores below break no rule sequentially, so what
         // fails them is the concurrency the scenarios add.
-        for split in [Split::Commit, Split::Settle, Split::Timeout, Split::Refund] {
+        for split in [
+            Split::Commit,
+            Split::Settle,
+            Split::Timeout,
+            Split::Refund,
+            Split::Reserve,
+        ] {
             let exec = &conformance::Spin;
             conformance::commit_is_all_or_nothing(&TwoStep::new(split), exec);
+            conformance::change_is_one_total_per_outcome(&TwoStep::new(split), exec);
             conformance::settle_changes_the_status_once(&TwoStep::new(split), exec);
             conformance::timeout_and_refund(&TwoStep::new(split), exec);
             conformance::purge_keeps_what_must_stay(&TwoStep::new(split), exec);
@@ -904,6 +1149,26 @@ mod tests {
         )));
         assert!(fails(|| conformance::run(
             || TwoStep::new(Split::Refund),
+            exec
+        )));
+    }
+
+    #[test]
+    fn a_store_that_reserves_change_in_two_steps_fails_conformance() {
+        // Two reservations that read one total and each add to it let a
+        // hoarding scheme past the value; a settle or timeout that writes a
+        // record it read before a reservation loses that reservation.
+        let exec = &conformance::Spin;
+        for split in [Split::Reserve, Split::Settle, Split::Timeout] {
+            assert!(
+                fails(|| {
+                    conformance::concurrent_reservations_keep_one_total(&TwoStep::new(split), exec);
+                }),
+                "{split:?}"
+            );
+        }
+        assert!(fails(|| conformance::run(
+            || TwoStep::new(Split::Reserve),
             exec
         )));
     }

@@ -211,6 +211,10 @@ impl UseStore for StaleReads {
         self.0.record_refund(req).await
     }
 
+    async fn reserve_change(&self, req: &ChangeRequest<'_>) -> Result<Reserve, StoreError> {
+        self.0.reserve_change(req).await
+    }
+
     async fn purge(&self, window: &SweepWindow) -> Result<u64, StoreError> {
         self.0.purge(window).await
     }
@@ -1176,6 +1180,11 @@ impl UseStore for Racing {
         self.inner.record_refund(req).await
     }
 
+    async fn reserve_change(&self, req: &ChangeRequest<'_>) -> Result<Reserve, StoreError> {
+        self.wait();
+        self.inner.reserve_change(req).await
+    }
+
     async fn purge(&self, window: &SweepWindow) -> Result<u64, StoreError> {
         self.wait();
         self.inner.purge(window).await
@@ -1801,4 +1810,73 @@ fn hand_built_limits_never_lose_a_timed_out_refund() {
     let late = T0 + 301;
     assert_eq!(block_on(sweep(&store, late, &l)).unwrap().purged, 0);
     assert!(replay(r.at(late).process_in(&store, &l)).needs_refund());
+}
+
+#[test]
+fn change_and_refund_reserve_one_total_through_the_outcome() {
+    // ERRATA N3b-29: the change ledger lives in the outcome record. Notes
+    // worth 96 sat for a 50 sat entry: a late OK settle reserved its 46 sat
+    // of change, and the refund a replay computes after a restart (the
+    // store reloaded, nothing of any process kept) shares that total, so
+    // fresh refund outputs for the whole value are refused and a refund
+    // that re-signs the change pays only for its new outputs.
+    let store = MemoryStore::new();
+    let l = limits();
+    let mut r = Req::note(1, b"Y", T0);
+    r.offer.pay[0] = PayEntry::new("bnap:notes", 50, "sat");
+    r.pay = Some(PayValue {
+        scheme: "bnap:notes",
+        claimed: 96,
+        backing: vec![Backing {
+            source: BackingSource::Note(vec![2; 33]),
+            amount: 96,
+            unit: "sat".into(),
+        }],
+        refund: Refund::Atomic,
+    });
+    let p = new(r.process(&store));
+    let ok = p.charge(Status::Ok, 0);
+    assert_eq!(
+        (ok.cap().get(), ok.cap().keep_until()),
+        (46, T0 + l.record_window())
+    );
+    let out = |tag: u8, amount| ChangeOutput {
+        keyset: b"keyset".to_vec(),
+        amount,
+        blinded: [tag; 33],
+    };
+    let change = [out(1, 32), out(2, 14)];
+    assert_eq!(
+        block_on(reserve_change(&store, ok.cap(), &change)).unwrap(),
+        Reserve::Reserved { total: 46 }
+    );
+    let late = ok_at(&p, 50, b"change", T0 + l.pending_timeout + 1);
+    assert!(matches!(
+        block_on(settle(&store, &p, &late, &l)),
+        Err(SettleError::AlreadySettled(_))
+    ));
+    let restarted = store.reloaded();
+    let again = replay(r.at(T0 + 400).process(&restarted));
+    let refund = again.refund_cap().unwrap();
+    assert_eq!(
+        (refund.get(), refund.keep_until()),
+        (96, T0 + l.record_window())
+    );
+    assert_eq!(
+        block_on(reserve_change(
+            &restarted,
+            &refund,
+            &[out(3, 64), out(4, 32)]
+        ))
+        .unwrap(),
+        Reserve::OverCap {
+            total: 142,
+            cap: 96
+        }
+    );
+    let superset = [out(1, 32), out(2, 14), out(5, 50)];
+    assert_eq!(
+        block_on(reserve_change(&restarted, &refund, &superset)).unwrap(),
+        Reserve::Reserved { total: 96 }
+    );
 }

@@ -67,8 +67,8 @@ pub use response::{Response, ResponseFields, Status};
 pub use schnorr::{Key, Signature, SigningKey};
 pub use sign::{CoreMessage, Purpose, UnsignedOffer, UnsignedResponse};
 pub use store::{
-    CommitPlan, OutcomeRecord, OutcomeStatus, RefundRequest, SettleRequest, Settlement, StoreError,
-    SweepWindow, UseModel, UseStore,
+    ChangeOutput, ChangeRequest, CommitPlan, OutcomeRecord, OutcomeStatus, RefundRequest, Reserve,
+    SettleRequest, Settlement, StoreError, SweepWindow, UseModel, UseStore,
 };
 
 /// The `bitcoin` crate's re-export of secp256k1, the only secp256k1 in the

@@ -8,7 +8,9 @@
 //! - `used[id] = ReplayKey`: every single-model `UseId` and every `RailId`
 //!   ever committed;
 //! - `counter[key]`: rate and quota counters;
-//! - `outcome[ReplayKey]`: one [`OutcomeRecord`] per committed credential.
+//! - `outcome[ReplayKey]`: one [`OutcomeRecord`] per committed credential,
+//!   with the outcome's change ledger: every blinded output reserved as its
+//!   change or refund, and their total ([`UseStore::reserve_change`]).
 //!
 //! [`UseStore`] is defined here rather than in `bnap-plug` because the
 //! outcome state machine ([`crate::outcome`]) is generic over it and
@@ -54,6 +56,10 @@
 //! ```compile_fail,E0624
 //! let _ = bnap_core::store::SweepWindow::new;
 //! ```
+//!
+//! ```compile_fail,E0624
+//! let _ = bnap_core::store::ChangeRequest::new;
+//! ```
 
 use std::collections::BTreeSet;
 
@@ -62,7 +68,7 @@ use crate::hash::{Context, CounterKey, RailId, ReplayKey};
 use crate::ids::{rate_key, use_id};
 use crate::limits::{CLOCK_SKEW, Limits};
 use crate::outcome::OutcomeCharge;
-use crate::pricing::{Admission, BackingSource, epoch_end};
+use crate::pricing::{Admission, BackingSource, ChangeCap, epoch_end};
 use crate::response::Status;
 
 /// The state of an outcome record.
@@ -138,6 +144,16 @@ pub struct OutcomeRecord {
     pub refund_cap: u64,
     /// The pay entry's unit, for the refund; empty without pay.
     pub unit: String,
+    /// What was reserved as this outcome's change and refund so far,
+    /// together, each distinct output once ([`UseStore::reserve_change`]).
+    /// Never more than [`Self::refund_cap`], the admitted value.
+    pub change_total: u64,
+    /// The OK change cap the first OK reservation named; a later OK
+    /// reservation can never raise it.
+    pub change_cap_ok: Option<u64>,
+    /// Every output reserved for this outcome, under either status. The
+    /// same output reserved again makes the same note and counts nothing.
+    pub change_outputs: BTreeSet<ChangeOutput>,
 }
 
 impl OutcomeRecord {
@@ -158,6 +174,9 @@ impl OutcomeRecord {
             keep_until: plan.keep_until(),
             refund_cap: plan.refund_cap(),
             unit: plan.unit().to_owned(),
+            change_total: 0,
+            change_cap_ok: None,
+            change_outputs: BTreeSet::new(),
         }
     }
 
@@ -694,6 +713,83 @@ impl SweepWindow {
     }
 }
 
+/// One blinded output a change or refund signs: the issuer keyset that
+/// signs it, its amount and `B'`. The same triple always makes the same
+/// note.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ChangeOutput {
+    /// The issuer keyset ID, as the issuer names it.
+    pub keyset: Vec<u8>,
+    /// The output's amount, in the keyset's unit.
+    pub amount: u64,
+    /// `B'`, a compressed point.
+    pub blinded: [u8; 33],
+}
+
+/// The input of the store's `reserve_change`: outputs to sign as the change
+/// or refund a [`ChangeCap`] allows. Only `outcome::reserve_change` makes
+/// one, from a cap bnap-core computed for one committed outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChangeRequest<'a> {
+    cap: &'a ChangeCap,
+    outputs: &'a [ChangeOutput],
+}
+
+impl<'a> ChangeRequest<'a> {
+    pub(crate) fn new(cap: &'a ChangeCap, outputs: &'a [ChangeOutput]) -> Self {
+        Self { cap, outputs }
+    }
+
+    /// The outcome whose change or refund this is.
+    #[must_use]
+    pub fn replay_key(&self) -> &ReplayKey {
+        self.cap.replay_key()
+    }
+
+    /// OK reserves change, FAILED a refund.
+    #[must_use]
+    pub fn status(&self) -> Status {
+        self.cap.status()
+    }
+
+    /// The settlement's cap, as bnap-core computed it.
+    #[must_use]
+    pub fn cap(&self) -> u64 {
+        self.cap.get()
+    }
+
+    /// The outputs to reserve.
+    #[must_use]
+    pub fn outputs(&self) -> &'a [ChangeOutput] {
+        self.outputs
+    }
+}
+
+/// What the store's `reserve_change` returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reserve {
+    /// Reserved: the outputs may be signed. `total` is the outcome's
+    /// running total after the call.
+    Reserved {
+        /// Everything reserved for the outcome so far.
+        total: u64,
+    },
+    /// The new outputs would take the outcome's total past the cap.
+    /// Nothing was written.
+    OverCap {
+        /// The total they would make (saturating).
+        total: u64,
+        /// The cap that bounds it.
+        cap: u64,
+    },
+    /// An empty batch, or an output of amount 0: no value, only signer
+    /// work and record growth. Nothing was written.
+    NoValue,
+    /// No outcome under that `ReplayKey`: never committed, or purged after
+    /// its record window, when no settlement of it can run any more.
+    Unknown,
+}
+
 /// What the store's settle returns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Settle {
@@ -785,6 +881,26 @@ pub trait UseStore: Send + Sync {
         req: &RefundRequest<'_>,
     ) -> Result<Option<OutcomeRecord>, StoreError>;
 
+    /// Reserves blinded outputs as the change or refund of one outcome,
+    /// before any of them is signed: the outcome's one change ledger, kept
+    /// in `outcome[req.replay_key()]`, durable and shared by every gate
+    /// instance and every signer.
+    ///
+    /// Outputs already reserved for the outcome, under either status, count
+    /// nothing (the same output makes the same note). The new ones are
+    /// added to the outcome's running total, across its OK change and its
+    /// FAILED refund, only if the total stays within the cap: the smallest
+    /// of `req.cap()`, the record's [`OutcomeRecord::refund_cap`] (the
+    /// admitted value) and, for OK, the cap the first OK reservation named.
+    /// Otherwise nothing is written ([`Reserve::OverCap`]). An empty batch
+    /// or an output of amount 0 is refused ([`Reserve::NoValue`]), and an
+    /// outcome without a record ([`Reserve::Unknown`]).
+    ///
+    /// One serializable transaction, like every write: a reservation never
+    /// interleaves with another, or with a settle, timeout, refund or purge
+    /// of the same record, and none of those loses it.
+    async fn reserve_change(&self, req: &ChangeRequest<'_>) -> Result<Reserve, StoreError>;
+
     /// Deletes OK and FAILED outcome records created before
     /// `window.purge_before()` (the replay window has passed) whose
     /// `keep_until + 60` is before `window.now()`: their offer can no longer
@@ -821,9 +937,11 @@ pub trait UseTable {
 /// Each function reads everything it needs before it writes anything, so an
 /// abort consumes nothing.
 pub mod logic {
+    use std::collections::BTreeSet;
+
     use super::{
-        CLOCK_SKEW, Commit, CommitPlan, OutcomeRecord, OutcomeStatus, RefundRequest, ReplayKey,
-        Settle, SettleRequest, SweepWindow, UseTable,
+        CLOCK_SKEW, ChangeOutput, ChangeRequest, Commit, CommitPlan, OutcomeRecord, OutcomeStatus,
+        RefundRequest, ReplayKey, Reserve, Settle, SettleRequest, SweepWindow, UseTable,
     };
     use crate::response::Status;
 
@@ -949,6 +1067,53 @@ pub mod logic {
             rec.refund_recorded = true;
         }
         Some(rec.clone())
+    }
+
+    /// Reserves outputs as one outcome's change or refund (see
+    /// [`super::UseStore::reserve_change`]).
+    pub fn reserve_change(t: &mut impl UseTable, req: &ChangeRequest<'_>) -> Reserve {
+        let outputs = req.outputs();
+        if outputs.is_empty() || outputs.iter().any(|o| o.amount == 0) {
+            return Reserve::NoValue;
+        }
+        let Some(rec) = t.outcome_mut(req.replay_key()) else {
+            return Reserve::Unknown;
+        };
+        let ok = req.status() == Status::Ok;
+        let ok_cap = rec.change_cap_ok.unwrap_or(req.cap());
+        let mut cap = req.cap().min(rec.refund_cap);
+        if ok {
+            cap = cap.min(ok_cap);
+        }
+        let fresh: BTreeSet<ChangeOutput> = outputs
+            .iter()
+            .filter(|o| !rec.change_outputs.contains(*o))
+            .cloned()
+            .collect();
+        if fresh.is_empty() {
+            // Every output was reserved for this outcome before: the same
+            // notes again, which add nothing.
+            return Reserve::Reserved {
+                total: rec.change_total,
+            };
+        }
+        let total = fresh
+            .iter()
+            .try_fold(rec.change_total, |acc, o| acc.checked_add(o.amount));
+        match total {
+            Some(total) if total <= cap => {
+                rec.change_total = total;
+                rec.change_outputs.extend(fresh);
+                if ok {
+                    rec.change_cap_ok = Some(ok_cap);
+                }
+                Reserve::Reserved { total }
+            }
+            total => Reserve::OverCap {
+                total: total.unwrap_or(u64::MAX),
+                cap,
+            },
+        }
     }
 
     /// Deletes settled outcome records created before `w.purge_before()`,
