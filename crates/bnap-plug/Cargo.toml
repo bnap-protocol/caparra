@@ -9,13 +9,13 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-bnap-core = { path = "../bnap-core" }
+bnap-core.workspace = true
 async-trait = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-bnap-core = { path = "../bnap-core", features = ["test-support"] }
+bnap-core = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

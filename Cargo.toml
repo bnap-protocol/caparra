@@ -22,6 +22,9 @@ missing_errors_doc = "allow"
 # Versions shared by all member crates. A member opts in with
 # `name = { workspace = true }` and may add features on top.
 [workspace.dependencies]
+# Internal crates (path + version, so cargo-deny and crates.io accept them).
+bnap-core = { path = "crates/bnap-core", version = "0.0.0" }
+bnap-plug = { path = "crates/bnap-plug", version = "0.0.0" }
 # Bitcoin, ecash and Lightning. secp256k1 is taken through the `bitcoin`
 # re-export (`bitcoin::secp256k1`) so the tree carries a single secp256k1.
 cashu = "0.18.1"
