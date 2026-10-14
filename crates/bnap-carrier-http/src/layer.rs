@@ -342,6 +342,7 @@ where
     RB::Error: Into<BoxError>,
 {
     let (parts, body) = req.into_parts();
+    tracing::trace!(uri = %parts.uri, "layer: reading the request content");
     let body = match Limited::new(body, limits.request).collect().await {
         Ok(b) => b.to_bytes(),
         Err(_) => {

@@ -311,6 +311,7 @@ impl Inner {
     #[allow(clippy::too_many_lines)]
     async fn admit(self: Arc<Self>, req: GateRequest) -> Admit {
         let GateRequest { mut parts, body } = req;
+        tracing::trace!(uri = %parts.uri, len = body.len(), "gate: admit");
         let now = self.now();
         // Auth fronts send a subrequest; the action is named by the
         // forwarded method and URI, and its content is never seen.

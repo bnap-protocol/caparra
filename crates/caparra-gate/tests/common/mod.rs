@@ -305,6 +305,12 @@ impl World {
     }
 
     pub async fn with_extra(extra: &str) -> Self {
+        let extra = extra.to_owned();
+        Self::with_text(move |dir, up| config_text(dir, up, &extra)).await
+    }
+
+    /// A world whose configuration `text(dir, upstream)` writes.
+    pub async fn with_text(text: impl FnOnce(&std::path::Path, &str) -> String) -> Self {
         let _ = tracing_subscriber::fmt()
             .with_test_writer()
             .with_env_filter(
@@ -315,7 +321,7 @@ impl World {
         let dir = tempfile::tempdir().unwrap();
         let seen = Arc::new(Seen::default());
         let up = upstream(seen.clone()).await;
-        let cfg = Config::parse(&config_text(dir.path(), &up, extra)).unwrap();
+        let cfg = Config::parse(&text(dir.path(), &up)).unwrap();
         write_material(dir.path(), &cfg, NOW);
         let clock = Arc::new(AtomicU64::new(NOW));
         let c = clock.clone();
@@ -324,7 +330,9 @@ impl World {
         let gate = caparra_gate::server::start(&cfg, clk, Some(listener))
             .await
             .unwrap();
-        gate.plugs.fakes["ln"].set_now(NOW);
+        if let Some(f) = gate.plugs.fakes.get("ln") {
+            f.set_now(NOW);
+        }
         let base = format!("http://{}", gate.addr);
         Self {
             dir,
