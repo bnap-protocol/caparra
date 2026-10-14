@@ -237,9 +237,9 @@ pub fn unsigned_response(fields: &ResponseFields) -> Result<UnsignedResponse, Si
 /// commits against one counter, settles racing the timeout on an outcome
 /// that shares its rate counter with another, refunds of one timed-out
 /// outcome, and change reservations racing settles, sweeps, or a refund
-/// record on one outcome. Only a store whose every method decides and writes in one
-/// serializable step passes them; the tests of this module show a store
-/// that splits any one of those writes in two failing.
+/// record on one outcome. Only a store whose every method decides and
+/// writes in one serializable step passes them; the tests of this module
+/// show a store that splits any one of those writes in two failing.
 ///
 /// A durable store's test suite runs [`conformance::run`] with a fresh,
 /// empty store per scenario and an [`conformance::Executor`] for its
@@ -482,6 +482,7 @@ pub mod conformance {
         concurrent_reservations_keep_one_total(&make(), exec);
         no_fresh_change_after_the_outcome_settles(&make(), exec);
         no_fresh_change_after_a_racing_refund(&make(), exec);
+        an_ok_settle_leaves_room_for_its_change(&make(), exec);
         purge_keeps_what_must_stay(&make(), exec);
     }
 
@@ -757,6 +758,7 @@ pub mod conformance {
                         assert_eq!(seen, rec, "a refused settle sees the record left");
                     }
                     Settle::Unknown => panic!("the outcome exists"),
+                    Settle::ChangeOverCap { .. } => panic!("no change is reserved: {answer:?}"),
                     Settle::Settled(_) => {}
                 }
             }
@@ -1123,6 +1125,59 @@ pub mod conformance {
         }
     }
 
+    /// 6.4 with 7: an in-time OK settle charging 50 on an outcome worth 96
+    /// is refused, writing nothing ([`Settle::ChangeOverCap`]), once more
+    /// than 46 of change is reserved, as when the scheme signed under the
+    /// FAILED cap: minted and charged together would pass the value. The
+    /// FAILED settle the gate falls back to is taken. An OK settle whose
+    /// change fits is taken, and a late one still loses to the timeout.
+    pub fn an_ok_settle_leaves_room_for_its_change<S: UseStore + ?Sized>(
+        store: &S,
+        exec: &impl Executor,
+    ) {
+        let charging = |plan: &CommitPlan, status, charged, at| {
+            Settlement::from_parts(*plan.replay_key(), status, charged, None, at)
+                .with_scheme_result(Some(b"result".to_vec()))
+        };
+        let (p, _, failed) = valued(1, 96, 50);
+        exec.block_on(store.commit(&p)).unwrap();
+        let refund = Reserve::Reserved { total: 96 };
+        assert_eq!(reserve(store, exec, &failed, &outs(1, &[64, 32])), refund);
+        let before = outcome(store, exec, p.replay_key());
+        assert_eq!(
+            settle(store, exec, &charging(&p, Status::Ok, 50, T0 + 1)),
+            Settle::ChangeOverCap { total: 96, cap: 46 }
+        );
+        assert_eq!(
+            outcome(store, exec, p.replay_key()),
+            before,
+            "nothing written"
+        );
+        let Settle::Settled(rec) = settle(store, exec, &charging(&p, Status::Failed, 0, T0 + 1))
+        else {
+            panic!("the FAILED settle is taken");
+        };
+        assert_eq!((rec.status, rec.charged), (OutcomeStatus::Failed, Some(0)));
+        // The honest flow: the OK change, then the OK settle.
+        let (q, ok, _) = valued(2, 96, 50);
+        exec.block_on(store.commit(&q)).unwrap();
+        let change = Reserve::Reserved { total: 46 };
+        assert_eq!(reserve(store, exec, &ok, &outs(2, &[32, 8, 4, 2])), change);
+        assert!(matches!(
+            settle(store, exec, &charging(&q, Status::Ok, 50, T0 + 1)),
+            Settle::Settled(_)
+        ));
+        // Past the deadline the timeout wins, whatever was reserved.
+        let (t, _, failed_t) = valued(3, 96, 50);
+        exec.block_on(store.commit(&t)).unwrap();
+        reserve(store, exec, &failed_t, &outs(3, &[64, 32]));
+        let late = charging(&t, Status::Ok, 50, T0 + TIMEOUT + 1);
+        let Settle::AlreadySettled(rec) = settle(store, exec, &late) else {
+            panic!("a late settle loses to the timeout");
+        };
+        assert!(rec.timed_out && rec.needs_refund());
+    }
+
     /// Section 12 "Retention", 6.1: purge deletes settled records past the
     /// window and a clock skew past `keep_until`, never PENDING ones and
     /// never `used` entries.
@@ -1300,6 +1355,7 @@ mod tests {
             conformance::commit_is_all_or_nothing(&TwoStep::new(split), exec);
             conformance::change_is_one_total_per_outcome(&TwoStep::new(split), exec);
             conformance::no_fresh_change_after_the_outcome_settles(&TwoStep::new(split), exec);
+            conformance::an_ok_settle_leaves_room_for_its_change(&TwoStep::new(split), exec);
             conformance::settle_changes_the_status_once(&TwoStep::new(split), exec);
             conformance::timeout_and_refund(&TwoStep::new(split), exec);
             conformance::purge_keeps_what_must_stay(&TwoStep::new(split), exec);

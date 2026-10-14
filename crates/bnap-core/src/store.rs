@@ -802,6 +802,18 @@ pub enum Settle {
     Settled(OutcomeRecord),
     /// The record had already left PENDING; it is unchanged.
     AlreadySettled(OutcomeRecord),
+    /// An in-time OK settlement of an outcome that already has more change
+    /// reserved than OK leaves (`refund_cap - charged`, the admitted value
+    /// less the charge), as when its scheme signed under the FAILED cap:
+    /// minted and charged together would pass the value. Nothing was
+    /// written; the outcome is still PENDING.
+    ChangeOverCap {
+        /// The change reserved for the outcome
+        /// ([`OutcomeRecord::change_total`]).
+        total: u64,
+        /// What an OK settlement at this charge leaves for change.
+        cap: u64,
+    },
     /// No record under that `ReplayKey`.
     Unknown,
 }
@@ -869,7 +881,9 @@ pub trait UseStore: Send + Sync {
     /// counters are given back in the same write. A settle that comes later times the outcome out
     /// instead, in the same transaction, and returns it as
     /// [`Settle::AlreadySettled`], so the answer never depends on when the
-    /// sweep runs.
+    /// sweep runs. An in-time OK settle whose outcome has more change
+    /// reserved than `refund_cap - charged` writes nothing and returns
+    /// [`Settle::ChangeOverCap`].
     async fn settle(&self, req: &SettleRequest<'_>) -> Result<Settle, StoreError>;
 
     /// 6.4 timeout: every outcome still PENDING that was created before
@@ -1025,6 +1039,13 @@ pub mod logic {
     /// outcome's timeout: the record moves to FAILED by the timeout (as
     /// [`expire_pending`] would, settled at `settled_at`) and the settle is
     /// refused with it, whether or not a sweep or a replay ran.
+    ///
+    /// An in-time OK settle is refused, writing nothing, when the outcome
+    /// already has more change reserved than OK leaves (`refund_cap -
+    /// charged`): the change was reserved under a cap of another status, so
+    /// minted and charged together would pass the value. Only the OK change
+    /// (pinned at `value - charged`) or the gate's own FAILED reservation
+    /// can exist before an in-time settle, so an honest flow never meets it.
     pub fn settle(t: &mut impl UseTable, req: &SettleRequest<'_>) -> Settle {
         let (rk, s) = (*req.replay_key(), req.settlement());
         let Some(rec) = t.outcome(&rk) else {
@@ -1036,6 +1057,15 @@ pub mod logic {
         if s.settled_at() > rec.created.saturating_add(req.pending_timeout()) {
             let rec = rec.clone();
             return Settle::AlreadySettled(time_out(t, rk, &rec, s.settled_at()));
+        }
+        if s.status() == Status::Ok {
+            let cap = rec.refund_cap.saturating_sub(s.charged());
+            if rec.change_total > cap {
+                return Settle::ChangeOverCap {
+                    total: rec.change_total,
+                    cap,
+                };
+            }
         }
         let mut rec = rec.clone();
         rec.status = s.status().into();

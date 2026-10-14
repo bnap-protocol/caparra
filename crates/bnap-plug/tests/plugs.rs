@@ -711,6 +711,44 @@ fn a_refund_cap_signs_nothing_after_the_refund_is_recorded() {
 }
 
 #[test]
+fn a_failed_cap_then_an_ok_settle_is_refused() {
+    // The checker's probe (a_failed_cap_then_an_ok_settle_is_accepted): the
+    // scheme signed under the FAILED cap (the whole 96 sat), then the gate
+    // settled OK and charged 50, so 96 minted plus 50 charged passed the
+    // value by the price. An in-time OK settle is now refused, writing
+    // nothing, when more change is reserved than it leaves (value -
+    // charged); the gate settles FAILED instead, which the reservation fits.
+    let inner = Arc::new(TestSigner::new());
+    let o = sat(96, 50);
+    let l = Limits::default();
+    let (refund, _guard) = o.view(&inner, &o.cap(Status::Failed));
+    block_on(refund.blind_sign(&ks(), &outputs(1, &[64, 32]))).unwrap();
+    let ok = o.pending.charge(Status::Ok, 0);
+    assert_eq!(ok.charged(), 50);
+    let s = Settlement::new(&ok, NOW).with_scheme_result(Some(b"change".to_vec()));
+    assert_eq!(
+        block_on(outcome::settle(&*o.store, &o.pending, &s, &l)),
+        Err(SettleError::ChangeOverCap { total: 96, cap: 46 })
+    );
+    let rec = block_on(o.store.outcome(o.pending.replay_key()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        rec.status,
+        bnap_core::OutcomeStatus::Pending,
+        "nothing written"
+    );
+    let failed = o.pending.charge(Status::Failed, 0);
+    let s = Settlement::new(&failed, NOW).with_scheme_result(Some(b"refund 96".to_vec()));
+    let rec = block_on(outcome::settle(&*o.store, &o.pending, &s, &l)).unwrap();
+    assert_eq!(
+        (rec.record().status, rec.record().charged),
+        (bnap_core::OutcomeStatus::Failed, Some(0))
+    );
+    assert_eq!(inner.minted(), 96, "minted plus charged is the value");
+}
+
+#[test]
 fn the_verify_only_view_signs_nothing() {
     let inner = Arc::new(TestSigner::new());
     let view = CappedSigner::verify_only(inner.clone(), "sat");

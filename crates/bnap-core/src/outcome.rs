@@ -79,7 +79,10 @@
 //! [`Pending`] whose [`OutcomeCharge`] made it, and [`settle`] refuses one
 //! made for another outcome; a [`ChangeCap`] carries the `ReplayKey` it was
 //! computed for, so a change budget's cap and its settlement always come
-//! from one outcome.
+//! from one outcome. Their statuses may differ, so an OK settle is refused
+//! when the outcome already has more change reserved than OK leaves
+//! ([`SettleError::ChangeOverCap`]): minted and charged together never pass
+//! the value.
 //!
 //! **One change ledger per outcome, in the store.** Every blinded output a
 //! scheme gets signed as change or a refund is first reserved with
@@ -635,6 +638,19 @@ pub enum SettleError {
     /// was written; a gate bug, answered UNAVAILABLE.
     #[error("the settlement was charged for another outcome")]
     WrongOutcome,
+    /// An OK settlement of an outcome that already has more change reserved
+    /// than OK leaves (`value - charged`), as when its scheme signed under
+    /// the FAILED cap: minted and charged together would pass the value.
+    /// Nothing was written and the outcome is still PENDING; a gate bug,
+    /// answered UNAVAILABLE. Settle the outcome FAILED instead, whose
+    /// refund the reservation fits.
+    #[error("{total} of change is reserved, more than the {cap} an OK settle leaves")]
+    ChangeOverCap {
+        /// The change reserved for the outcome.
+        total: u64,
+        /// What an OK settlement at this charge leaves for change.
+        cap: u64,
+    },
     /// The store failed.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -646,7 +662,10 @@ pub enum SettleError {
 /// deterministic `settle` under its cap, then call this with the
 /// [`Settlement`] built from that charge; one built from another outcome's
 /// charge is refused with [`SettleError::WrongOutcome`]. The Response, and
-/// any change in it, may be sent only after this returns `Ok`.
+/// any change in it, may be sent only after this returns `Ok`. An OK
+/// settlement of an outcome with more change reserved than it leaves
+/// (`value - charged`, a FAILED cap was used) is refused with
+/// [`SettleError::ChangeOverCap`]; settle it FAILED.
 ///
 /// A settle at `s.settled_at` later than the outcome's `created +
 /// pending_timeout` is refused: the store times the outcome out in the same
@@ -681,6 +700,7 @@ pub async fn settle<S: UseStore + ?Sized>(
     {
         Settle::Settled(r) => Ok(recorded(r)),
         Settle::AlreadySettled(r) => Err(SettleError::AlreadySettled(Box::new(recorded(r)))),
+        Settle::ChangeOverCap { total, cap } => Err(SettleError::ChangeOverCap { total, cap }),
         Settle::Unknown => Err(SettleError::Unknown),
     }
 }
