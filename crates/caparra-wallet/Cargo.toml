@@ -8,5 +8,51 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[dependencies]
+bnap-core.workspace = true
+bnap-plug.workspace = true
+bnap-scheme-notes.workspace = true
+bnap-scheme-l402.workspace = true
+bnap-scheme-mpp.workspace = true
+bnap-scheme-dpop.workspace = true
+bnap-scheme-webbotauth.workspace = true
+# BOLT11 decoding (its lightning-invoice re-export) and the NUT JSON types
+# of the issuer's endpoints. secp256k1 comes through bitcoin, as everywhere.
+cashu.workspace = true
+argon2.workspace = true
+chacha20poly1305.workspace = true
+bip39.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
+nwc.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["process", "io-util", "fs"] }
+url.workspace = true
+zeroize.workspace = true
+# The in-test BNAP server of `testkit`.
+bitcoin = { workspace = true, optional = true }
+
+[features]
+# A small BNAP server (manifest, notes issuer, L402, MPP) on
+# bnap-core's in-memory store, a Lightning rail with real regtest invoices
+# and a pay source that pays them. For tests in this and the client crates.
+# Never a gate.
+testkit = [
+  "dep:bitcoin",
+  "bnap-core/test-support",
+  "bnap-scheme-notes/test-support",
+]
+
+[dev-dependencies]
+caparra-wallet = { workspace = true, features = ["testkit"] }
+tempfile.workspace = true
+
 [lints]
 workspace = true

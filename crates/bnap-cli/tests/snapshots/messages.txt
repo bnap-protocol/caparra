@@ -1,0 +1,153 @@
+## server VERSION
+exit 1
+error[VERSION]: The server speaks another BNAP version. Update bnap.
+{"error":{"code":"VERSION","message":"The server speaks another BNAP version. Update bnap.","source":"server"},"ok":false}
+
+## server MALFORMED
+exit 1
+error[MALFORMED]: The server could not read the credential. Nothing was spent; report this as a bug.
+{"error":{"code":"MALFORMED","message":"The server could not read the credential. Nothing was spent; report this as a bug.","source":"server"},"ok":false}
+
+## server TOO_LARGE
+exit 1
+error[TOO_LARGE]: The credential is too large for this server. Nothing was spent.
+{"error":{"code":"TOO_LARGE","message":"The credential is too large for this server. Nothing was spent.","source":"server"},"ok":false}
+
+## server BAD_OFFER
+exit 1
+error[BAD_OFFER]: The server no longer accepts this offer. Nothing was spent; retry the request.
+{"error":{"code":"BAD_OFFER","message":"The server no longer accepts this offer. Nothing was spent; retry the request.","source":"server"},"ok":false}
+
+## server STALE
+exit 1
+error[STALE]: The server no longer accepts this offer. Nothing was spent; retry the request.
+{"error":{"code":"STALE","message":"The server no longer accepts this offer. Nothing was spent; retry the request.","source":"server"},"ok":false}
+
+## server WRONG_SCOPE
+exit 1
+error[WRONG_SCOPE]: The server no longer accepts this offer. Nothing was spent; retry the request.
+{"error":{"code":"WRONG_SCOPE","message":"The server no longer accepts this offer. Nothing was spent; retry the request.","source":"server"},"ok":false}
+
+## server NOT_OFFERED
+exit 1
+error[NOT_OFFERED]: The server does not accept this scheme here. Nothing was spent.
+{"error":{"code":"NOT_OFFERED","message":"The server does not accept this scheme here. Nothing was spent.","source":"server"},"ok":false}
+
+## server POLICY
+exit 2
+error[POLICY]: The server's route policy refused this credential. Nothing was spent.
+{"error":{"code":"POLICY","message":"The server's route policy refused this credential. Nothing was spent.","source":"server"},"ok":false}
+
+## server UNDERPAID
+exit 1
+error[UNDERPAID]: The server says the payment is below its price. Nothing was spent.
+{"error":{"code":"UNDERPAID","message":"The server says the payment is below its price. Nothing was spent.","source":"server"},"ok":false}
+
+## server BAD_CREDENTIAL
+exit 1
+error[BAD_CREDENTIAL]: The server rejected the credential (bnap:notes/BAD_SIGNATURE). Nothing was spent.
+  scheme code: bnap:notes/BAD_SIGNATURE
+{"error":{"code":"BAD_CREDENTIAL","message":"The server rejected the credential (bnap:notes/BAD_SIGNATURE). Nothing was spent.","scheme_code":"bnap:notes/BAD_SIGNATURE","source":"server"},"ok":false}
+
+## server BINDING
+exit 1
+error[BINDING]: The server could not check the TLS binding. Nothing was spent.
+{"error":{"code":"BINDING","message":"The server could not check the TLS binding. Nothing was spent.","source":"server"},"ok":false}
+
+## server SPENT
+exit 1
+error[SPENT]: The server says this payment was already used for another request; the wallet marks it spent. See `bnap receipts` for what was paid.
+{"error":{"code":"SPENT","message":"The server says this payment was already used for another request; the wallet marks it spent. See `bnap receipts` for what was paid.","source":"server"},"ok":false}
+
+## server PENDING
+exit 3
+error[PENDING]: The server is still working on this request. Run `bnap resume` in 7 s to get the answer.
+  retry after: 7 s
+{"error":{"code":"PENDING","message":"The server is still working on this request. Run `bnap resume` in 7 s to get the answer.","retry_after":7,"source":"server"},"ok":false}
+
+## server RATE_LIMITED
+exit 3
+error[RATE_LIMITED]: The server is rate limiting. Retry in 7 s.
+  retry after: 7 s
+{"error":{"code":"RATE_LIMITED","message":"The server is rate limiting. Retry in 7 s.","retry_after":7,"source":"server"},"ok":false}
+
+## server UNAVAILABLE
+exit 3
+error[UNAVAILABLE]: The server is unavailable. Run `bnap resume` later to get the answer or a refund.
+{"error":{"code":"UNAVAILABLE","message":"The server is unavailable. Run `bnap resume` later to get the answer or a refund.","source":"server"},"ok":false}
+
+## server REQUIRED
+exit 1
+error[REQUIRED]: The server requires a BNAP credential.
+{"error":{"code":"REQUIRED","message":"The server requires a BNAP credential.","source":"server"},"ok":false}
+
+## above the hard cap
+exit 2
+error[ABOVE_HARD_CAP]: Refused: 500 sat is above the per-request cap of 50 sat a person set. Ask for at most 50 sat.
+  per-request cap: 50 sat left
+{"error":{"cap":"per-request","code":"ABOVE_HARD_CAP","message":"Refused: 500 sat is above the per-request cap of 50 sat a person set. Ask for at most 50 sat.","remaining":50,"source":"wallet"},"ok":false}
+
+## budget exceeded
+exit 2
+error[BUDGET_EXCEEDED]: Budget exceeded: this costs 5027 sat and the per-request cap leaves 50 sat. A person can raise it with `bnap budget set --per-request`.
+  per-request cap: 50 sat left
+{"error":{"cap":"per-request","code":"BUDGET_EXCEEDED","cost":5027,"message":"Budget exceeded: this costs 5027 sat and the per-request cap leaves 50 sat. A person can raise it with `bnap budget set --per-request`.","remaining":50,"source":"wallet"},"ok":false}
+
+## plain http
+exit 2
+error[BAD_INPUT]: Paid requests go over https only. Use an https:// URL.
+{"error":{"code":"BAD_INPUT","message":"Paid requests go over https only. Use an https:// URL.","source":"wallet"},"ok":false}
+
+## required property
+exit 2
+error[POLICY]: Policy: httpauth:L402 has link-payment=linkable, the policy requires unlinkable.
+  property: link-payment
+{"error":{"code":"POLICY","message":"Policy: httpauth:L402 has link-payment=linkable, the policy requires unlinkable.","property":"link-payment","scheme":"httpauth:L402","source":"wallet"},"ok":false}
+
+## scheme not allowed
+exit 2
+error[POLICY]: Policy: the scheme httpauth:L402 is not allowed. A person can allow it with `bnap budget set --allow-scheme httpauth:L402`.
+{"error":{"code":"POLICY","message":"Policy: the scheme httpauth:L402 is not allowed. A person can allow it with `bnap budget set --allow-scheme httpauth:L402`.","scheme":"httpauth:L402","source":"wallet"},"ok":false}
+
+## experimental
+exit 2
+error[POLICY]: Policy: httpauth:L402 is experimental. A person can opt in with `bnap budget set --allow-experimental true`.
+  property: maturity
+{"error":{"code":"POLICY","message":"Policy: httpauth:L402 is experimental. A person can opt in with `bnap budget set --allow-experimental true`.","property":"maturity","scheme":"httpauth:L402","source":"wallet"},"ok":false}
+
+## bad offer_sig
+exit 1
+error[BAD_OFFER_SIG]: The offer's signature does not verify. Nothing was paid.
+{"error":{"code":"BAD_OFFER_SIG","message":"The offer's signature does not verify. Nothing was paid.","source":"wallet"},"ok":false}
+
+## unknown key, refetch failed
+exit 1
+error[UNKNOWN_KEY]: The offer is signed by a key the origin's manifest does not list, even after a refetch. Nothing was paid.
+{"error":{"code":"UNKNOWN_KEY","message":"The offer is signed by a key the origin's manifest does not list, even after a refetch. Nothing was paid.","source":"wallet"},"ok":false}
+
+## pinned origin, native challenge only
+exit 1
+error[NO_OFFER]: The 402 carried no BNAP offer, and this origin is pinned: a native challenge no signed offer lists is never paid.
+{"error":{"code":"NO_OFFER","message":"The 402 carried no BNAP offer, and this origin is pinned: a native challenge no signed offer lists is never paid.","source":"wallet"},"ok":false}
+
+## insufficient notes
+exit 2
+error[INSUFFICIENT_NOTES]: Not enough notes at https://api.example to pay 21 sat. Buy credit with `bnap fund https://api.example <sat>`, or configure a pay source.
+{"error":{"code":"INSUFFICIENT_NOTES","message":"Not enough notes at https://api.example to pay 21 sat. Buy credit with `bnap fund https://api.example <sat>`, or configure a pay source.","source":"wallet"},"ok":false}
+
+## no fund quote
+exit 1
+error[NO_OFFER]: The server offered no fund quote. Buy credit with `bnap fund`, then retry.
+{"error":{"code":"NO_OFFER","message":"The server offered no fund quote. Buy credit with `bnap fund`, then retry.","source":"wallet"},"ok":false}
+
+## bnap-required
+exit 1
+error[BNAP_REQUIRED]: This origin requires BNAP payments, but the 402 carried no valid BNAP offer. Not paying through a native header.
+{"error":{"code":"BNAP_REQUIRED","message":"This origin requires BNAP payments, but the 402 carried no valid BNAP offer. Not paying through a native header.","source":"wallet"},"ok":false}
+
+## session cap above the hard cap
+exit 2
+error[ABOVE_HARD_CAP]: Refused: 1000000 sat is above the daily cap of 5000 sat a person set. Ask for at most 5000 sat.
+  daily cap: 5000 sat left
+{"error":{"cap":"daily","code":"ABOVE_HARD_CAP","message":"Refused: 1000000 sat is above the daily cap of 5000 sat a person set. Ask for at most 5000 sat.","remaining":5000,"source":"wallet"},"ok":false}
+

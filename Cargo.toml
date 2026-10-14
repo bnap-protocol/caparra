@@ -75,6 +75,11 @@ hex = "0.4.3"
 base64 = "0.23.1"
 rand = "0.10.3"
 zeroize = "1.9.1"
+# Wallet storage at rest (caparra-wallet): argon2id derives the key from a
+# passphrase, XChaCha20-Poly1305 seals every record. BIP-39 for the seed.
+argon2 = { version = "0.5.3", default-features = false, features = ["alloc"] }
+chacha20poly1305 = "0.10.1"
+bip39 = "2.2.2"
 
 # Async runtime, HTTP and MCP
 tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "net", "time", "sync", "signal"] }
@@ -95,6 +100,8 @@ sqlx = { version = "0.9.0", default-features = false, features = ["sqlite", "pos
 # Errors, config, CLI and observability
 thiserror = "2.0.21"
 anyhow = "1.0.104"
+# Passphrase prompts without echo (bnap CLI).
+rpassword = "7.4.0"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 toml = "1.1.8"
 url = "2.5.8"
@@ -112,6 +119,13 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# The wallet's passphrase KDF (argon2id, 64 MiB) takes seconds unoptimized.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
 
 # Binary releases with dist (https://opensource.axo.dev/cargo-dist/).
 # Written by hand for dist 0.33; `dist init` was not run. Releases are

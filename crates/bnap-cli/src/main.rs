@@ -1,7 +1,12 @@
-//! Command-line tool for inspecting, paying and testing BNAP flows.
-//!
-//! Stub: nothing is implemented yet.
+//! The `bnap` binary.
 
-fn main() {
-    eprintln!("bnap: not implemented yet");
+use std::process::ExitCode;
+
+use clap::Parser as _;
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    let cli = bnap_cli::cli::Cli::parse();
+    let out = bnap_cli::cli::run(&cli).await;
+    ExitCode::from(bnap_cli::cli::emit(&out))
 }
