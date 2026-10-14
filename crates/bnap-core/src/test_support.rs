@@ -198,8 +198,9 @@ pub fn block_on<F: Future>(f: F) -> F::Output {
 /// several threads together behind a barrier, round after round, on every
 /// write of the money path: commits of one plan, commits sharing a single,
 /// commits against one counter, settles racing the timeout on an outcome
-/// that shares its rate counter with another, and refunds of one timed-out
-/// outcome. Only a store whose every method decides and writes in one
+/// that shares its rate counter with another, refunds of one timed-out
+/// outcome, and change reservations racing a settle and a sweep on one
+/// record. Only a store whose every method decides and writes in one
 /// serializable step passes them; the tests of this module show a store
 /// that splits any one of those writes in two failing.
 ///

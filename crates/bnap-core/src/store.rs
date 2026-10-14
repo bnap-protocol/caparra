@@ -841,7 +841,9 @@ impl StoreError {
 /// these methods concurrently, behind a barrier, against any store:
 /// commits of one plan and of plans sharing a single, commits against one
 /// counter, settles racing the timeout on an outcome that shares its
-/// counter, and concurrent refunds of one timed-out outcome.
+/// counter, concurrent refunds of one timed-out outcome, and change
+/// reservations racing a settle and a sweep on one record
+/// ([`Self::reserve_change`]).
 #[async_trait::async_trait]
 pub trait UseStore: Send + Sync {
     /// 6.3 commit: replay check, then every single ID, then every counter;
