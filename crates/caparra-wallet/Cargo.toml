@@ -51,7 +51,7 @@ testkit = [
 ]
 
 [dev-dependencies]
-caparra-wallet = { path = ".", features = ["testkit"] }
+caparra-wallet = { workspace = true, features = ["testkit"] }
 tempfile.workspace = true
 
 [lints]
