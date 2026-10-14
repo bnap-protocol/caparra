@@ -414,6 +414,21 @@ now compares `unit` (test `store::with_the_store_an_ack_needs_its_settled_outcom
 made to bite); L4 the client address is the rightmost `X-Forwarded-For`
 hop.
 
+### Round 2: FAIL (1 HIGH, 2 MEDIUM), all fixed with a test that failed first
+
+| # | Finding | Fix | Test |
+| --- | --- | --- | --- |
+| H1 | `/v1/chat/completions/`, `/V1/...`, `...;x=1`, `/v1/fixed/` were forwarded unpaid (Express, Rails, Spring route them to the paid handler) | `route_path` drops `;` segment parameters; a request that matches no route but matches one ignoring case, one trailing slash, or HEAD for GET is refused 404 `PATH_NOT_ROUTED` | `gate::encoded_variants_of_a_paid_path_are_still_paid_routes` |
+| M1 | A signer without the receipt key (or an expired receipt key) let paid actions run and answered 503 forever | Start-up probe: a price-0 probe outcome is committed, settled FAILED and acknowledged with the manifest's receipt key; at runtime no offer is made and nothing admitted when the receipt key expires within `pending_timeout` | `gate::a_gate_whose_signer_lacks_the_receipt_key_does_not_start`, `gate::nothing_is_offered_or_admitted_once_receipts_could_not_be_signed` (made to bite) |
+| M2 | A client disconnect dropped the service future, so the settlement never ran (refund after the sweep, operator pays) | `run_action` runs in `tokio::spawn`; the settlement completes and the client can replay for the receipt | `layer::tests::a_client_that_disconnects_does_not_cancel_the_settlement` |
+
+Also from round 2: L-a now tested (`gate::a_tls_binding_is_refused_by_a_gate_that_cannot_check_it`);
+L-b off-route requests lose `BNAP-*` request fields; L-c metered requests
+are forwarded without `Accept-Encoding`.
+
+The start-up probe leaves one FAILED outcome record per start in the use
+store (no use IDs, purged with the record window).
+
 ### LOW findings kept open
 
 - L2 (rest): `check_ack` cannot bind the Response's `digest` or `offer_id`
@@ -427,6 +442,13 @@ hop.
   new manifest; a runtime check is a follow-up.
 - L6: on non-metered routes a buffered `text/event-stream` answer keeps an
   application `event: bnap-receipt` (10.2 says strip it).
+- L-d (round 2): `HEAD` on a `GET` route is now refused, not forwarded,
+  rather than priced.
+- L-e (round 2): a native credential in `Authorization` has no size cap of
+  its own (bounded by the per-address verify limit and the request header
+  limits of the server).
+- L-f (round 2): `check_ack` accepts a Response without `unit` when the
+  record has one.
 - L7: once an address's mint limit is used up, a refusal owed a fresh
   offer on an exact route is 429 RATE_LIMITED, not 402 (DECISIONS row 24
   against 8.2); the N11 run hits it unless `mints_per_minute` is raised.
