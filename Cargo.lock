@@ -256,6 +256,17 @@ dependencies = [
 [[package]]
 name = "bnap-scheme-mpp"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "bnap-core",
+ "bnap-plug",
+ "bnap-rail-fake",
+ "hex",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "thiserror",
+]
 
 [[package]]
 name = "bnap-scheme-notes"
