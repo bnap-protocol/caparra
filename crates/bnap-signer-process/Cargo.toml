@@ -1,12 +1,36 @@
 [package]
 name = "bnap-signer-process"
-description = "Signer that delegates signing to an external process."
+description = "BNAP signer served from a separate process over a Unix socket, and the client that talks to it."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+
+[[bin]]
+name = "bnap-signer"
+path = "src/main.rs"
+
+[dependencies]
+bnap-core.workspace = true
+bnap-plug.workspace = true
+bnap-signer-file.workspace = true
+async-trait.workspace = true
+clap.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+bnap-core = { workspace = true, features = ["test-support"] }
+bnap-signer-file = { workspace = true, features = ["test-support"] }
+cashu.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
