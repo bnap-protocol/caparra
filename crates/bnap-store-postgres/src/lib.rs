@@ -209,7 +209,9 @@ impl PostgresStore {
     /// prunes them. A commit always counts in the epoch of its own clock,
     /// so a counter whose epoch ended is never read or incremented again by
     /// a gate whose clock is within the skew; giving one back after it is
-    /// pruned changes nothing. Run it with the sweep.
+    /// pruned changes nothing. A counter whose `resets_at` is NULL, or at or
+    /// above 2^63 (stored negative), is never pruned, whatever `now`: keeping
+    /// a counter is the safe side. Run it with the sweep.
     pub async fn prune_counters(&self, now: u64) -> Result<u64, StoreError> {
         let Some(ended_by) = sql::below(now.saturating_sub(bnap_core::limits::CLOCK_SKEW)) else {
             return Ok(0);
