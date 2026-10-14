@@ -5,9 +5,12 @@
 //! rails, and the scheme plugs the configuration enables.
 
 pub mod config;
+pub mod gate;
 pub mod issuer;
 pub mod limiter;
 pub mod manifest;
 pub mod meter;
 pub mod plugs;
+pub mod proxy;
 pub mod registry;
+pub mod server;
