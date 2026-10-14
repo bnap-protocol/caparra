@@ -111,6 +111,14 @@ impl FakeLn {
         }
     }
 
+    /// Records a paid invoice the rail did not make itself (for vectors).
+    pub fn add_paid(&self, hash: [u8; 32], amount: u64) {
+        self.invoices
+            .lock()
+            .unwrap()
+            .insert(hash, Invoice { amount, paid: true });
+    }
+
     pub fn pay(&self, hash: &[u8; 32]) {
         self.invoices.lock().unwrap().get_mut(hash).unwrap().paid = true;
     }
@@ -355,6 +363,14 @@ impl Gate {
                 .params
                 .unwrap(),
         }
+    }
+
+    /// Caches an offer signed elsewhere (with this gate's keys).
+    pub fn cache(&self, offer: &Offer) {
+        self.offers
+            .lock()
+            .unwrap()
+            .insert(offer.offer_id(), offer.clone());
     }
 
     /// Signs and caches an offer.
