@@ -65,6 +65,13 @@ impl ProcessSigner {
     /// Sets the user ID the signer process must run as. Without it, the
     /// signer must run as the same user as this process. A connection to a
     /// process running as anyone else is closed before a request is sent.
+    ///
+    /// A signer under another user is the deployment that keeps its keys
+    /// from this process. That signer must let this process's user in: a
+    /// socket bound with [`crate::SocketAccess::Group`] naming a group this
+    /// user is in and this user's ID (`bnap-signer --socket-group GID
+    /// --allow-uid UID`); with the default `0600` socket every call is
+    /// [`SignerError::Unavailable`].
     #[must_use]
     pub fn with_signer_uid(mut self, uid: u32) -> Self {
         self.signer_uid = Some(uid);

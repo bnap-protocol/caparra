@@ -1,10 +1,31 @@
 //! A BNAP signer served from a separate process.
 //!
 //! The keys live in the `bnap-signer` binary of this crate, which loads a
-//! key file ([`bnap_signer_file`], mode `0600`) and listens on a Unix socket
-//! (mode `0600`, connections from other users closed at once). The gate
-//! holds a [`ProcessSigner`], which implements [`bnap_plug::Signer`] by
-//! asking that process. No key ever crosses the socket.
+//! key file ([`bnap_signer_file`], mode `0600`) and listens on a Unix
+//! socket. The gate holds a [`ProcessSigner`], which implements
+//! [`bnap_plug::Signer`] by asking that process. No key ever crosses the
+//! socket.
+//!
+//! # Two users
+//!
+//! The separate process keeps the keys from the gate only if the gate runs
+//! as another user: a process of the signer's own user can read the key
+//! file and trace the signer. So, in production:
+//!
+//! - the signer runs as a user of its own, which owns the key file (mode
+//!   `0600`) and the socket's directory (for example `0750`, with the
+//!   gate's group);
+//! - the socket is bound with [`SocketAccess::Group`] (`bnap-signer
+//!   --socket-group GATE_GID --allow-uid GATE_UID`): mode `0660` with the
+//!   gate's group, so the gate can connect, and of the processes that can
+//!   reach it only the signer's user and the listed users are served
+//!   ([`SignerSocket::admits`], on the connection's peer credentials);
+//! - the gate names the signer's user:
+//!   `ProcessSigner::new(path).with_signer_uid(SIGNER_UID)`.
+//!
+//! [`SocketAccess::Owner`] (mode `0600`, the default) admits the signer's
+//! own user only: right for tests and single-user setups, where it gives no
+//! protection of the keys against a compromised gate.
 //!
 //! Both sides require the socket's directory to have no group or other
 //! write bit (a sticky `/tmp` is refused), and the client talks only to a
@@ -53,4 +74,4 @@ mod trust;
 pub mod wire;
 
 pub use client::{DEFAULT_TIMEOUT, ProcessSigner};
-pub use server::{BindError, ServeOptions, Server, SignerSocket, check_reserved};
+pub use server::{BindError, ServeOptions, Server, SignerSocket, SocketAccess, check_reserved};

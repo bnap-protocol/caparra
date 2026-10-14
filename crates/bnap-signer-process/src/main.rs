@@ -4,11 +4,25 @@
 //! bnap-signer --keys /path/to/keys.toml --socket /run/bnap/signer.sock
 //! ```
 //!
-//! The key file must be mode `0600` or stricter; the socket is created mode
-//! `0600` in a directory the group and others cannot write (a sticky one
-//! such as `/tmp` is refused). Logs go to stderr (filter
-//! with `RUST_LOG`) and never hold a secret or a request's contents.
-//! SIGINT or SIGTERM stops it and removes the socket.
+//! The key file must be mode `0600` or stricter; the socket is created in a
+//! directory the group and others cannot write (a sticky one such as `/tmp`
+//! is refused), mode `0600`: only the signer's own user can connect.
+//!
+//! To keep the keys from the gate, run the signer as a user of its own and
+//! let the gate's user in:
+//!
+//! ```text
+//! bnap-signer --keys /etc/bnap/keys.toml --socket /run/bnap-signer/signer.sock \
+//!     --socket-group GATE_GID --allow-uid GATE_UID
+//! ```
+//!
+//! The socket is then mode `0660` with group `GATE_GID` (the signer's user
+//! must be a member), and of the processes that can reach it only those of
+//! the signer's user and `GATE_UID` are served. The directory must let that
+//! group search it (for example `0750`, owned by the signer's user with
+//! group `GATE_GID`). Logs go to stderr (filter with `RUST_LOG`) and never
+//! hold a secret or a request's contents. SIGINT or SIGTERM stops it and
+//! removes the socket.
 
 #[cfg(unix)]
 fn main() -> std::process::ExitCode {
@@ -29,7 +43,7 @@ mod unix {
     use std::time::Duration;
 
     use bnap_signer_file::FileSigner;
-    use bnap_signer_process::{ServeOptions, Server, SignerSocket};
+    use bnap_signer_process::{ServeOptions, Server, SignerSocket, SocketAccess};
     use clap::Parser;
     use tracing_subscriber::EnvFilter;
 
@@ -43,9 +57,17 @@ mod unix {
         /// The socket to listen on.
         #[arg(long, env = "BNAP_SIGNER_SOCKET")]
         socket: PathBuf,
-        /// Another user ID whose processes may connect (repeatable).
-        #[arg(long = "allow-uid")]
+        /// A user ID, besides the signer's own, whose processes are served
+        /// (repeatable): the gate's. Needs --socket-group, which lets them
+        /// reach the socket.
+        #[arg(long = "allow-uid", requires = "socket_group")]
         allow_uid: Vec<u32>,
+        /// A group ID (numeric) the gate's user is in: the socket is created
+        /// mode 0660 with this group instead of 0600, and of its members
+        /// only the --allow-uid users are served. The signer's user must be
+        /// a member too. Needs --allow-uid.
+        #[arg(long, requires = "allow_uid")]
+        socket_group: Option<u32>,
         /// The most connections served at once.
         #[arg(long, default_value_t = 64)]
         max_connections: usize,
@@ -99,18 +121,30 @@ mod unix {
             io_timeout: Duration::from_millis(args.io_timeout_ms),
             idle_timeout: Duration::from_millis(args.idle_timeout_ms),
             max_connections: args.max_connections,
-            allowed_uids: args.allow_uid,
             store: None,
         };
+        let access = match args.socket_group {
+            Some(gid) => SocketAccess::Group {
+                gid,
+                uids: args.allow_uid,
+            },
+            None => SocketAccess::Owner,
+        };
         runtime.block_on(async move {
-            let socket = match SignerSocket::bind(&args.socket) {
+            let socket = match SignerSocket::bind_with(&args.socket, access) {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::error!("{e}");
                     return ExitCode::from(2);
                 }
             };
-            tracing::info!(socket = %socket.path().display(), "listening");
+            let access = socket.access();
+            tracing::info!(
+                socket = %socket.path().display(),
+                mode = format_args!("{:o}", access.mode()),
+                allowed_uids = ?access.allowed_uids(),
+                "listening"
+            );
             let server = Arc::new(Server::new(Arc::new(signer), options));
             match server.serve(socket, shutdown()).await {
                 Ok(()) => {

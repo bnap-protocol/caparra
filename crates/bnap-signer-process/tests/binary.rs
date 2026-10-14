@@ -683,3 +683,133 @@ async fn the_client_refuses_a_socket_in_a_directory_others_can_write() {
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 }
+
+// ------------------------------------- a gate under another user
+
+/// The groups this test's user is in (`id -G`).
+fn groups() -> Vec<u32> {
+    let out = Command::new("id").arg("-G").output().unwrap();
+    assert!(out.status.success());
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .split_whitespace()
+        .map(|g| g.parse().unwrap())
+        .collect()
+}
+
+/// A group this user is in that a new file in `dir` does not get by
+/// default, when there is one: then the socket's group shows that the
+/// signer set it.
+fn another_group(dir: &Path) -> u32 {
+    let probe = dir.join("probe");
+    std::fs::write(&probe, b"").unwrap();
+    let default = std::fs::metadata(&probe).unwrap().gid();
+    std::fs::remove_file(&probe).unwrap();
+    groups()
+        .into_iter()
+        .find(|g| *g != default)
+        .unwrap_or(default)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_socket_for_a_gate_user_is_0660_with_the_named_group() {
+    let probe = tempfile::tempdir().unwrap();
+    let gid = another_group(probe.path());
+    let gate = std::fs::metadata(probe.path())
+        .unwrap()
+        .uid()
+        .wrapping_add(1);
+    let p = start_with(
+        &[
+            "--socket-group",
+            &gid.to_string(),
+            "--allow-uid",
+            &gate.to_string(),
+        ],
+        &[],
+    );
+    let meta = std::fs::metadata(&p.socket).unwrap();
+    assert_eq!(meta.permissions().mode() & 0o7777, 0o660);
+    assert_eq!(meta.gid(), gid, "the socket's group is the one named");
+    // The signer's own user is still served.
+    testkit::signs_offers_and_acks_with_the_key_for_their_use(&p.signer()).await;
+}
+
+#[test]
+fn allowed_users_and_the_socket_group_come_together() {
+    let gid = groups()[0].to_string();
+    for (args, needs) in [
+        (&["--allow-uid", "4242"][..], "--socket-group"),
+        (&["--socket-group", &gid][..], "--allow-uid"),
+    ] {
+        let (mut child, dir, socket) = spawn(0o600, args, &[]);
+        let status = wait(&mut child, Duration::from_secs(20)).expect("exits");
+        assert_eq!(status.code(), Some(2), "{args:?}");
+        let log = std::fs::read_to_string(dir.path().join("stderr.log")).unwrap();
+        assert!(log.contains(needs), "{args:?}: {log}");
+        assert!(!socket.exists(), "{args:?}: no socket");
+    }
+}
+
+#[test]
+fn bind_with_a_group_gives_the_socket_that_group_and_mode_0660() {
+    use bnap_signer_process::{SignerSocket, SocketAccess};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o750)).unwrap();
+    let own = std::fs::metadata(dir.path()).unwrap().uid();
+    let gid = another_group(dir.path());
+    let gate = own.wrapping_add(1);
+    let access = SocketAccess::Group {
+        gid,
+        uids: vec![gate],
+    };
+    let socket = SignerSocket::bind_with(dir.path().join("g.sock"), access.clone()).unwrap();
+    let meta = std::fs::metadata(socket.path()).unwrap();
+    assert_eq!(meta.permissions().mode() & 0o7777, 0o660);
+    assert_eq!(meta.gid(), gid);
+    assert_eq!(socket.access(), &access);
+    assert!(socket.admits(own) && socket.admits(gate));
+    assert!(!socket.admits(own.wrapping_add(2)));
+
+    let private = SignerSocket::bind(dir.path().join("o.sock")).unwrap();
+    let meta = std::fs::metadata(private.path()).unwrap();
+    assert_eq!(meta.permissions().mode() & 0o7777, 0o600);
+    assert!(private.admits(own));
+    assert!(
+        !private.admits(gate),
+        "an owner-only socket admits no one else"
+    );
+}
+
+#[test]
+fn a_group_socket_needs_users_and_a_group_the_signer_is_in() {
+    use bnap_signer_process::{BindError, SignerSocket, SocketAccess};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = dir.path().join("s.sock");
+    let gid = groups()[0];
+    let none = SocketAccess::Group {
+        gid,
+        uids: Vec::new(),
+    };
+    assert!(matches!(
+        SignerSocket::bind_with(&path, none),
+        Err(BindError::NoAllowedUsers)
+    ));
+    assert!(!path.exists());
+    // Root may give a file any group; everyone else only their own.
+    let own = std::fs::metadata(dir.path()).unwrap().uid();
+    if own != 0 {
+        let mine = groups();
+        let foreign = (40_000..u32::MAX).find(|g| !mine.contains(g)).unwrap();
+        let access = SocketAccess::Group {
+            gid: foreign,
+            uids: vec![own.wrapping_add(1)],
+        };
+        match SignerSocket::bind_with(&path, access) {
+            Err(BindError::Group { gid, .. }) => assert_eq!(gid, foreign),
+            other => panic!("{other:?}"),
+        }
+        assert!(!path.exists(), "the socket is removed");
+    }
+}

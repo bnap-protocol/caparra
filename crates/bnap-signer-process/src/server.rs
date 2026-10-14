@@ -29,9 +29,6 @@ pub struct ServeOptions {
     pub idle_timeout: Duration,
     /// The most connections served at once; more wait in the backlog.
     pub max_connections: usize,
-    /// Users, besides the one the server runs as, whose processes may
-    /// connect. The socket is mode `0600` as well.
-    pub allowed_uids: Vec<u32>,
     /// The gate's use store, when the signer process can reach it: then a
     /// blind signature is made only for outputs the store reserved in the
     /// outcome's record ([`UseStore::reserve_change`]), on top of the
@@ -45,7 +42,6 @@ impl Default for ServeOptions {
             io_timeout: Duration::from_secs(5),
             idle_timeout: Duration::from_secs(30),
             max_connections: 64,
-            allowed_uids: Vec::new(),
             store: None,
         }
     }
@@ -57,7 +53,6 @@ impl std::fmt::Debug for ServeOptions {
             .field("io_timeout", &self.io_timeout)
             .field("idle_timeout", &self.idle_timeout)
             .field("max_connections", &self.max_connections)
-            .field("allowed_uids", &self.allowed_uids)
             .field("store", &self.store.is_some())
             .finish()
     }
@@ -88,6 +83,21 @@ pub enum BindError {
         /// Its owner.
         owner: u32,
     },
+    /// [`SocketAccess::Group`] names no user to admit: the group could
+    /// reach the socket, and the server would close every connection.
+    #[error("a group socket needs at least one allowed user ID")]
+    NoAllowedUsers,
+    /// The socket could not be given its group, typically because the
+    /// signer's user is not a member of it. The socket is removed.
+    #[error("cannot give {path} the group {gid} (the signer's user must be a member): {source}")]
+    Group {
+        /// The socket's path.
+        path: PathBuf,
+        /// The group asked for.
+        gid: u32,
+        /// What happened.
+        source: std::io::Error,
+    },
     /// Something other than a socket is at the path.
     #[error("{0} exists and is not a socket")]
     Exists(PathBuf),
@@ -104,22 +114,89 @@ pub enum BindError {
     },
 }
 
-/// A bound, private signer socket. The socket file is removed on drop.
+/// Who can reach the signer socket, and who is then served.
+///
+/// A process needs write permission on a socket file to connect to it (on
+/// Linux, macOS and the BSDs), so the file mode decides which users can
+/// reach the signer at all. Every accepted connection is then checked on
+/// its peer credentials: the signer's own user and the listed users are
+/// served, anyone else is closed at once.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum SocketAccess {
+    /// Mode `0600`: only the signer's own user (and root) can connect. A
+    /// gate under the same user can read the key file and trace the signer
+    /// process, so this keeps the keys from a compromised gate only as far
+    /// as the operating system separates processes of one user: not at
+    /// all. Use it for tests and single-user setups.
+    #[default]
+    Owner,
+    /// Mode `0660` with group `gid`: the members of `gid` can connect, and
+    /// of them only the users in `uids` are served. The signer's user must
+    /// be a member of `gid` to give the socket that group. This is the
+    /// deployment that keeps the keys from the gate: the signer runs as a
+    /// user of its own, the key file is that user's (mode `0600`), and the
+    /// gate runs as a user in `uids`.
+    Group {
+        /// The socket file's group.
+        gid: u32,
+        /// The users, besides the signer's own, that are served. Not empty.
+        uids: Vec<u32>,
+    },
+}
+
+impl SocketAccess {
+    /// The socket file's permission bits.
+    #[must_use]
+    pub fn mode(&self) -> u32 {
+        match self {
+            Self::Owner => 0o600,
+            Self::Group { .. } => 0o660,
+        }
+    }
+
+    /// The users, besides the signer's own, that are served.
+    #[must_use]
+    pub fn allowed_uids(&self) -> &[u32] {
+        match self {
+            Self::Owner => &[],
+            Self::Group { uids, .. } => uids,
+        }
+    }
+}
+
+/// A bound signer socket. The socket file is removed on drop.
 #[derive(Debug)]
 pub struct SignerSocket {
     listener: std::os::unix::net::UnixListener,
     path: PathBuf,
     owner: u32,
+    access: SocketAccess,
 }
 
 impl SignerSocket {
-    /// Binds `path`, mode `0600`. Refuses a directory the group or others
-    /// can write (sticky or not: `/tmp` is refused) or that another user
-    /// than root or the signer's own owns, a path that holds anything but
-    /// a socket, and a socket another process still serves; a stale socket
-    /// is replaced.
+    /// Binds `path` for the signer's own user only ([`SocketAccess::Owner`],
+    /// mode `0600`); see [`SignerSocket::bind_with`].
     pub fn bind(path: impl AsRef<Path>) -> Result<Self, BindError> {
+        Self::bind_with(path, SocketAccess::Owner)
+    }
+
+    /// Binds `path` with the mode and group `access` asks for. Refuses a
+    /// directory the group or others can write (sticky or not: `/tmp` is
+    /// refused) or that another user than root or the signer's own owns, a
+    /// path that holds anything but a socket, a socket another process
+    /// still serves, and a [`SocketAccess::Group`] without users; a stale
+    /// socket is replaced. The socket is made `0600` right after it is
+    /// bound, and only then given its group and mode `0660`, so it is
+    /// never open to a group other than the one named. (Between the bind
+    /// and the first chmod it has the mode the umask leaves; the peer
+    /// check covers that moment.)
+    pub fn bind_with(path: impl AsRef<Path>, access: SocketAccess) -> Result<Self, BindError> {
         let path = path.as_ref().to_owned();
+        if let SocketAccess::Group { uids, .. } = &access
+            && uids.is_empty()
+        {
+            return Err(BindError::NoAllowedUsers);
+        }
         let io = |source| BindError::Io {
             path: path.clone(),
             source,
@@ -149,6 +226,7 @@ impl SignerSocket {
             listener,
             path: path.clone(),
             owner: 0,
+            access: SocketAccess::Owner,
         };
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(io)?;
         socket.owner = std::fs::symlink_metadata(&path).map_err(io)?.uid();
@@ -159,6 +237,19 @@ impl SignerSocket {
                 owner: info.owner,
             });
         }
+        if let SocketAccess::Group { gid, .. } = &access {
+            let gid = *gid;
+            std::os::unix::fs::chown(&path, None, Some(gid)).map_err(|source| {
+                BindError::Group {
+                    path: path.clone(),
+                    gid,
+                    source,
+                }
+            })?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(access.mode()))
+                .map_err(io)?;
+        }
+        socket.access = access;
         socket.listener.set_nonblocking(true).map_err(io)?;
         Ok(socket)
     }
@@ -167,6 +258,20 @@ impl SignerSocket {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Who can reach the socket, and who is served.
+    #[must_use]
+    pub fn access(&self) -> &SocketAccess {
+        &self.access
+    }
+
+    /// Whether a connection whose peer runs as `uid` is served: the
+    /// signer's own user (the socket file's owner) or one of
+    /// [`SocketAccess::allowed_uids`].
+    #[must_use]
+    pub fn admits(&self, uid: u32) -> bool {
+        peer_allowed(uid, self.owner, self.access.allowed_uids())
     }
 }
 
@@ -225,8 +330,8 @@ impl Server {
     }
 
     /// Serves connections on `socket` until `shutdown` completes. A
-    /// connection from a user other than the server's own (or one in
-    /// [`ServeOptions::allowed_uids`]) is closed at once.
+    /// connection from a user the socket does not admit
+    /// ([`SignerSocket::admits`]) is closed at once.
     pub async fn serve(
         self: Arc<Self>,
         socket: SignerSocket,
@@ -255,7 +360,7 @@ impl Server {
                 },
             };
             match stream.peer_cred() {
-                Ok(c) if peer_allowed(c.uid(), socket.owner, &self.options.allowed_uids) => {}
+                Ok(c) if socket.admits(c.uid()) => {}
                 Ok(c) => {
                     tracing::warn!(
                         uid = c.uid(),
@@ -408,12 +513,17 @@ mod tests {
         let path = dir.path().join("s.sock");
         let mut socket = SignerSocket::bind(&path).unwrap();
         socket.owner = owner(socket.owner);
+        if !allowed.is_empty() {
+            // The file mode is left alone: this test runs as the file's
+            // owner and can reach it anyway.
+            socket.access = SocketAccess::Group {
+                gid: 0,
+                uids: allowed,
+            };
+        }
         let server = Arc::new(Server::new(
             Arc::new(FileSigner::from_toml(KEY_FILE).unwrap()),
-            ServeOptions {
-                allowed_uids: allowed,
-                ..ServeOptions::default()
-            },
+            ServeOptions::default(),
         ));
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let task = tokio::spawn(server.serve(socket, async {
