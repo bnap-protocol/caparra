@@ -7,6 +7,53 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+# The embedded registry export, checked against its digest at start.
+include = ["src/**", "registry/registry.json", "Cargo.toml"]
+
+[dependencies]
+bnap-core.workspace = true
+bnap-plug.workspace = true
+bnap-carrier-http.workspace = true
+bnap-signer-file.workspace = true
+bnap-store-sqlite.workspace = true
+bnap-rail-fake.workspace = true
+bnap-rail-lnd.workspace = true
+bnap-rail-phoenixd.workspace = true
+bnap-rail-nwc.workspace = true
+bnap-scheme-l402.workspace = true
+bnap-scheme-mpp.workspace = true
+bnap-scheme-notes.workspace = true
+bnap-scheme-dpop.workspace = true
+bnap-scheme-webbotauth.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+bytes.workspace = true
+clap.workspace = true
+hex.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tower.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+bnap-signer-process.workspace = true
+
+[dev-dependencies]
+bnap-signer-file = { workspace = true, features = ["test-support"] }
+bnap-scheme-notes = { workspace = true, features = ["test-support"] }
+reqwest.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

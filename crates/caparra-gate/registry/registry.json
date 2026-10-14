@@ -1,0 +1,1751 @@
+{
+  "carriers": {
+    "a2a": {
+      "kind": "carrier",
+      "name": "Agent2Agent (A2A)",
+      "notes": "Optional carrier; no BNAP carrier note yet.",
+      "scope": "the agent card and the task digest",
+      "source": "overview, Plug catalogue: MCP, A2A; Carriers: A2A",
+      "spec": "https://a2a-protocol.org/latest/specification/",
+      "status": "provisional",
+      "tls_binding": false,
+      "transport": "task metadata"
+    },
+    "http": {
+      "kind": "carrier",
+      "name": "HTTP",
+      "notes": "Part of the Core-1 badge. A gate behind a front that terminates TLS cannot check a binding and must reject credentials that carry one (draft-00 5.3).",
+      "scope": "action scope over the method, the target as received, the content hash and the listed headers; route scope over the origin and the route ID (draft-00 10.1)",
+      "source": "draft-00 section 10; overview, Carriers: HTTP (Core-1)",
+      "spec": "https://github.com/bnap-protocol/bnap/blob/develop/spec/socket-draft-00.md#10-the-http-carrier",
+      "status": "provisional",
+      "tls_binding": true,
+      "transport": "offer in WWW-Authenticate: BNAP; credential in BNAP-Credential; receipt in BNAP-Receipt, a trailer or a final bnap-receipt event; errors in BNAP-Error"
+    },
+    "mcp": {
+      "kind": "carrier",
+      "name": "Model Context Protocol",
+      "notes": "Part of the Agent-1 badge. The BNAP MCP carrier note is not written yet. TLS binding is not available through most MCP hosts, so MCP credentials rely on scope binding.",
+      "scope": "the server URI, the tool name and the RFC 8785 canonical JSON of the arguments",
+      "source": "overview, Plug catalogue: MCP, A2A; Carriers: MCP (Agent-1); draft-00 section 13",
+      "spec": "https://modelcontextprotocol.io/specification",
+      "status": "provisional",
+      "tls_binding": false,
+      "transport": "JSON-RPC error data, request _meta and result _meta"
+    },
+    "nostr": {
+      "kind": "carrier",
+      "name": "Nostr",
+      "notes": "Optional carrier; the priced relay writes NIP is not written yet. Offers are published in advance, so they carry issued_at and no mac (draft-00 4.4).",
+      "scope": "the relay URL and the event ID",
+      "source": "overview, Plug catalogue: NIP-98 (Nostr carrier); Carriers: Nostr",
+      "spec": "https://github.com/nostr-protocol/nips/blob/master/01.md",
+      "status": "provisional",
+      "tls_binding": false,
+      "transport": "an event tag and the relay's OK message; offers published in advance"
+    }
+  },
+  "digest": "e133cf496b0463d36ccca71dd78bf3a6c6a21cf67ef31c0497996c0eb1de261c",
+  "format": 1,
+  "generated_by": "registry/validate.py --export",
+  "properties": [
+    {
+      "applies_to": [
+        "credential",
+        "attestation"
+      ],
+      "description": "The use model the socket enforces (draft-00 6.2). It can be stricter than the native scheme: L402 tokens are reusable natively but single in BNAP.",
+      "id": "use",
+      "label": "use, as the socket enforces it",
+      "location": "entry",
+      "values": [
+        {
+          "id": "reusable",
+          "label": "reusable: nothing consumed beyond the outcome record"
+        },
+        {
+          "id": "rate",
+          "label": "rate-limited: rate(k, epoch), at most k per use ID per epoch"
+        },
+        {
+          "id": "single",
+          "label": "single: each use ID admits one action"
+        }
+      ]
+    },
+    {
+      "applies_to": [
+        "credential",
+        "attestation"
+      ],
+      "description": "How the credential is tied to the offer and the request (overview, Credential envelope; draft-00 4.3).",
+      "id": "binding",
+      "label": "binding class",
+      "location": "entry",
+      "values": [
+        {
+          "id": "none",
+          "label": "none: a bearer credential"
+        },
+        {
+          "id": "O",
+          "label": "O: a server-made artifact embeds the OfferID"
+        },
+        {
+          "id": "A",
+          "label": "A: a client-made artifact embeds the Context"
+        },
+        {
+          "id": "S",
+          "label": "S: a signature over the Digest"
+        }
+      ]
+    },
+    {
+      "applies_to": [
+        "credential",
+        "attestation"
+      ],
+      "description": "What a party who copies the credential bytes can do with them. Class O and class none are bearer (draft-00 12).",
+      "id": "theft",
+      "label": "theft",
+      "location": "properties",
+      "values": [
+        {
+          "id": "bearer",
+          "label": "bearer"
+        },
+        {
+          "id": "key-witnessed",
+          "label": "key-witnessed"
+        }
+      ]
+    },
+    {
+      "applies_to": [
+        "credential",
+        "rail"
+      ],
+      "description": "Whether the credential, or the payment path, links an action to the payment that funded it and to the payer.",
+      "id": "link-payment",
+      "label": "link-payment",
+      "location": "properties",
+      "values": [
+        {
+          "id": "linkable",
+          "label": "linkable to the payment"
+        },
+        {
+          "id": "unlinkable",
+          "label": "unlinkable from it"
+        }
+      ]
+    },
+    {
+      "applies_to": [
+        "credential",
+        "attestation"
+      ],
+      "description": "Whether two actions by the same client can be linked through the credential.",
+      "id": "link-actions",
+      "label": "link-actions",
+      "location": "properties",
+      "values": [
+        {
+          "id": "linkable",
+          "label": "linkable across actions"
+        },
+        {
+          "id": "unlinkable",
+          "label": "unlinkable across them"
+        }
+      ]
+    },
+    {
+      "applies_to": [
+        "credential",
+        "attestation",
+        "verifier"
+      ],
+      "description": "Whom the server relies on to vouch that the credential is valid.",
+      "id": "issuer",
+      "label": "issuer, as the server trusts it",
+      "location": "properties",
+      "values": [
+        {
+          "id": "third-party",
+          "label": "third party"
+        },
+        {
+          "id": "facilitator",
+          "label": "facilitator"
+        },
+        {
+          "id": "self-issued",
+          "label": "self-issued"
+        }
+      ]
+    },
+    {
+      "applies_to": [
+        "credential",
+        "attestation",
+        "verifier"
+      ],
+      "description": "Whether verification needs a remote party to be reachable.",
+      "id": "verify",
+      "label": "verify",
+      "location": "properties",
+      "values": [
+        {
+          "id": "online",
+          "label": "online facilitator"
+        },
+        {
+          "id": "offline",
+          "label": "offline"
+        }
+      ]
+    },
+    {
+      "applies_to": [
+        "credential",
+        "rail",
+        "verifier"
+      ],
+      "description": "When the value received can no longer be taken back.",
+      "id": "finality",
+      "label": "finality",
+      "location": "properties",
+      "values": [
+        {
+          "id": "reversible",
+          "label": "reversible"
+        },
+        {
+          "id": "freezable",
+          "label": "freezable"
+        },
+        {
+          "id": "final-at-settlement",
+          "label": "final at settlement"
+        },
+        {
+          "id": "final-on-verification",
+          "label": "final on verification"
+        }
+      ]
+    },
+    {
+      "applies_to": [
+        "credential",
+        "rail",
+        "verifier"
+      ],
+      "description": "Who holds the value that backs the client's credential.",
+      "id": "custody",
+      "label": "custody, as the client trusts it",
+      "location": "properties",
+      "values": [
+        {
+          "id": "third-party-custodial",
+          "label": "third-party custodial"
+        },
+        {
+          "id": "operator-iou",
+          "label": "operator IOU"
+        },
+        {
+          "id": "self-custody",
+          "label": "client self-custody"
+        }
+      ]
+    },
+    {
+      "applies_to": [
+        "credential"
+      ],
+      "description": "How unused value goes back to the client (draft-00 6.4 and 7). A metered pay entry needs refund = atomic or upto = true.",
+      "id": "refund",
+      "label": "refund",
+      "location": "entry",
+      "values": [
+        {
+          "id": "none",
+          "label": "none"
+        },
+        {
+          "id": "out-of-band",
+          "label": "out of band"
+        },
+        {
+          "id": "atomic",
+          "label": "atomic in protocol"
+        }
+      ]
+    },
+    {
+      "applies_to": [
+        "credential",
+        "attestation",
+        "rail"
+      ],
+      "description": "Whether the security of the credential or the payment holds against a quantum adversary.",
+      "id": "pq",
+      "label": "pq",
+      "location": "properties",
+      "values": [
+        {
+          "id": "no",
+          "label": "no"
+        },
+        {
+          "id": "yes",
+          "label": "yes"
+        }
+      ]
+    },
+    {
+      "applies_to": [
+        "credential",
+        "attestation",
+        "rail",
+        "verifier"
+      ],
+      "description": "Maturity of the specification. Experimental entries need allow_experimental on each route that uses them.",
+      "id": "maturity",
+      "label": "maturity",
+      "location": "properties",
+      "values": [
+        {
+          "id": "experimental",
+          "label": "experimental"
+        },
+        {
+          "id": "standard",
+          "label": "standard"
+        }
+      ]
+    }
+  ],
+  "rail_kinds": {
+    "card": {
+      "canonical": "lp(processor name), then lp(the processor's payment ID)",
+      "name": "Card",
+      "spec": "https://github.com/bnap-protocol/bnap/blob/develop/spec/socket-draft-00.md#61-identifiers",
+      "status": "provisional"
+    },
+    "evm": {
+      "canonical": "lp(CAIP-2 chain ID), then the token contract (20 bytes), the payer (20 bytes) and the authorization nonce (32 bytes)",
+      "name": "EVM token transfer",
+      "spec": "https://github.com/bnap-protocol/bnap/blob/develop/spec/socket-draft-00.md#61-identifiers",
+      "status": "provisional"
+    },
+    "ln": {
+      "canonical": "the payment hash, 32 bytes",
+      "name": "Lightning",
+      "spec": "https://github.com/bnap-protocol/bnap/blob/develop/spec/socket-draft-00.md#61-identifiers",
+      "status": "provisional"
+    },
+    "onchain": {
+      "canonical": "the txid, 32 bytes, then the output index as 4 bytes big-endian",
+      "name": "On-chain Bitcoin",
+      "spec": "https://github.com/bnap-protocol/bnap/blob/develop/spec/socket-draft-00.md#61-identifiers",
+      "status": "provisional"
+    }
+  },
+  "rails": {
+    "card:stripe": {
+      "conformance": "",
+      "guarded": true,
+      "kind": "rail",
+      "name": "Cards through Stripe (MPP)",
+      "notes": "Reversible for months, so it may only fund credit, in its own unit, held until final or capped per epoch, and never admit an action directly (overview guardrails). A card ties the payment to the payer. Notes funded this way come out reversible and linkable.",
+      "properties": {
+        "custody": "third-party-custodial",
+        "finality": "reversible",
+        "link-payment": "linkable",
+        "maturity": "standard",
+        "pq": "no"
+      },
+      "rail_kind": "card",
+      "source": "overview, Value rails: Cards (MPP through Stripe)",
+      "spec": "https://docs.stripe.com/payments",
+      "status": "provisional",
+      "units": [
+        "USD",
+        "EUR"
+      ],
+      "vector": {
+        "custody": "third-party-custodial",
+        "finality": "reversible",
+        "link-payment": "linkable",
+        "maturity": "standard",
+        "pq": "no"
+      }
+    },
+    "evm:eip-3009": {
+      "conformance": "",
+      "guarded": true,
+      "kind": "rail",
+      "name": "EVM stablecoins with EIP-3009 authorizations",
+      "notes": "Final at settlement, freezable by the token issuer. Credit it funds carries its own CAIP-19 unit, never sat (overview guardrails). Add one unit per chain and token the operator enables. EIP-3009 is still a draft EIP.",
+      "properties": {
+        "custody": "self-custody",
+        "finality": "freezable",
+        "link-payment": "linkable",
+        "maturity": "experimental",
+        "pq": "no"
+      },
+      "rail_kind": "evm",
+      "source": "overview, Value rails: Stablecoins (x402 on EVM chains)",
+      "spec": "https://eips.ethereum.org/EIPS/eip-3009",
+      "status": "provisional",
+      "units": [
+        "eip155:8453/erc20:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+      ],
+      "vector": {
+        "custody": "self-custody",
+        "finality": "freezable",
+        "link-payment": "linkable",
+        "maturity": "experimental",
+        "pq": "no"
+      }
+    },
+    "evm:tempo": {
+      "conformance": "",
+      "guarded": true,
+      "kind": "rail",
+      "name": "Tempo",
+      "notes": "A blockchain for stablecoin payments. Its chain ID, token contracts and whether its transfers carry the authorization nonce the evm canonical bytes assume are still to be confirmed, so units is empty and the rail cannot fund credit yet.",
+      "properties": {
+        "custody": "self-custody",
+        "finality": "freezable",
+        "link-payment": "linkable",
+        "maturity": "experimental",
+        "pq": "no"
+      },
+      "rail_kind": "evm",
+      "source": "overview, Value rails: Stablecoins (Tempo); Plug points: Funding rail",
+      "spec": "https://tempo.xyz",
+      "status": "provisional",
+      "units": [],
+      "vector": {
+        "custody": "self-custody",
+        "finality": "freezable",
+        "link-payment": "linkable",
+        "maturity": "experimental",
+        "pq": "no"
+      }
+    },
+    "ln:ark": {
+      "conformance": "",
+      "guarded": false,
+      "kind": "rail",
+      "name": "Ark, through Lightning",
+      "notes": "Ark is designed for unilateral exit, but custody varies with the server and the swap service (overview, Value rails), so the entry takes the weakest value until conformance shows the exit path. Final once the round settles. Ark-native transfers have no rail kind yet.",
+      "properties": {
+        "custody": "third-party-custodial",
+        "finality": "final-at-settlement",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no"
+      },
+      "rail_kind": "ln",
+      "source": "overview, Plug catalogue: Fedimint, Ark, Spark",
+      "spec": "https://ark-protocol.org",
+      "status": "provisional",
+      "units": [
+        "sat",
+        "msat"
+      ],
+      "vector": {
+        "custody": "third-party-custodial",
+        "finality": "final-at-settlement",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no"
+      }
+    },
+    "ln:cashu-mint": {
+      "conformance": "",
+      "guarded": false,
+      "kind": "rail",
+      "name": "A Cashu mint, through Lightning",
+      "notes": "The operator receives through a third-party mint's Lightning quotes (NUT-04, NUT-05), so the mint holds the funds.",
+      "properties": {
+        "custody": "third-party-custodial",
+        "finality": "final-at-settlement",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no"
+      },
+      "rail_kind": "ln",
+      "source": "overview, Value rails: Ark, Spark, Fedimint, Cashu mints",
+      "spec": "https://github.com/cashubtc/nuts",
+      "status": "provisional",
+      "units": [
+        "sat"
+      ],
+      "vector": {
+        "custody": "third-party-custodial",
+        "finality": "final-at-settlement",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no"
+      }
+    },
+    "ln:cln": {
+      "conformance": "",
+      "guarded": false,
+      "kind": "rail",
+      "name": "Core Lightning",
+      "notes": "The operator's own node. Onion routing hides the payer from the receiver.",
+      "properties": {
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "link-payment": "unlinkable",
+        "maturity": "standard",
+        "pq": "no"
+      },
+      "rail_kind": "ln",
+      "source": "overview, Value rails: Lightning; Plug points: Funding rail",
+      "spec": "https://github.com/ElementsProject/lightning",
+      "status": "provisional",
+      "units": [
+        "sat",
+        "msat"
+      ],
+      "vector": {
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "link-payment": "unlinkable",
+        "maturity": "standard",
+        "pq": "no"
+      }
+    },
+    "ln:fedimint": {
+      "conformance": "",
+      "guarded": false,
+      "kind": "rail",
+      "name": "Fedimint, through a Lightning gateway",
+      "notes": "The federation holds the operator's funds. Payments arrive through a Lightning gateway, so the canonical bytes are the payment hash; ecash transfers inside the federation have no rail kind yet.",
+      "properties": {
+        "custody": "third-party-custodial",
+        "finality": "final-at-settlement",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no"
+      },
+      "rail_kind": "ln",
+      "source": "overview, Plug catalogue: Fedimint, Ark, Spark",
+      "spec": "https://fedimint.org",
+      "status": "provisional",
+      "units": [
+        "sat",
+        "msat"
+      ],
+      "vector": {
+        "custody": "third-party-custodial",
+        "finality": "final-at-settlement",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no"
+      }
+    },
+    "ln:ldk-node": {
+      "conformance": "",
+      "guarded": false,
+      "kind": "rail",
+      "name": "LDK Node",
+      "notes": "The operator's own node, embedded. Onion routing hides the payer from the receiver.",
+      "properties": {
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "link-payment": "unlinkable",
+        "maturity": "standard",
+        "pq": "no"
+      },
+      "rail_kind": "ln",
+      "source": "overview, Value rails: Lightning; Plug points: Funding rail",
+      "spec": "https://github.com/lightningdevkit/ldk-node",
+      "status": "provisional",
+      "units": [
+        "sat",
+        "msat"
+      ],
+      "vector": {
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "link-payment": "unlinkable",
+        "maturity": "standard",
+        "pq": "no"
+      }
+    },
+    "ln:lnd": {
+      "conformance": "",
+      "guarded": false,
+      "kind": "rail",
+      "name": "LND",
+      "notes": "The operator's own node. Onion routing hides the payer from the receiver.",
+      "properties": {
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "link-payment": "unlinkable",
+        "maturity": "standard",
+        "pq": "no"
+      },
+      "rail_kind": "ln",
+      "source": "overview, Value rails: Lightning; Plug points: Funding rail",
+      "spec": "https://github.com/lightningnetwork/lnd",
+      "status": "provisional",
+      "units": [
+        "sat",
+        "msat"
+      ],
+      "vector": {
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "link-payment": "unlinkable",
+        "maturity": "standard",
+        "pq": "no"
+      }
+    },
+    "ln:nwc": {
+      "conformance": "",
+      "guarded": false,
+      "kind": "rail",
+      "name": "Nostr Wallet Connect (NIP-47)",
+      "notes": "NWC reaches whatever wallet the operator connects, which may be custodial, so the entry takes the weakest custody value. Use a receive-only connection. NIP-47 is marked draft in the NIPs repository.",
+      "properties": {
+        "custody": "third-party-custodial",
+        "finality": "final-on-verification",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no"
+      },
+      "rail_kind": "ln",
+      "source": "overview, Plug catalogue: NWC (NIP-47)",
+      "spec": "https://github.com/nostr-protocol/nips/blob/master/47.md",
+      "status": "provisional",
+      "units": [
+        "sat",
+        "msat"
+      ],
+      "vector": {
+        "custody": "third-party-custodial",
+        "finality": "final-on-verification",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no"
+      }
+    },
+    "ln:phoenixd": {
+      "conformance": "",
+      "guarded": false,
+      "kind": "rail",
+      "name": "Phoenixd",
+      "notes": "The reference implementation's default receiving rail. Self-custodial, with ACINQ as its only channel peer: ACINQ sees payment amounts and hashes, not the payer. A settled invoice is final when the gate sees it.",
+      "properties": {
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "link-payment": "unlinkable",
+        "maturity": "standard",
+        "pq": "no"
+      },
+      "rail_kind": "ln",
+      "source": "overview, Value rails: Lightning; Plug points: Funding rail",
+      "spec": "https://github.com/ACINQ/phoenixd",
+      "status": "provisional",
+      "units": [
+        "sat",
+        "msat"
+      ],
+      "vector": {
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "link-payment": "unlinkable",
+        "maturity": "standard",
+        "pq": "no"
+      }
+    },
+    "ln:spark": {
+      "conformance": "",
+      "guarded": false,
+      "kind": "rail",
+      "name": "Spark, through Lightning",
+      "notes": "Custody depends on the Spark operators, so the entry takes the weakest value until conformance settles it. Spark-native transfers have no rail kind yet.",
+      "properties": {
+        "custody": "third-party-custodial",
+        "finality": "final-at-settlement",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no"
+      },
+      "rail_kind": "ln",
+      "source": "overview, Plug catalogue: Fedimint, Ark, Spark",
+      "spec": "https://docs.spark.money",
+      "status": "provisional",
+      "units": [
+        "sat",
+        "msat"
+      ],
+      "vector": {
+        "custody": "third-party-custodial",
+        "finality": "final-at-settlement",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no"
+      }
+    },
+    "onchain:bitcoin": {
+      "conformance": "",
+      "guarded": false,
+      "kind": "rail",
+      "name": "On-chain Bitcoin",
+      "notes": "Final after the operator's confirmation target. Transactions are public, so payments are linkable to the paying addresses.",
+      "properties": {
+        "custody": "self-custody",
+        "finality": "final-at-settlement",
+        "link-payment": "linkable",
+        "maturity": "standard",
+        "pq": "no"
+      },
+      "rail_kind": "onchain",
+      "source": "overview, Value rails: On-chain Bitcoin",
+      "spec": "https://bitcoin.org/bitcoin.pdf",
+      "status": "provisional",
+      "units": [
+        "sat"
+      ],
+      "vector": {
+        "custody": "self-custody",
+        "finality": "final-at-settlement",
+        "link-payment": "linkable",
+        "maturity": "standard",
+        "pq": "no"
+      }
+    }
+  },
+  "schemes": {
+    "bnap:notes": {
+      "binding": "S",
+      "body": "TLV, per the bnap:notes scheme spec (DECISIONS row 31)",
+      "conformance": "",
+      "kind": "credential",
+      "local_id": "Y of each input, 33-byte compressed point",
+      "name": "Blind notes",
+      "native": [],
+      "notes": "The default scheme; this entry is the draft-00 section 11 example. link-payment is unlinkable except that the first action after funding can be correlated by timing. Funded through a reversible or linkable rail, the effective vector drops to that rail's values. The scheme spec is still in its v0.4 form until the draft-00 rewrite of DECISIONS row 31 lands.",
+      "properties": {
+        "custody": "operator-iou",
+        "finality": "final-on-verification",
+        "issuer": "self-issued",
+        "link-actions": "unlinkable",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "key-witnessed",
+        "verify": "offline"
+      },
+      "quota_id": "",
+      "rail_kinds": [
+        "ln"
+      ],
+      "rail_refs": "none at spend; the funding payment at minting, confirmed by the rail",
+      "refund": "atomic",
+      "role": "value",
+      "source": "overview, Plug catalogue: Blind notes (bnap:notes); draft-00 section 11 example",
+      "spec": "https://github.com/bnap-protocol/bnap/blob/develop/spec/schemes/bnap-notes.md",
+      "status": "provisional",
+      "units": [
+        "sat"
+      ],
+      "upto": false,
+      "use": "single",
+      "vector": {
+        "binding": "S",
+        "custody": "operator-iou",
+        "finality": "final-on-verification",
+        "issuer": "self-issued",
+        "link-actions": "unlinkable",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "refund": "atomic",
+        "theft": "key-witnessed",
+        "use": "single",
+        "verify": "offline"
+      },
+      "verifiers": [
+        "local"
+      ],
+      "witness": "one BIP-340 signature per input, over the Digest"
+    },
+    "cashu:nut22": {
+      "binding": "none",
+      "body": "one blind auth token (NUT-22)",
+      "conformance": "",
+      "kind": "credential",
+      "local_id": "Y of the blind auth token's proof, 33-byte compressed point",
+      "name": "Cashu NUT-22 blind authentication",
+      "native": [],
+      "notes": "Native at price 0: class none, so admissible only at price 0 and never with waive, discount or quota (DECISIONS row 25). The operator's own signer issues and checks the tokens, as it does notes, hence self-issued and offline.",
+      "properties": {
+        "custody": "operator-iou",
+        "finality": "final-on-verification",
+        "issuer": "self-issued",
+        "link-actions": "unlinkable",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "bearer",
+        "verify": "offline"
+      },
+      "quota_id": "",
+      "rail_kinds": [],
+      "rail_refs": "none: blind auth tokens carry no payment",
+      "refund": "none",
+      "role": "value",
+      "source": "overview, Plug catalogue: Cashu NUT-22 blind auth",
+      "spec": "https://github.com/cashubtc/nuts/blob/main/22.md",
+      "status": "provisional",
+      "units": [
+        "sat"
+      ],
+      "upto": false,
+      "use": "single",
+      "vector": {
+        "binding": "none",
+        "custody": "operator-iou",
+        "finality": "final-on-verification",
+        "issuer": "self-issued",
+        "link-actions": "unlinkable",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "refund": "none",
+        "theft": "bearer",
+        "use": "single",
+        "verify": "offline"
+      },
+      "verifiers": [
+        "local"
+      ],
+      "witness": "none: class none has no witness"
+    },
+    "cashu:nut24": {
+      "binding": "O",
+      "body": "a cashuB token whose proofs carry the NUT-10 locking condition the request named, such as a NUT-11 P2PK lock to the operator's key",
+      "conformance": "",
+      "kind": "credential",
+      "local_id": "Y of each proof, 33-byte compressed point",
+      "name": "Cashu NUT-24 HTTP 402, tokens locked for the operator",
+      "native": [
+        {
+          "credential": "the cashuB token from the X-Cashu field, as received",
+          "embeds": "the request's NUT-10 locking condition ties the tokens to this offer; the adapter spec fixes how it carries the OfferID",
+          "kind": "cashu-request"
+        }
+      ],
+      "notes": "One catalogue row with two binding classes, so two IDs: this one admits only locked tokens (class O); cashu:nut24@unlocked takes the rest (class none). NUT-18 is the payment request and NUT-26 its bech32m encoding; both ride inside this scheme. Tokens come from a mint the operator trusts, so the mint holds the value and must be online to swap them.",
+      "properties": {
+        "custody": "third-party-custodial",
+        "finality": "final-at-settlement",
+        "issuer": "third-party",
+        "link-actions": "unlinkable",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "bearer",
+        "verify": "online"
+      },
+      "quota_id": "",
+      "rail_kinds": [],
+      "rail_refs": "none: the ecash is itself the payment, and no rail kind covers third-party ecash yet",
+      "refund": "none",
+      "role": "value",
+      "source": "overview, Plug catalogue: Cashu NUT-24, NUT-18, NUT-26",
+      "spec": "https://github.com/cashubtc/nuts/blob/main/24.md",
+      "status": "provisional",
+      "units": [
+        "sat"
+      ],
+      "upto": false,
+      "use": "single",
+      "vector": {
+        "binding": "O",
+        "custody": "third-party-custodial",
+        "finality": "final-at-settlement",
+        "issuer": "third-party",
+        "link-actions": "unlinkable",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "refund": "none",
+        "theft": "bearer",
+        "use": "single",
+        "verify": "online"
+      },
+      "verifiers": [
+        "local"
+      ],
+      "witness": "none: class O has no witness"
+    },
+    "cashu:nut24@unlocked": {
+      "binding": "none",
+      "body": "a cashuB token with no locking condition",
+      "conformance": "",
+      "kind": "credential",
+      "local_id": "Y of each proof, 33-byte compressed point",
+      "name": "Cashu NUT-24 HTTP 402, unlocked tokens",
+      "native": [],
+      "notes": "Unlocked tokens are bearer: class none, admissible only at price 0 and never with waive, discount or quota (DECISIONS row 25), and only in exact-scope offers (draft-00 4.3). Natives are for class O, so this ID has none.",
+      "properties": {
+        "custody": "third-party-custodial",
+        "finality": "final-at-settlement",
+        "issuer": "third-party",
+        "link-actions": "unlinkable",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "bearer",
+        "verify": "online"
+      },
+      "quota_id": "",
+      "rail_kinds": [],
+      "rail_refs": "none: the ecash is itself the payment, and no rail kind covers third-party ecash yet",
+      "refund": "none",
+      "role": "value",
+      "source": "overview, Plug catalogue: Cashu NUT-24, NUT-18, NUT-26",
+      "spec": "https://github.com/cashubtc/nuts/blob/main/24.md",
+      "status": "provisional",
+      "units": [
+        "sat"
+      ],
+      "upto": false,
+      "use": "single",
+      "vector": {
+        "binding": "none",
+        "custody": "third-party-custodial",
+        "finality": "final-at-settlement",
+        "issuer": "third-party",
+        "link-actions": "unlinkable",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "refund": "none",
+        "theft": "bearer",
+        "use": "single",
+        "verify": "online"
+      },
+      "verifiers": [
+        "local"
+      ],
+      "witness": "none: class none has no witness"
+    },
+    "httpauth:Bearer": {
+      "binding": "none",
+      "body": "the bearer token or API key, copied by the client",
+      "conformance": "",
+      "kind": "attestation",
+      "local_id": "SHA-256 of the token",
+      "name": "OAuth bearer tokens and API keys, without DPoP",
+      "notes": "Class none: usable only with effect required, never to waive, discount or carry a quota (draft-00 7). The overview's route example rests on this entry: a reusable bearer token can never admit a route that requires use = single. API keys sent in other fields use this entry too; the adapter copies the key into the body.",
+      "properties": {
+        "issuer": "third-party",
+        "link-actions": "linkable",
+        "maturity": "standard",
+        "pq": "no",
+        "theft": "bearer",
+        "verify": "online"
+      },
+      "quota_id": "",
+      "role": "attestation",
+      "source": "overview, Plug catalogue: OAuth and API keys, with DPoP",
+      "spec": "https://www.rfc-editor.org/rfc/rfc6750.html",
+      "status": "provisional",
+      "use": "reusable",
+      "vector": {
+        "binding": "none",
+        "issuer": "third-party",
+        "link-actions": "linkable",
+        "maturity": "standard",
+        "pq": "no",
+        "theft": "bearer",
+        "use": "reusable",
+        "verify": "online"
+      },
+      "verifiers": [
+        "local"
+      ],
+      "witness": "none: class none has no witness"
+    },
+    "httpauth:DPoP": {
+      "binding": "A",
+      "body": "the access token and the DPoP proof, with the Context in a proof claim, copied by the client",
+      "conformance": "",
+      "kind": "attestation",
+      "local_id": "the DPoP key's JWK thumbprint (RFC 7638), the token's cnf.jkt",
+      "name": "OAuth access tokens and API keys, with DPoP",
+      "notes": "Class A through a DPoP claim that carries the Context; the claim name is for the adapter spec. Without DPoP the same tokens are httpauth:Bearer, class none. The draft-00 attestation-only vector uses it as a waive. Tokens may need introspection at the authorization server, so the issuer is a third party reached online.",
+      "properties": {
+        "issuer": "third-party",
+        "link-actions": "linkable",
+        "maturity": "standard",
+        "pq": "no",
+        "theft": "bearer",
+        "verify": "online"
+      },
+      "quota_id": "the DPoP key's JWK thumbprint (RFC 7638), the token's cnf.jkt",
+      "role": "attestation",
+      "source": "overview, Plug catalogue: OAuth and API keys, with DPoP",
+      "spec": "https://www.rfc-editor.org/rfc/rfc9449.html",
+      "status": "provisional",
+      "use": "reusable",
+      "vector": {
+        "binding": "A",
+        "issuer": "third-party",
+        "link-actions": "linkable",
+        "maturity": "standard",
+        "pq": "no",
+        "theft": "bearer",
+        "use": "reusable",
+        "verify": "online"
+      },
+      "verifiers": [
+        "local"
+      ],
+      "witness": "none: class A; the proof sits in the body and covers the Context, not the Digest"
+    },
+    "httpauth:L402": {
+      "binding": "O",
+      "body": "the L402 token, macaroon:preimage, as the client would send it natively",
+      "conformance": "",
+      "kind": "credential",
+      "local_id": "the payment hash committed in the macaroon, 32 bytes",
+      "name": "L402",
+      "native": [
+        {
+          "credential": "the L402 token macaroon:preimage (draft-00 5.4)",
+          "embeds": "a first-party caveat bnap_offer = hex(OfferID)",
+          "kind": "l402-macaroon"
+        },
+        {
+          "credential": "the L402 token macaroon:preimage (draft-00 5.4)",
+          "embeds": "the invoice description hash is the OfferID",
+          "kind": "bolt11"
+        }
+      ],
+      "notes": "Reusable natively, single in BNAP (draft-00 6.2). bLIP-26 is an open pull request, so the entry cites the PR (ERRATA row 34); the adapter accepts token= and macaroon=, and both the L402 and LSAT scheme names. Neither refund nor upto, so metered routes give it exact-scope offers priced at the ceiling (draft-00 10.3). One Lightning payment shares one ln RailId with payment:lightning/charge and x402 on Lightning.",
+      "properties": {
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "issuer": "self-issued",
+        "link-actions": "unlinkable",
+        "link-payment": "linkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "bearer",
+        "verify": "offline"
+      },
+      "quota_id": "",
+      "rail_kinds": [
+        "ln"
+      ],
+      "rail_refs": "ln: the payment hash committed in the macaroon",
+      "refund": "none",
+      "role": "value",
+      "source": "overview, Plug catalogue: L402 (bLIP-26)",
+      "spec": "https://github.com/lightning/blips/pull/26",
+      "status": "provisional",
+      "units": [
+        "sat"
+      ],
+      "upto": false,
+      "use": "single",
+      "vector": {
+        "binding": "O",
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "issuer": "self-issued",
+        "link-actions": "unlinkable",
+        "link-payment": "linkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "refund": "none",
+        "theft": "bearer",
+        "use": "single",
+        "verify": "offline"
+      },
+      "verifiers": [
+        "local"
+      ],
+      "witness": "none: class O has no witness"
+    },
+    "httpsig:web-bot-auth": {
+      "binding": "A",
+      "body": "the Signature, Signature-Input and, if sent, Signature-Agent field values, copied by the client; the signature covers BNAP-Context",
+      "conformance": "",
+      "kind": "attestation",
+      "local_id": "the JWK thumbprint of the bot's signing key",
+      "name": "Web Bot Auth",
+      "notes": "The adapter builds the signature base from the gate's own Context and scope inputs, never from raw request fields (draft-00 5.1). The key comes from the bot operator's key directory, so the issuer is a third party reached online. Draft-00 10.3 uses it for a 20% discount in a route-scope offer, which needs class S or A.",
+      "properties": {
+        "issuer": "third-party",
+        "link-actions": "linkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "bearer",
+        "verify": "online"
+      },
+      "quota_id": "the JWK thumbprint of the bot's signing key",
+      "role": "attestation",
+      "source": "overview, Plug catalogue: Web Bot Auth",
+      "spec": "https://www.ietf.org/archive/id/draft-meunier-webbotauth-httpsig-protocol-00.html",
+      "status": "provisional",
+      "use": "reusable",
+      "vector": {
+        "binding": "A",
+        "issuer": "third-party",
+        "link-actions": "linkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "bearer",
+        "use": "reusable",
+        "verify": "online"
+      },
+      "verifiers": [
+        "local"
+      ],
+      "witness": "none: class A; the signature sits in the body and covers the Context, not the Digest"
+    },
+    "nip:98": {
+      "binding": "A",
+      "body": "the signed kind 27235 event, with the Context in a tag",
+      "conformance": "",
+      "kind": "attestation",
+      "local_id": "the event's public key, 32-byte x-only key",
+      "name": "Nostr HTTP Auth (NIP-98)",
+      "notes": "A Nostr key is self-asserted and nobody vouches for it, so the entry takes the weakest issuer value. Verification is a Schnorr check with no network. NIP-98 is marked draft in the NIPs repository. The Nostr carrier has its own entry.",
+      "properties": {
+        "issuer": "third-party",
+        "link-actions": "linkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "bearer",
+        "verify": "offline"
+      },
+      "quota_id": "the event's public key, 32-byte x-only key",
+      "role": "attestation",
+      "source": "overview, Plug catalogue: NIP-98",
+      "spec": "https://github.com/nostr-protocol/nips/blob/master/98.md",
+      "status": "provisional",
+      "use": "reusable",
+      "vector": {
+        "binding": "A",
+        "issuer": "third-party",
+        "link-actions": "linkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "bearer",
+        "use": "reusable",
+        "verify": "offline"
+      },
+      "verifiers": [
+        "local"
+      ],
+      "witness": "none: class A; the event signature sits in the body and covers the Context, not the Digest"
+    },
+    "payment:lightning/charge": {
+      "binding": "O",
+      "body": "the MPP credential, the Authorization: Payment value as received",
+      "conformance": "",
+      "kind": "credential",
+      "local_id": "the invoice's payment hash, 32 bytes",
+      "name": "MPP, Lightning charge",
+      "native": [
+        {
+          "credential": "the MPP credential, the Authorization: Payment value as received",
+          "embeds": "the challenge's HMAC'd id carries the OfferID",
+          "kind": "mpp-challenge"
+        },
+        {
+          "credential": "the MPP credential, the Authorization: Payment value as received",
+          "embeds": "the invoice description hash is the OfferID",
+          "kind": "bolt11"
+        }
+      ],
+      "notes": "The catalogue row covers MPP as a whole; each payment method and intent is its own scheme ID, and this entry registers lightning/charge, the one the draft-00 vectors use. MPP returns its own receipt in Payment-Receipt; the BNAP receipt travels next to it in BNAP-Receipt (ERRATA row 33). One Lightning payment shares one ln RailId with L402 and x402 on Lightning.",
+      "properties": {
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "issuer": "self-issued",
+        "link-actions": "unlinkable",
+        "link-payment": "linkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "bearer",
+        "verify": "offline"
+      },
+      "quota_id": "",
+      "rail_kinds": [
+        "ln"
+      ],
+      "rail_refs": "ln: the invoice's payment hash",
+      "refund": "none",
+      "role": "value",
+      "source": "overview, Plug catalogue: MPP (draft-httpauth-payment)",
+      "spec": "https://datatracker.ietf.org/doc/html/draft-httpauth-payment-01",
+      "status": "provisional",
+      "units": [
+        "sat"
+      ],
+      "upto": false,
+      "use": "single",
+      "vector": {
+        "binding": "O",
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "issuer": "self-issued",
+        "link-actions": "unlinkable",
+        "link-payment": "linkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "refund": "none",
+        "theft": "bearer",
+        "use": "single",
+        "verify": "offline"
+      },
+      "verifiers": [
+        "local",
+        "mpp-processor"
+      ],
+      "witness": "none: class O has no witness"
+    },
+    "pp:0x0002": {
+      "binding": "O",
+      "body": "the token, as RFC 9577 sends it in Authorization: PrivateToken",
+      "conformance": "",
+      "kind": "attestation",
+      "local_id": "the token's nonce, 32 bytes",
+      "name": "Privacy Pass, publicly verifiable tokens (blind RSA)",
+      "notes": "Token type 0x0002 (RFC 9578, blind RSA, publicly verifiable); other token types, such as 0x0001, need entries of their own. The redemption context is the OfferID, so the client builds the token challenge from the attest entry's params and needs no native. Token IDs change with every token, so the scheme cannot carry a quota (draft-00 6.2).",
+      "properties": {
+        "issuer": "third-party",
+        "link-actions": "unlinkable",
+        "maturity": "standard",
+        "pq": "no",
+        "theft": "bearer",
+        "verify": "offline"
+      },
+      "quota_id": "",
+      "role": "attestation",
+      "source": "overview, Plug catalogue: Privacy Pass (RFC 9576-9578)",
+      "spec": "https://www.rfc-editor.org/rfc/rfc9578.html",
+      "status": "provisional",
+      "use": "single",
+      "vector": {
+        "binding": "O",
+        "issuer": "third-party",
+        "link-actions": "unlinkable",
+        "maturity": "standard",
+        "pq": "no",
+        "theft": "bearer",
+        "use": "single",
+        "verify": "offline"
+      },
+      "verifiers": [
+        "local"
+      ],
+      "witness": "none: class O has no witness"
+    },
+    "vnd.cfrg.act": {
+      "binding": "S",
+      "body": "an ACT spend, as the adapter spec will define it",
+      "conformance": "",
+      "kind": "credential",
+      "local_id": "the spend's nullifier, as the adapter spec will define it",
+      "name": "Anonymous Credit Tokens (ACT)",
+      "native": [],
+      "notes": "Reserved for v0.7: no adapter spec yet, so units is empty and the scheme cannot be offered. The ID sits in the vnd. tree until ACT has one in a source registry. An ACT spend returns the unspent credit, which may justify refund = atomic once the adapter is specified; the seed keeps the weakest value.",
+      "properties": {
+        "custody": "operator-iou",
+        "finality": "final-on-verification",
+        "issuer": "self-issued",
+        "link-actions": "unlinkable",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "key-witnessed",
+        "verify": "offline"
+      },
+      "quota_id": "",
+      "rail_kinds": [
+        "ln"
+      ],
+      "rail_refs": "the funding payment at issuance, confirmed by the rail, as for bnap:notes",
+      "refund": "none",
+      "role": "value",
+      "source": "overview, Plug catalogue: ACT",
+      "spec": "https://datatracker.ietf.org/doc/draft-schlesinger-cfrg-act/",
+      "status": "provisional",
+      "units": [],
+      "upto": false,
+      "use": "single",
+      "vector": {
+        "binding": "S",
+        "custody": "operator-iou",
+        "finality": "final-on-verification",
+        "issuer": "self-issued",
+        "link-actions": "unlinkable",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "refund": "none",
+        "theft": "key-witnessed",
+        "use": "single",
+        "verify": "offline"
+      },
+      "verifiers": [
+        "local"
+      ],
+      "witness": "a proof bound to the Digest, as the adapter spec will define it"
+    },
+    "vnd.cfrg.arc": {
+      "binding": "O",
+      "body": "an ARC presentation whose presentation context is the OfferID",
+      "conformance": "",
+      "kind": "attestation",
+      "local_id": "the presentation tag, as the adapter spec will define it",
+      "name": "Anonymous Rate-Limited Credentials (ARC)",
+      "notes": "ARC tags differ per presentation, so the socket cannot key a rate(k, epoch) counter on them (draft-00 6.2); the limit comes from ARC's own presentation limit. The entry keeps the catalogue's use = rate, the weaker reading, until the expert settles it. ARC is privately verifiable, so an issuer other than the operator must be online. The ID sits in the vnd. tree until ARC has a Privacy Pass token type.",
+      "properties": {
+        "issuer": "third-party",
+        "link-actions": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "bearer",
+        "verify": "online"
+      },
+      "quota_id": "",
+      "role": "attestation",
+      "source": "overview, Plug catalogue: ARC",
+      "spec": "https://datatracker.ietf.org/doc/draft-yun-cfrg-arc/",
+      "status": "provisional",
+      "use": "rate",
+      "vector": {
+        "binding": "O",
+        "issuer": "third-party",
+        "link-actions": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "bearer",
+        "use": "rate",
+        "verify": "online"
+      },
+      "verifiers": [
+        "local"
+      ],
+      "witness": "none: class O has no witness"
+    },
+    "vnd.cloudflare.pay-per-crawl": {
+      "kind": "credential",
+      "name": "Cloudflare pay per crawl",
+      "notes": "Fits only as a Pricer signal, as the overview says: its 402 price can inform what a BNAP route charges. In closed beta when checked.",
+      "reason": "Its payment side is closed: Cloudflare is the merchant of record and settles with the crawler on its own account, so the gate receives no payment artifact it can verify, bind to an offer or commit.",
+      "role": "value",
+      "source": "overview, Plug catalogue: Cloudflare pay-per-crawl",
+      "spec": "https://developers.cloudflare.com/ai-crawl-control/features/pay-per-crawl/what-is-pay-per-crawl/",
+      "status": "does-not-fit",
+      "vector": {}
+    },
+    "vnd.google.ap2": {
+      "kind": "credential",
+      "name": "Agent Payments Protocol (AP2), as a direct per-action payment",
+      "notes": "AP2 mandates do fit, as a client spend policy, which is a client plug and has no registry entry. A payment method that AP2 drives, such as a card through MPP, is registered under that method.",
+      "reason": "AP2 authorizes a payment with signed mandates and leaves the payment itself to another method, cards in its first version, so it carries no value proof the gate can verify for one action.",
+      "role": "value",
+      "source": "overview, Plug catalogue: introduction and the AP2 mandates row",
+      "spec": "https://ap2-protocol.org",
+      "status": "does-not-fit",
+      "vector": {}
+    },
+    "vnd.hashcash.v1": {
+      "binding": "A",
+      "body": "a version 1 stamp whose resource field is the hex Context",
+      "conformance": "",
+      "kind": "credential",
+      "local_id": "SHA-256 of the stamp",
+      "name": "Hashcash",
+      "native": [],
+      "notes": "Weak: work costs a well-funded attacker little. The catalogue's unit is work, which draft-00 4.1 does not list, so units is empty and the scheme cannot be offered in a pay entry until a unit is registered. pq stays no, since a quantum computer speeds up the search.",
+      "properties": {
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "issuer": "self-issued",
+        "link-actions": "unlinkable",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "bearer",
+        "verify": "offline"
+      },
+      "quota_id": "",
+      "rail_kinds": [],
+      "rail_refs": "none: work, not a payment",
+      "refund": "none",
+      "role": "value",
+      "source": "overview, Plug catalogue: Hashcash, Anubis",
+      "spec": "http://www.hashcash.org/papers/hashcash.pdf",
+      "status": "provisional",
+      "units": [],
+      "upto": false,
+      "use": "single",
+      "vector": {
+        "binding": "A",
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "issuer": "self-issued",
+        "link-actions": "unlinkable",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "refund": "none",
+        "theft": "bearer",
+        "use": "single",
+        "verify": "offline"
+      },
+      "verifiers": [
+        "local"
+      ],
+      "witness": "none: class A; the work commits to the Context, not the Digest"
+    },
+    "vnd.techaro.anubis": {
+      "binding": "A",
+      "body": "an Anubis proof of work over a challenge that is the hex Context",
+      "conformance": "",
+      "kind": "credential",
+      "local_id": "SHA-256 of the solved challenge",
+      "name": "Anubis proof of work",
+      "native": [],
+      "notes": "Weak, like Hashcash, and for the same reason. Anubis normally turns a solved challenge into a session cookie; as a BNAP scheme each solution admits one action. No draft-00 unit covers work, so units is empty until one is registered.",
+      "properties": {
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "issuer": "self-issued",
+        "link-actions": "unlinkable",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "bearer",
+        "verify": "offline"
+      },
+      "quota_id": "",
+      "rail_kinds": [],
+      "rail_refs": "none: work, not a payment",
+      "refund": "none",
+      "role": "value",
+      "source": "overview, Plug catalogue: Hashcash, Anubis",
+      "spec": "https://github.com/TecharoHQ/anubis",
+      "status": "provisional",
+      "units": [],
+      "upto": false,
+      "use": "single",
+      "vector": {
+        "binding": "A",
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "issuer": "self-issued",
+        "link-actions": "unlinkable",
+        "link-payment": "unlinkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "refund": "none",
+        "theft": "bearer",
+        "use": "single",
+        "verify": "offline"
+      },
+      "verifiers": [
+        "local"
+      ],
+      "witness": "none: class A; the work commits to the Context, not the Digest"
+    },
+    "vnd.world.world-id": {
+      "binding": "A",
+      "body": "the World ID proof, with the Context as its signal",
+      "conformance": "",
+      "kind": "attestation",
+      "local_id": "the nullifier hash for the action",
+      "name": "World ID",
+      "notes": "The nullifier is stable per person and action, so the rate model can count it, and actions under one action ID are linkable to each other. A quota could count it too; quota_id stays empty until the adapter spec names the action. Proofs are checked through World's verifier, so online.",
+      "properties": {
+        "issuer": "third-party",
+        "link-actions": "linkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "bearer",
+        "verify": "online"
+      },
+      "quota_id": "",
+      "role": "attestation",
+      "source": "overview, Plug catalogue: World ID",
+      "spec": "https://docs.world.org/world-id",
+      "status": "provisional",
+      "use": "rate",
+      "vector": {
+        "binding": "A",
+        "issuer": "third-party",
+        "link-actions": "linkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "bearer",
+        "use": "rate",
+        "verify": "online"
+      },
+      "verifiers": [
+        "local"
+      ],
+      "witness": "none: class A; the proof sits in the body and covers the Context, not the Digest"
+    },
+    "x402:exact@eip155:8453": {
+      "binding": "A",
+      "body": "the x402 payment payload: an EIP-3009 transferWithAuthorization signed by the payer, with nonce = Context",
+      "conformance": "",
+      "kind": "credential",
+      "local_id": "the payer address, 20 bytes, then the EIP-3009 authorization nonce, 32 bytes",
+      "name": "x402 exact on Base (EVM)",
+      "native": [],
+      "notes": "Each EVM network is its own scheme ID with its own entry; this one is Base (CAIP-2 eip155:8453) with USDC, as in the overview's Caparra config. Guarded, off by default. Only BNAP-aware clients can pay it: a tier-0 x402 client picks its own nonce, so it cannot set nonce = Context, and class A has no native path. The token issuer can freeze funds, hence freezable. One address pays every action, so payments and actions are linkable.",
+      "properties": {
+        "custody": "self-custody",
+        "finality": "freezable",
+        "issuer": "facilitator",
+        "link-actions": "linkable",
+        "link-payment": "linkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "bearer",
+        "verify": "online"
+      },
+      "quota_id": "",
+      "rail_kinds": [
+        "evm"
+      ],
+      "rail_refs": "evm: chain ID, token contract, payer and authorization nonce, confirmed by the rail after settlement",
+      "refund": "none",
+      "role": "value",
+      "source": "overview, Plug catalogue: x402 on EVM chains",
+      "spec": "https://github.com/x402-foundation/x402/blob/main/specs/schemes/exact/scheme_exact_evm.md",
+      "status": "provisional",
+      "units": [
+        "eip155:8453/erc20:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+      ],
+      "upto": false,
+      "use": "single",
+      "vector": {
+        "binding": "A",
+        "custody": "self-custody",
+        "finality": "freezable",
+        "issuer": "facilitator",
+        "link-actions": "linkable",
+        "link-payment": "linkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "refund": "none",
+        "theft": "bearer",
+        "use": "single",
+        "verify": "online"
+      },
+      "verifiers": [
+        "x402-facilitator:non-custodial",
+        "x402-facilitator:custodial",
+        "x402-facilitator:merchant-of-record"
+      ],
+      "witness": "none: class A; the payer's signature sits in the body and covers the Context, not the Digest"
+    },
+    "x402:exact@lnbtc:000000000019d6689c085ae165831e93": {
+      "binding": "O",
+      "body": "the x402 payment payload for lnbtc: the preimage, with the invoice echoed in accepted.extra.invoice",
+      "conformance": "",
+      "kind": "credential",
+      "local_id": "the invoice's payment hash, 32 bytes",
+      "name": "x402 exact on Lightning (lnbtc mainnet)",
+      "native": [
+        {
+          "credential": "the x402 payment payload, as received",
+          "embeds": "the payment requirements carry the invoice, whose description hash is the OfferID",
+          "kind": "x402-requirements"
+        }
+      ],
+      "notes": "Published 2026-09-23 (ERRATA row 32) and deferred to v0.6. The ID carries the mainnet network identifier the published spec gives; the overview's shorter x402:exact@lnbtc predates it. The resource server makes the invoice and the client chooses no nonce, so the class stays O. A facilitator checks the preimage locally and moves no funds. One Lightning payment shares one ln RailId with L402 and MPP.",
+      "properties": {
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "issuer": "self-issued",
+        "link-actions": "unlinkable",
+        "link-payment": "linkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "theft": "bearer",
+        "verify": "offline"
+      },
+      "quota_id": "",
+      "rail_kinds": [
+        "ln"
+      ],
+      "rail_refs": "ln: the invoice's payment hash",
+      "refund": "none",
+      "role": "value",
+      "source": "overview, Plug catalogue: x402 on Lightning; ERRATA row 32",
+      "spec": "https://github.com/x402-foundation/x402/blob/main/specs/schemes/exact/scheme_exact_lnbtc.md",
+      "status": "provisional",
+      "units": [
+        "sat"
+      ],
+      "upto": false,
+      "use": "single",
+      "vector": {
+        "binding": "O",
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "issuer": "self-issued",
+        "link-actions": "unlinkable",
+        "link-payment": "linkable",
+        "maturity": "experimental",
+        "pq": "no",
+        "refund": "none",
+        "theft": "bearer",
+        "use": "single",
+        "verify": "offline"
+      },
+      "verifiers": [
+        "local",
+        "x402-facilitator:non-custodial"
+      ],
+      "witness": "none: class O has no witness"
+    }
+  },
+  "verifiers": {
+    "local": {
+      "conformance": "",
+      "kind": "verifier",
+      "name": "The gate's own verification",
+      "notes": "The neutral element: every property at its strongest, so a scheme verified locally keeps its own vector.",
+      "properties": {
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "issuer": "self-issued",
+        "maturity": "standard",
+        "verify": "offline"
+      },
+      "source": "overview, Plug points: Verifier (Local)",
+      "spec": "https://github.com/bnap-protocol/bnap/blob/develop/spec/socket-draft-00.md#11-registry-entries",
+      "status": "provisional",
+      "trust": "local",
+      "vector": {
+        "custody": "self-custody",
+        "finality": "final-on-verification",
+        "issuer": "self-issued",
+        "maturity": "standard",
+        "verify": "offline"
+      }
+    },
+    "mpp-processor": {
+      "conformance": "",
+      "kind": "verifier",
+      "name": "MPP payment processor",
+      "notes": "A processor that verifies and settles MPP credentials for the operator and pays out later, so it holds the funds in between and must be online.",
+      "properties": {
+        "custody": "third-party-custodial",
+        "finality": "final-at-settlement",
+        "issuer": "facilitator",
+        "maturity": "experimental",
+        "verify": "online"
+      },
+      "source": "overview, Plug points: Verifier (MPP processor)",
+      "spec": "https://paymentauth.org",
+      "status": "provisional",
+      "trust": "custodial",
+      "vector": {
+        "custody": "third-party-custodial",
+        "finality": "final-at-settlement",
+        "issuer": "facilitator",
+        "maturity": "experimental",
+        "verify": "online"
+      }
+    },
+    "x402-facilitator:custodial": {
+      "conformance": "",
+      "kind": "verifier",
+      "name": "x402 facilitator, custodial",
+      "notes": "Takes the payment into its own account before paying the operator, so x402 through it is custodial (overview, effective vectors).",
+      "properties": {
+        "custody": "third-party-custodial",
+        "finality": "final-at-settlement",
+        "issuer": "facilitator",
+        "maturity": "experimental",
+        "verify": "online"
+      },
+      "source": "overview, Plug points: Verifier (x402 facilitator); Value rails guardrails",
+      "spec": "https://github.com/x402-foundation/x402",
+      "status": "provisional",
+      "trust": "custodial",
+      "vector": {
+        "custody": "third-party-custodial",
+        "finality": "final-at-settlement",
+        "issuer": "facilitator",
+        "maturity": "experimental",
+        "verify": "online"
+      }
+    },
+    "x402-facilitator:merchant-of-record": {
+      "conformance": "",
+      "kind": "verifier",
+      "name": "x402 facilitator, merchant of record",
+      "notes": "Sells to the client in its own name and holds the funds; it can unwind a sale under its own terms, so the entry takes the weakest finality.",
+      "properties": {
+        "custody": "third-party-custodial",
+        "finality": "reversible",
+        "issuer": "facilitator",
+        "maturity": "experimental",
+        "verify": "online"
+      },
+      "source": "overview, Plug points: Verifier (x402 facilitator); Value rails guardrails",
+      "spec": "https://github.com/x402-foundation/x402",
+      "status": "provisional",
+      "trust": "merchant-of-record",
+      "vector": {
+        "custody": "third-party-custodial",
+        "finality": "reversible",
+        "issuer": "facilitator",
+        "maturity": "experimental",
+        "verify": "online"
+      }
+    },
+    "x402-facilitator:non-custodial": {
+      "conformance": "",
+      "kind": "verifier",
+      "name": "x402 facilitator, non-custodial relay",
+      "notes": "Broadcasts the client's signed authorization, or checks a Lightning preimage, and never holds funds; the x402 EVM spec says it cannot change the amount or the destination.",
+      "properties": {
+        "custody": "self-custody",
+        "finality": "final-at-settlement",
+        "issuer": "facilitator",
+        "maturity": "experimental",
+        "verify": "online"
+      },
+      "source": "overview, Plug points: Verifier (x402 facilitator); Value rails guardrails",
+      "spec": "https://github.com/x402-foundation/x402",
+      "status": "provisional",
+      "trust": "non-custodial-relay",
+      "vector": {
+        "custody": "self-custody",
+        "finality": "final-at-settlement",
+        "issuer": "facilitator",
+        "maturity": "experimental",
+        "verify": "online"
+      }
+    }
+  }
+}

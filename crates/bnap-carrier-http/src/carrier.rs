@@ -6,7 +6,9 @@ use bnap_core::http as scopes;
 use bnap_core::response::Response as Receipt;
 use bnap_plug::carrier::{Carrier, Challenge, RawCredential};
 use bytes::Bytes;
-use http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, HeaderValue, RETRY_AFTER, WWW_AUTHENTICATE};
+use http::header::{
+    AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, HeaderValue, RETRY_AFTER, WWW_AUTHENTICATE,
+};
 use http::{HeaderMap, Method, StatusCode};
 
 use crate::codec::b64u;
@@ -142,7 +144,7 @@ impl Carrier for HttpCarrier {
     type Request = HttpRequest;
     type Response = http::response::Parts;
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "http"
     }
 
@@ -196,20 +198,23 @@ impl Carrier for HttpCarrier {
         if let Some(e) = challenge.error {
             set_error_fields(e, out);
         }
-        out.headers.insert(CACHE_CONTROL, HeaderValue::from_static(NO_STORE));
+        out.headers
+            .insert(CACHE_CONTROL, HeaderValue::from_static(NO_STORE));
     }
 
     fn receipt(&self, receipt: &Receipt, out: &mut http::response::Parts) {
         if let Ok(v) = HeaderValue::from_str(&b64u(receipt.bytes())) {
             out.headers.insert(BNAP_RECEIPT, v);
         }
-        out.headers.insert(CACHE_CONTROL, HeaderValue::from_static(NO_STORE));
+        out.headers
+            .insert(CACHE_CONTROL, HeaderValue::from_static(NO_STORE));
     }
 
     fn error(&self, error: &ErrorObject, out: &mut http::response::Parts) {
         out.status = status_of(error);
         set_error_fields(error, out);
-        out.headers.insert(CACHE_CONTROL, HeaderValue::from_static(NO_STORE));
+        out.headers
+            .insert(CACHE_CONTROL, HeaderValue::from_static(NO_STORE));
     }
 }
 
@@ -317,15 +322,19 @@ pub fn error_response(carrier: &HttpCarrier, error: &ErrorObject) -> http::Respo
 
 /// A whole 402 answer with every offer and native challenge.
 #[must_use]
-pub fn challenge_response(carrier: &HttpCarrier, challenge: &Challenge<'_>) -> http::Response<Bytes> {
+pub fn challenge_response(
+    carrier: &HttpCarrier,
+    challenge: &Challenge<'_>,
+) -> http::Response<Bytes> {
     let (mut parts, ()) = http::Response::new(()).into_parts();
     carrier.offer(challenge, &mut parts);
     parts
         .headers
         .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    let body = challenge
-        .error
-        .map_or_else(|| error_body(&ErrorObject::new(ErrorCode::Required)), error_body);
+    let body = challenge.error.map_or_else(
+        || error_body(&ErrorObject::new(ErrorCode::Required)),
+        error_body,
+    );
     http::Response::from_parts(parts, body)
 }
 
@@ -365,14 +374,22 @@ mod tests {
 
     #[test]
     fn the_target_is_hashed_as_received() {
-        let c = HttpCarrier::new("https://api.example", 9216);
-        let a = c.action_scope(&request("GET", "/a?b=1", b"")).unwrap();
-        let b = c.action_scope(&request("GET", "/a?b=%31", b"")).unwrap();
-        let d = c.action_scope(&request("GET", "/a?b=1", b"")).unwrap();
-        assert_ne!(a, b);
-        assert_eq!(a, d);
-        let m = c.action_scope(&request("get", "/a?b=1", b"")).unwrap();
-        assert_ne!(a, m, "methods are case-sensitive");
+        let carrier = HttpCarrier::new("https://api.example", 9216);
+        let plain = carrier
+            .action_scope(&request("GET", "/a?b=1", b""))
+            .unwrap();
+        let escaped = carrier
+            .action_scope(&request("GET", "/a?b=%31", b""))
+            .unwrap();
+        let again = carrier
+            .action_scope(&request("GET", "/a?b=1", b""))
+            .unwrap();
+        assert_ne!(plain, escaped);
+        assert_eq!(plain, again);
+        let lower = carrier
+            .action_scope(&request("get", "/a?b=1", b""))
+            .unwrap();
+        assert_ne!(plain, lower, "methods are case-sensitive");
     }
 
     #[test]
@@ -390,7 +407,10 @@ mod tests {
             &[("accept", b"a, b"), ("anthropic-version", b"")],
         );
         assert_eq!(s, want);
-        assert_ne!(sha256(&s.0), sha256(&c.action_scope(&request("POST", "/x", b"{}")).unwrap().0));
+        assert_ne!(
+            sha256(&s.0),
+            sha256(&c.action_scope(&request("POST", "/x", b"{}")).unwrap().0)
+        );
     }
 
     fn l402(v: &str) -> Option<&str> {
@@ -406,7 +426,11 @@ mod tests {
         let mut r = request("GET", "/", b"");
         r.headers
             .insert(AUTHORIZATION, HeaderValue::from_static("Bearer sk-api-key"));
-        assert_eq!(c.extract(&r).unwrap(), None, "an API key is not a value credential");
+        assert_eq!(
+            c.extract(&r).unwrap(),
+            None,
+            "an API key is not a value credential"
+        );
         r.headers
             .insert(AUTHORIZATION, HeaderValue::from_static("L402 mac:pre"));
         assert_eq!(
@@ -457,6 +481,10 @@ mod tests {
     }
 
     fn hex(b: &[u8]) -> String {
-        b.iter().map(|x| format!("{x:02x}")).collect()
+        use std::fmt::Write as _;
+        b.iter().fold(String::new(), |mut s, x| {
+            let _ = write!(s, "{x:02x}");
+            s
+        })
     }
 }

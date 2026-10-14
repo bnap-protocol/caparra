@@ -148,8 +148,14 @@ mod tests {
         assert_eq!(e.code(), bnap_core::ErrorCode::TooLarge);
         // Exactly 12,288 characters of garbage is read, and refused as
         // MALFORMED, not TOO_LARGE.
-        h.insert(&BNAP_CREDENTIAL, HeaderValue::from_str(&"!".repeat(12_288)).unwrap());
-        assert_eq!(credential(&h, 9216).unwrap_err().code(), bnap_core::ErrorCode::Malformed);
+        h.insert(
+            &BNAP_CREDENTIAL,
+            HeaderValue::from_str(&"!".repeat(12_288)).unwrap(),
+        );
+        assert_eq!(
+            credential(&h, 9216).unwrap_err().code(),
+            bnap_core::ErrorCode::Malformed
+        );
     }
 
     #[test]
@@ -157,12 +163,18 @@ mod tests {
         let mut h = HeaderMap::new();
         h.append(&BNAP_CREDENTIAL, HeaderValue::from_static("AAEB"));
         h.append(&BNAP_CREDENTIAL, HeaderValue::from_static("AAEB"));
-        assert_eq!(credential(&h, 9216).unwrap_err().code(), bnap_core::ErrorCode::Malformed);
+        assert_eq!(
+            credential(&h, 9216).unwrap_err().code(),
+            bnap_core::ErrorCode::Malformed
+        );
     }
 
     #[test]
     fn offer_challenges_parse_back() {
-        assert_eq!(parse_offer_challenge("BNAP offer=\"AAEB\"").unwrap(), vec![0, 1, 1]);
+        assert_eq!(
+            parse_offer_challenge("BNAP offer=\"AAEB\"").unwrap(),
+            vec![0, 1, 1]
+        );
         assert!(parse_offer_challenge("L402 token=\"x\"").is_none());
         assert!(parse_offer_challenge("BNAP offer=AAEB").is_none());
     }
@@ -170,9 +182,15 @@ mod tests {
     #[test]
     fn context_must_be_32_bytes() {
         let mut h = HeaderMap::new();
-        h.insert(&BNAP_CONTEXT, HeaderValue::from_str(&b64u(&[7; 32])).unwrap());
+        h.insert(
+            &BNAP_CONTEXT,
+            HeaderValue::from_str(&b64u(&[7; 32])).unwrap(),
+        );
         assert_eq!(context(&h).unwrap(), Some([7; 32]));
-        h.insert(&BNAP_CONTEXT, HeaderValue::from_str(&b64u(&[7; 31])).unwrap());
+        h.insert(
+            &BNAP_CONTEXT,
+            HeaderValue::from_str(&b64u(&[7; 31])).unwrap(),
+        );
         assert!(context(&h).is_err());
     }
 }

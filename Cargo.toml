@@ -83,6 +83,9 @@ axum = "0.8.9"
 tower = "0.5.3"
 tower-http = { version = "0.7.1", features = ["trace"] }
 hyper = "1.12.0"
+# The gate's upstream client: forwards the request-target byte for byte
+# (draft-00 10.1). Already in the tree through reqwest.
+hyper-util = { version = "0.1.21", features = ["client-legacy", "http1", "tokio"] }
 # HTTP types for the HTTP carrier and the gate. All already in the tree
 # through axum, hyper and reqwest.
 http = "1.5.0"

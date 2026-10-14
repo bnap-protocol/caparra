@@ -303,7 +303,10 @@ where
             Ok(resp) => resp.map(|b| b.map_err(Into::into).boxed_unsync()),
             Err(e) => {
                 tracing::warn!("upstream failed: {e}");
-                plain(StatusCode::BAD_GATEWAY, "The upstream service did not answer.")
+                plain(
+                    StatusCode::BAD_GATEWAY,
+                    "The upstream service did not answer.",
+                )
             }
         },
         Admit::Run(run) => run_action(inner, limits, run).await,
@@ -402,7 +405,11 @@ where
 }
 
 fn full(r: Response<Bytes>) -> Response<BoxBody> {
-    r.map(|b| Full::new(b).map_err(|e: Infallible| match e {}).boxed_unsync())
+    r.map(|b| {
+        Full::new(b)
+            .map_err(|e: Infallible| match e {})
+            .boxed_unsync()
+    })
 }
 
 fn plain_bytes(status: StatusCode, text: &str) -> Response<Bytes> {
@@ -526,7 +533,11 @@ mod tests {
         assert_eq!(r.status(), StatusCode::OK);
         assert_eq!(log, vec![Done::Ok { units: 850 }]);
         let (r, log) = send(true, "/x").await;
-        assert_eq!(r.status(), StatusCode::BAD_GATEWAY, "unmetered answers are withheld");
+        assert_eq!(
+            r.status(),
+            StatusCode::BAD_GATEWAY,
+            "unmetered answers are withheld"
+        );
         assert!(matches!(log[0], Done::Failed { .. }));
     }
 
@@ -545,9 +556,9 @@ mod tests {
         let (r, log) = send(false, "/free").await;
         assert_eq!(r.status(), StatusCode::OK);
         assert!(r.headers().get("bnap-receipt").is_none());
-        assert!(log.is_empty());
+        assert_eq!(log, Vec::<Done>::new());
         let (r, log) = send(false, "/answer").await;
         assert_eq!(r.into_body().collect().await.unwrap().to_bytes(), "402");
-        assert!(log.is_empty());
+        assert_eq!(log, Vec::<Done>::new());
     }
 }
