@@ -481,6 +481,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "e2e"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bnap-core",
+ "bnap-plug",
+ "bnap-rail-fake",
+ "bnap-rail-lnd",
+ "bnap-scheme-l402",
+ "bnap-scheme-mpp",
+ "tokio",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
