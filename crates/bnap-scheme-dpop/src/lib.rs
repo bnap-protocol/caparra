@@ -19,17 +19,17 @@
 //! Signature checks are pure Rust: ES256 with `p256`, `EdDSA` with
 //! `ed25519-dalek` ([`jose`]). Nothing in this crate links OpenSSL.
 //!
-//! # OAuth with DPoP, and without
+//! # OAuth with `DPoP`, and without
 //!
 //! The registry pairs two entries for the same tokens, and the pairing is
 //! the whole point of this crate:
 //!
 //! | Presented as | What binds it to the request | Class | May |
 //! | --- | --- | --- | --- |
-//! | `httpauth:DPoP` | A DPoP proof whose key the token is bound to (`cnf.jkt`, `ath`), and whose `bnap_ctx` claim is the Context | A | Be required, waive, discount, carry a quota |
+//! | `httpauth:DPoP` | A `DPoP` proof whose key the token is bound to (`cnf.jkt`, `ath`), and whose `bnap_ctx` claim is the Context | A | Be required, waive, discount, carry a quota |
 //! | `httpauth:Bearer` | Nothing: whoever holds the token can present it | none | Only be required |
 //!
-//! **Without DPoP binding an access token is class none and never waives
+//! **Without `DPoP` binding an access token is class none and never waives
 //! or discounts.** Three rules hold that line, each in its own place:
 //!
 //! - the registry gives `httpauth:Bearer` class none, and the gate never
@@ -75,7 +75,7 @@ pub use scheme::{BEARER, BearerScheme, DPOP, DpopScheme};
 pub mod codes {
     /// The body is not the canonical TLV, or the part has a witness.
     pub const BAD_BODY: &str = "BAD_BODY";
-    /// The proof is not a well-formed DPoP proof.
+    /// The proof is not a well-formed `DPoP` proof.
     pub const BAD_PROOF: &str = "BAD_PROOF";
     /// The proof's `alg` is not ES256 or `EdDSA`.
     pub const UNSUPPORTED_ALG: &str = "UNSUPPORTED_ALG";
@@ -99,6 +99,6 @@ pub mod codes {
     pub const UNKNOWN_KEY: &str = "UNKNOWN_KEY";
     /// The scheme was used as a pay entry.
     pub const NOT_AN_ATTESTATION: &str = "NOT_AN_ATTESTATION";
-    /// A DPoP-bound token was presented as a bearer token.
+    /// A `DPoP`-bound token was presented as a bearer token.
     pub const DPOP_BOUND_TOKEN: &str = "DPOP_BOUND_TOKEN";
 }

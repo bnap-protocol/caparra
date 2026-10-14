@@ -7,7 +7,7 @@
 //!
 //! | Scheme | Type | Name | Value | Presence |
 //! | --- | --- | --- | --- | --- |
-//! | `httpauth:DPoP` | 0 | proof | The DPoP proof JWT, compact serialization (the `DPoP` field value) | Required |
+//! | `httpauth:DPoP` | 0 | proof | The `DPoP` proof JWT, compact serialization (the `DPoP` field value) | Required |
 //! | `httpauth:DPoP` | 2 | `access_token` | The access token, as `Authorization: DPoP <token>` carries it | Optional |
 //! | `httpauth:Bearer` | 0 | token | The bearer token or API key | Required |
 //!
@@ -20,7 +20,7 @@ use bnap_core::tlv::{StreamKind, TlvStream, write_record};
 
 /// Record types of the `httpauth:DPoP` body.
 pub mod dpop_types {
-    /// The DPoP proof JWT.
+    /// The `DPoP` proof JWT.
     pub const PROOF: u64 = 0;
     /// The access token.
     pub const ACCESS_TOKEN: u64 = 2;
@@ -32,7 +32,7 @@ pub mod bearer_types {
     pub const TOKEN: u64 = 0;
 }
 
-/// The largest DPoP proof accepted, in bytes.
+/// The largest `DPoP` proof accepted, in bytes.
 pub const MAX_PROOF: usize = 4096;
 
 /// The largest access token accepted, in bytes.
@@ -65,7 +65,7 @@ pub enum BodyError {
 /// The `httpauth:DPoP` body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DpopBody {
-    /// The DPoP proof JWT, compact serialization.
+    /// The `DPoP` proof JWT, compact serialization.
     pub proof: String,
     /// The access token the proof is presented with, if any.
     pub access_token: Option<String>,
@@ -86,7 +86,9 @@ impl DpopBody {
     /// Parses a body, refusing anything but its one canonical form.
     pub fn parse(bytes: &[u8]) -> Result<Self, BodyError> {
         let s = stream(bytes, &[dpop_types::PROOF, dpop_types::ACCESS_TOKEN])?;
-        let proof = s.get(dpop_types::PROOF).ok_or(BodyError::Missing(dpop_types::PROOF))?;
+        let proof = s
+            .get(dpop_types::PROOF)
+            .ok_or(BodyError::Missing(dpop_types::PROOF))?;
         let proof = value(dpop_types::PROOF, proof, MAX_PROOF, is_jws_char)?;
         let access_token = s
             .get(dpop_types::ACCESS_TOKEN)
@@ -118,7 +120,9 @@ impl BearerBody {
     /// Parses a body, refusing anything but its one canonical form.
     pub fn parse(bytes: &[u8]) -> Result<Self, BodyError> {
         let s = stream(bytes, &[bearer_types::TOKEN])?;
-        let t = s.get(bearer_types::TOKEN).ok_or(BodyError::Missing(bearer_types::TOKEN))?;
+        let t = s
+            .get(bearer_types::TOKEN)
+            .ok_or(BodyError::Missing(bearer_types::TOKEN))?;
         Ok(Self {
             token: token(bearer_types::TOKEN, t)?,
         })
@@ -179,7 +183,10 @@ mod tests {
 
     #[test]
     fn bodies_round_trip() {
-        for b in [dpop(None), dpop(Some("Kz~8mXK1EalYznwH-LC-1fBAo.4Ljp~zsPE_NeO.gxU"))] {
+        for b in [
+            dpop(None),
+            dpop(Some("Kz~8mXK1EalYznwH-LC-1fBAo.4Ljp~zsPE_NeO.gxU")),
+        ] {
             assert_eq!(DpopBody::parse(&b.to_bytes()).unwrap(), b);
         }
         let b = BearerBody {
@@ -193,7 +200,8 @@ mod tests {
         // An unknown odd record, an unknown even record, an experimental
         // one: none of them is verified, so none is allowed.
         for t in [1u64, 3, 4, 1_000_000_001] {
-            let mut s = TlvStream::parse(&dpop(Some("tok")).to_bytes(), StreamKind::Nested).unwrap();
+            let mut s =
+                TlvStream::parse(&dpop(Some("tok")).to_bytes(), StreamKind::Nested).unwrap();
             s.insert(t, b"x".to_vec()).unwrap();
             assert_eq!(
                 DpopBody::parse(&s.to_bytes()),
@@ -230,6 +238,9 @@ mod tests {
             proof: "a".repeat(MAX_PROOF + 1),
             access_token: None,
         };
-        assert_eq!(DpopBody::parse(&long.to_bytes()), Err(BodyError::TooLong(0)));
+        assert_eq!(
+            DpopBody::parse(&long.to_bytes()),
+            Err(BodyError::TooLong(0))
+        );
     }
 }

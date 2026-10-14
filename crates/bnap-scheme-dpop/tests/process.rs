@@ -57,7 +57,9 @@ struct NoSigner;
 #[async_trait::async_trait]
 impl Signer for NoSigner {
     async fn schnorr(&self, _msg: &CoreMessage) -> Result<Signature, SignerError> {
-        Err(SignerError::Refused("attestation tests sign nothing".into()))
+        Err(SignerError::Refused(
+            "attestation tests sign nothing".into(),
+        ))
     }
 
     async fn verify_unblinded(
@@ -68,7 +70,9 @@ impl Signer for NoSigner {
         _secret: &[u8],
         _c: &Point,
     ) -> Result<Option<Point>, SignerError> {
-        Err(SignerError::Refused("attestation tests check no notes".into()))
+        Err(SignerError::Refused(
+            "attestation tests check no notes".into(),
+        ))
     }
 
     async fn blind_sign(
@@ -77,7 +81,9 @@ impl Signer for NoSigner {
         _outputs: &[BlindedOutput],
         _limit: &ChangeLimit,
     ) -> Result<Vec<BlindSignature>, SignerError> {
-        Err(SignerError::Refused("attestation tests sign nothing".into()))
+        Err(SignerError::Refused(
+            "attestation tests sign nothing".into(),
+        ))
     }
 }
 
@@ -112,7 +118,12 @@ impl CredentialScheme for StubNotes {
             return Err(bad("body"));
         }
         let key = Key(b[..32].try_into().unwrap());
-        let sig = Signature(part.witness.as_slice().try_into().map_err(|_| bad("witness"))?);
+        let sig = Signature(
+            part.witness
+                .as_slice()
+                .try_into()
+                .map_err(|_| bad("witness"))?,
+        );
         key.verify(&cx.digest.0, &sig)
             .map_err(|_| bad("the witness does not sign this Digest"))?;
         Ok(Verified {
@@ -213,7 +224,12 @@ impl Gate {
     }
 
     /// One attestation part through its scheme's `verify`.
-    fn verify_attest(&self, cred: &Credential, scheme: &str, now: u64) -> Result<Verified, SchemeError> {
+    fn verify_attest(
+        &self,
+        cred: &Credential,
+        scheme: &str,
+        now: u64,
+    ) -> Result<Verified, SchemeError> {
         let part = cred.attest.iter().find(|p| p.scheme == scheme).unwrap();
         let entry = self.offer.fields().attest_entry(scheme).unwrap();
         let ctx = self.context(cred);
@@ -377,7 +393,7 @@ fn ed_key(tag: &str) -> ProofKey {
 struct Cred {
     /// A note worth this many sat, spent by a key derived from the tag.
     notes: Option<(&'static str, u64)>,
-    /// A DPoP key, the access token it presents, and the proof's `jti`.
+    /// A `DPoP` key, the access token it presents, and the proof's `jti`.
     dpop: Option<(ProofKey, Option<&'static str>, &'static str)>,
     /// A bearer token.
     bearer: Option<&'static str>,
@@ -490,7 +506,11 @@ fn authority() -> Arc<StaticAuthority> {
 }
 
 fn waive_gate() -> Gate {
-    Gate::new(None, vec![AttestEntry::new(DPOP, Effect::Waive)], authority())
+    Gate::new(
+        None,
+        vec![AttestEntry::new(DPOP, Effect::Waive)],
+        authority(),
+    )
 }
 
 /// The 10.3 shape: notes at 2,100 sat with a 20% discount.
@@ -551,7 +571,10 @@ fn a_waive_admits_an_attestation_only_credential_and_its_replay_returns_the_outc
     // A copy still in flight is PENDING, not a second action.
     let other = Cred::dpop(&key("a"), None, "j2").build(&gate);
     let _p2 = new(gate.process(&other, NOW));
-    assert_eq!(gate.process(&other, NOW + 1).unwrap_err(), ErrorCode::Pending);
+    assert_eq!(
+        gate.process(&other, NOW + 1).unwrap_err(),
+        ErrorCode::Pending
+    );
 }
 
 #[test]
@@ -570,7 +593,12 @@ fn a_discount_takes_its_basis_points_and_a_failed_proof_takes_none() {
         ErrorCode::Underpaid
     );
     let full = Cred::dpop(&key("z"), None, "j3").with_notes("c", 2100);
-    assert_eq!(new(gate.process(&full.build(&gate), NOW)).admission().price(), 2100);
+    assert_eq!(
+        new(gate.process(&full.build(&gate), NOW))
+            .admission()
+            .price(),
+        2100
+    );
 }
 
 #[test]
@@ -595,7 +623,9 @@ fn waive_and_discount_apply_only_for_classes_s_a_and_o() {
 
         let gate = discount_gate();
         gate.dpop_class.set(Some(class));
-        let cred = Cred::dpop(&key("a"), None, "j1").with_notes("a", 1680).build(&gate);
+        let cred = Cred::dpop(&key("a"), None, "j1")
+            .with_notes("a", 1680)
+            .build(&gate);
         let r = gate.process(&cred, NOW);
         if discounted {
             assert_eq!(new(r).admission().price(), 1680, "{class}");
@@ -631,7 +661,11 @@ fn a_bearer_attestation_can_never_waive_or_discount() {
         bearer: Some("bearer-1"),
         iat: NOW,
     };
-    let gate = Gate::new(None, vec![AttestEntry::new(BEARER, Effect::Waive)], authority());
+    let gate = Gate::new(
+        None,
+        vec![AttestEntry::new(BEARER, Effect::Waive)],
+        authority(),
+    );
     let cred = token.build(&gate);
     assert!(gate.verify_attest(&cred, BEARER, NOW).is_ok());
     assert_eq!(gate.process(&cred, NOW).unwrap_err(), ErrorCode::Underpaid);
@@ -663,7 +697,11 @@ fn without_dpop_binding_a_token_is_class_none() {
     // authority registered ...
     let gate = waive_gate();
     let cred = Cred::dpop(&key("a"), Some("bearer-1"), "j1").build(&gate);
-    rejected_with(gate.verify_attest(&cred, DPOP, NOW), DPOP, codes::UNBOUND_TOKEN);
+    rejected_with(
+        gate.verify_attest(&cred, DPOP, NOW),
+        DPOP,
+        codes::UNBOUND_TOKEN,
+    );
     assert_eq!(gate.process(&cred, NOW).unwrap_err(), ErrorCode::Underpaid);
 
     // ... and a DPoP-bound token is never accepted without its proof.
@@ -680,7 +718,11 @@ fn without_dpop_binding_a_token_is_class_none() {
     }
     .with_notes("a", 21)
     .build(&gate);
-    rejected_with(gate.verify_attest(&bound, BEARER, NOW), BEARER, codes::DPOP_BOUND_TOKEN);
+    rejected_with(
+        gate.verify_attest(&bound, BEARER, NOW),
+        BEARER,
+        codes::DPOP_BOUND_TOKEN,
+    );
     assert_eq!(gate.process(&bound, NOW).unwrap_err(), ErrorCode::Policy);
 }
 
@@ -690,13 +732,25 @@ fn tokens_must_be_active_and_bound_to_the_proof_key() {
     let a = key("a");
     // Bound to another key.
     let cred = Cred::dpop(&a, Some("tok-b"), "j1").build(&gate);
-    rejected_with(gate.verify_attest(&cred, DPOP, NOW), DPOP, codes::KEY_MISMATCH);
+    rejected_with(
+        gate.verify_attest(&cred, DPOP, NOW),
+        DPOP,
+        codes::KEY_MISMATCH,
+    );
     // Not active.
     let cred = Cred::dpop(&a, Some("revoked"), "j2").build(&gate);
-    rejected_with(gate.verify_attest(&cred, DPOP, NOW), DPOP, codes::INVALID_TOKEN);
+    rejected_with(
+        gate.verify_attest(&cred, DPOP, NOW),
+        DPOP,
+        codes::INVALID_TOKEN,
+    );
     // No token, and a key nobody registered.
     let cred = Cred::dpop(&key("b"), None, "j3").build(&gate);
-    rejected_with(gate.verify_attest(&cred, DPOP, NOW), DPOP, codes::UNKNOWN_KEY);
+    rejected_with(
+        gate.verify_attest(&cred, DPOP, NOW),
+        DPOP,
+        codes::UNKNOWN_KEY,
+    );
     // The token key b holds works with b's proof.
     let cred = Cred::dpop(&key("b"), Some("tok-b"), "j4").build(&gate);
     assert!(gate.verify_attest(&cred, DPOP, NOW).is_ok());
@@ -708,19 +762,33 @@ fn tokens_must_be_active_and_bound_to_the_proof_key() {
     let ctx = gate.context(&cred);
     let for_a = proof_for(&a, &ctx, Some("tok-a"), "j5", NOW);
     set_dpop_body(&mut cred, client::body(&for_a, Some("tok-b")));
-    rejected_with(gate.verify_attest(&cred, DPOP, NOW), DPOP, codes::ATH_MISMATCH);
+    rejected_with(
+        gate.verify_attest(&cred, DPOP, NOW),
+        DPOP,
+        codes::ATH_MISMATCH,
+    );
     set_dpop_body(&mut cred, client::body(&for_a, None));
-    rejected_with(gate.verify_attest(&cred, DPOP, NOW), DPOP, codes::ATH_MISMATCH);
+    rejected_with(
+        gate.verify_attest(&cred, DPOP, NOW),
+        DPOP,
+        codes::ATH_MISMATCH,
+    );
     let no_ath = proof_for(&a, &ctx, None, "j5", NOW);
     set_dpop_body(&mut cred, client::body(&no_ath, Some("tok-a")));
-    rejected_with(gate.verify_attest(&cred, DPOP, NOW), DPOP, codes::ATH_MISMATCH);
+    rejected_with(
+        gate.verify_attest(&cred, DPOP, NOW),
+        DPOP,
+        codes::ATH_MISMATCH,
+    );
 }
 
 #[test]
 fn a_proof_whose_bnap_ctx_names_another_context_is_refused() {
     let gate = discount_gate();
     let a = key("a");
-    let cred = Cred::dpop(&a, None, "j1").with_notes("a", 1680).build(&gate);
+    let cred = Cred::dpop(&a, None, "j1")
+        .with_notes("a", 1680)
+        .build(&gate);
     assert!(gate.verify_attest(&cred, DPOP, NOW).is_ok());
 
     // Each of these is a Context the client did not choose for this
@@ -744,9 +812,16 @@ fn a_proof_whose_bnap_ctx_names_another_context_is_refused() {
     for wrong in [other_request, other_offer, without_pay, other_ext] {
         assert_ne!(wrong, gate.context(&cred));
         let mut c = cred.clone();
-        set_dpop_body(&mut c, client::body(&proof_for(&a, &wrong, None, "j1", NOW), None));
+        set_dpop_body(
+            &mut c,
+            client::body(&proof_for(&a, &wrong, None, "j1", NOW), None),
+        );
         sign_notes(&gate, &mut c);
-        rejected_with(gate.verify_attest(&c, DPOP, NOW), DPOP, codes::WRONG_CONTEXT);
+        rejected_with(
+            gate.verify_attest(&c, DPOP, NOW),
+            DPOP,
+            codes::WRONG_CONTEXT,
+        );
         // The discount is gone, so 1,680 sat no longer pays.
         assert_eq!(gate.process(&c, NOW).unwrap_err(), ErrorCode::Underpaid);
     }
@@ -762,10 +837,18 @@ fn a_proof_whose_bnap_ctx_names_another_context_is_refused() {
         access_token: None,
     });
     claims["bnap_ctx"] = hex::encode_upper(ctx.0).into();
-    let upper = client::sign_raw(&a, client::header(&a).to_string().as_bytes(), claims.to_string().as_bytes());
+    let upper = client::sign_raw(
+        &a,
+        client::header(&a).to_string().as_bytes(),
+        claims.to_string().as_bytes(),
+    );
     let mut c = cred.clone();
     set_dpop_body(&mut c, client::body(&upper, None));
-    rejected_with(gate.verify_attest(&c, DPOP, NOW), DPOP, codes::WRONG_CONTEXT);
+    rejected_with(
+        gate.verify_attest(&c, DPOP, NOW),
+        DPOP,
+        codes::WRONG_CONTEXT,
+    );
 
     // A plain RFC 9449 proof, made for no BNAP request, has no bnap_ctx.
     let mut plain = client::claims(&ProofClaims {
@@ -777,7 +860,11 @@ fn a_proof_whose_bnap_ctx_names_another_context_is_refused() {
         access_token: None,
     });
     plain.as_object_mut().unwrap().remove("bnap_ctx");
-    let plain = client::sign_raw(&a, client::header(&a).to_string().as_bytes(), plain.to_string().as_bytes());
+    let plain = client::sign_raw(
+        &a,
+        client::header(&a).to_string().as_bytes(),
+        plain.to_string().as_bytes(),
+    );
     set_dpop_body(&mut c, client::body(&plain, None));
     rejected_with(gate.verify_attest(&c, DPOP, NOW), DPOP, codes::BAD_PROOF);
 }
@@ -786,7 +873,9 @@ fn a_proof_whose_bnap_ctx_names_another_context_is_refused() {
 fn a_stripped_or_altered_attestation_breaks_the_digest() {
     let gate = discount_gate();
     let a = key("a");
-    let cred = Cred::dpop(&a, None, "j1").with_notes("a", 1680).build(&gate);
+    let cred = Cred::dpop(&a, None, "j1")
+        .with_notes("a", 1680)
+        .build(&gate);
     let ctx = gate.context(&cred);
     let digest = cred.digest(&ctx);
 
@@ -797,17 +886,26 @@ fn a_stripped_or_altered_attestation_breaks_the_digest() {
     stripped.attest.clear();
     assert_ne!(gate.context(&stripped), ctx);
     assert_ne!(stripped.digest(&gate.context(&stripped)), digest);
-    assert_eq!(gate.process(&stripped, NOW).unwrap_err(), ErrorCode::BadCredential);
+    assert_eq!(
+        gate.process(&stripped, NOW).unwrap_err(),
+        ErrorCode::BadCredential
+    );
 
     // Altered: another valid proof by the same key for the same Context
     // (another jti). The Context is the same, the Digest is not, and the
     // witness fails again.
     let mut swapped = cred.clone();
-    set_dpop_body(&mut swapped, client::body(&proof_for(&a, &ctx, None, "j2", NOW), None));
+    set_dpop_body(
+        &mut swapped,
+        client::body(&proof_for(&a, &ctx, None, "j2", NOW), None),
+    );
     assert_eq!(gate.context(&swapped), ctx);
     assert_ne!(swapped.digest(&ctx), digest);
     assert!(gate.verify_attest(&swapped, DPOP, NOW).is_ok());
-    assert_eq!(gate.process(&swapped, NOW).unwrap_err(), ErrorCode::BadCredential);
+    assert_eq!(
+        gate.process(&swapped, NOW).unwrap_err(),
+        ErrorCode::BadCredential
+    );
 
     // Altered bytes: one flipped bit in the proof also breaks the proof.
     let body = cred.attest[0].body.clone();
@@ -818,7 +916,10 @@ fn a_stripped_or_altered_attestation_breaks_the_digest() {
         set_dpop_body(&mut flipped, b);
         assert_ne!(flipped.digest(&ctx), digest);
         assert!(gate.verify_attest(&flipped, DPOP, NOW).is_err(), "byte {i}");
-        assert_eq!(gate.process(&flipped, NOW).unwrap_err(), ErrorCode::BadCredential);
+        assert_eq!(
+            gate.process(&flipped, NOW).unwrap_err(),
+            ErrorCode::BadCredential
+        );
     }
 
     // The original still goes through.
@@ -841,7 +942,11 @@ fn a_re_encoded_proof_cannot_take_the_credential_under_another_replay_key() {
     let twin = format!("{}.{}.{}", parts[0], parts[1], b64u(&high.to_bytes()));
     let mut c = cred.clone();
     set_dpop_body(&mut c, client::body(&twin, None));
-    rejected_with(gate.verify_attest(&c, DPOP, NOW), DPOP, codes::BAD_SIGNATURE);
+    rejected_with(
+        gate.verify_attest(&c, DPOP, NOW),
+        DPOP,
+        codes::BAD_SIGNATURE,
+    );
     assert_eq!(gate.process(&c, NOW).unwrap_err(), ErrorCode::Underpaid);
     // The original is unaffected and is the only one committed.
     let p = new(gate.process(&cred, NOW));
@@ -877,10 +982,15 @@ fn a_quota_counts_down_and_refuses_past_its_limit() {
     // The fourth has no room: without pay it is UNDERPAID, and consumes
     // nothing.
     let fourth = Cred::dpop(&a, None, jtis[3]).build(&gate);
-    assert_eq!(gate.process(&fourth, NOW).unwrap_err(), ErrorCode::Underpaid);
+    assert_eq!(
+        gate.process(&fourth, NOW).unwrap_err(),
+        ErrorCode::Underpaid
+    );
     assert_eq!(counter(NOW), 3);
     // With pay it is priced in full.
-    let paying = Cred::dpop(&a, None, jtis[4]).with_notes("a", 21).build(&gate);
+    let paying = Cred::dpop(&a, None, jtis[4])
+        .with_notes("a", 21)
+        .build(&gate);
     assert_eq!(new(gate.process(&paying, NOW)).admission().price(), 21);
     assert_eq!(counter(NOW), 3);
     // The quota counts per key: another registered key has its own.
@@ -911,12 +1021,21 @@ fn a_required_attestation_must_verify() {
         bearer: None,
         iat: NOW,
     };
-    assert_eq!(gate.process(&no_proof.build(&gate), NOW).unwrap_err(), ErrorCode::Policy);
+    assert_eq!(
+        gate.process(&no_proof.build(&gate), NOW).unwrap_err(),
+        ErrorCode::Policy
+    );
     let refused = Cred::dpop(&key("z"), None, "j1").with_notes("b", 21);
-    assert_eq!(gate.process(&refused.build(&gate), NOW).unwrap_err(), ErrorCode::Policy);
+    assert_eq!(
+        gate.process(&refused.build(&gate), NOW).unwrap_err(),
+        ErrorCode::Policy
+    );
     // Verified: admitted at the entry's price, which it does not change.
     let ok = Cred::dpop(&key("a"), None, "j2").with_notes("c", 21);
-    assert_eq!(new(gate.process(&ok.build(&gate), NOW)).admission().price(), 21);
+    assert_eq!(
+        new(gate.process(&ok.build(&gate), NOW)).admission().price(),
+        21
+    );
 }
 
 #[test]
@@ -953,8 +1072,12 @@ fn the_same_attestation_under_another_replay_key_follows_its_use_model() {
 
     // The notes stay single under any attestation: two proofs, one note.
     let gate = discount_gate();
-    let x = Cred::dpop(&a, None, "x1").with_notes("a", 1680).build(&gate);
-    let y = Cred::dpop(&a, None, "y1").with_notes("a", 1680).build(&gate);
+    let x = Cred::dpop(&a, None, "x1")
+        .with_notes("a", 1680)
+        .build(&gate);
+    let y = Cred::dpop(&a, None, "y1")
+        .with_notes("a", 1680)
+        .build(&gate);
     let _p = new(gate.process(&x, NOW));
     assert_eq!(gate.process(&y, NOW).unwrap_err(), ErrorCode::Spent);
 }
@@ -969,88 +1092,181 @@ fn proof_freshness_is_bounded_by_iat_and_optionally_by_max_age() {
     assert!(gate.verify_attest(&ok.build(&gate), DPOP, NOW).is_ok());
     let mut future = Cred::dpop(&a, None, "j2");
     future.iat = NOW + 61;
-    rejected_with(gate.verify_attest(&future.build(&gate), DPOP, NOW), DPOP, codes::STALE_PROOF);
+    rejected_with(
+        gate.verify_attest(&future.build(&gate), DPOP, NOW),
+        DPOP,
+        codes::STALE_PROOF,
+    );
     // By default an old proof still verifies: the offer bounds its age, and
     // a replay must verify again to find its outcome.
     let cred = Cred::dpop(&a, None, "j3").build(&gate);
     assert!(gate.verify_attest(&cred, DPOP, NOW + 86_400).is_ok());
     // A max_age refuses it once age and skew have passed.
-    let strict = Gate::new(None, vec![AttestEntry::new(DPOP, Effect::Waive)], authority());
+    let strict = Gate::new(
+        None,
+        vec![AttestEntry::new(DPOP, Effect::Waive)],
+        authority(),
+    );
     let strict = Gate {
         dpop: DpopScheme::new(authority()).with_max_age(300),
         ..strict
     };
     let cred = Cred::dpop(&a, None, "j4").build(&strict);
     assert!(strict.verify_attest(&cred, DPOP, NOW + 360).is_ok());
-    rejected_with(strict.verify_attest(&cred, DPOP, NOW + 361), DPOP, codes::STALE_PROOF);
+    rejected_with(
+        strict.verify_attest(&cred, DPOP, NOW + 361),
+        DPOP,
+        codes::STALE_PROOF,
+    );
+}
+
+type Json = serde_json::Map<String, serde_json::Value>;
+
+/// An edit to a proof's header or claims, and the scheme code it earns.
+type Case = (fn(&mut Json), &'static str);
+
+/// A valid attestation-only credential and its proof's parts, to sign
+/// edited copies of.
+struct Probe {
+    gate: Gate,
+    key: ProofKey,
+    cred: Credential,
+    header: serde_json::Value,
+    claims: serde_json::Value,
+}
+
+impl Probe {
+    fn new() -> Self {
+        let gate = waive_gate();
+        let key = key("a");
+        let cred = Cred::dpop(&key, None, "j1").build(&gate);
+        let ctx = gate.context(&cred);
+        let claims = client::claims(&ProofClaims {
+            context: &ctx,
+            htm: "POST",
+            htu: "https://api.example/v1/thing",
+            iat: NOW,
+            jti: "j1",
+            access_token: None,
+        });
+        let header = client::header(&key);
+        Self {
+            gate,
+            key,
+            cred,
+            header,
+            claims,
+        }
+    }
+
+    /// Verifies a proof signed over exactly these header and claim bytes.
+    fn verify(&self, header: &[u8], claims: &[u8]) -> Result<Verified, SchemeError> {
+        let mut c = self.cred.clone();
+        let proof = client::sign_raw(&self.key, header, claims);
+        set_dpop_body(&mut c, client::body(&proof, None));
+        self.gate.verify_attest(&c, DPOP, NOW)
+    }
+
+    fn edited(v: &serde_json::Value, edit: fn(&mut Json)) -> Vec<u8> {
+        let mut v = v.clone();
+        edit(v.as_object_mut().unwrap());
+        v.to_string().into_bytes()
+    }
+
+    fn header_bytes(&self) -> Vec<u8> {
+        self.header.to_string().into_bytes()
+    }
+
+    fn claim_bytes(&self) -> Vec<u8> {
+        self.claims.to_string().into_bytes()
+    }
 }
 
 #[test]
-fn malformed_proofs_are_refused() {
-    let gate = waive_gate();
-    let a = key("a");
-    let cred = Cred::dpop(&a, None, "j1").build(&gate);
-    let ctx = gate.context(&cred);
-    let good_claims = client::claims(&ProofClaims {
-        context: &ctx,
-        htm: "POST",
-        htu: "https://api.example/v1/thing",
-        iat: NOW,
-        jti: "j1",
-        access_token: None,
-    });
-    let good_header = client::header(&a);
-    let try_proof = |h: &[u8], p: &[u8], code: &str| {
-        let mut c = cred.clone();
-        set_dpop_body(&mut c, client::body(&client::sign_raw(&a, h, p), None));
-        rejected_with(gate.verify_attest(&c, DPOP, NOW), DPOP, code);
-    };
-    let edit = |v: &serde_json::Value, f: &dyn Fn(&mut serde_json::Map<String, serde_json::Value>)| {
-        let mut v = v.clone();
-        f(v.as_object_mut().unwrap());
-        v.to_string().into_bytes()
-    };
-    let gc = good_claims.to_string().into_bytes();
-    let gh = good_header.to_string().into_bytes();
-    // Header rules.
-    try_proof(&edit(&good_header, &|h| { h.insert("typ".into(), "JWT".into()); }), &gc, codes::BAD_PROOF);
-    try_proof(&edit(&good_header, &|h| { h.remove("typ"); }), &gc, codes::BAD_PROOF);
-    try_proof(&edit(&good_header, &|h| { h.insert("alg".into(), "none".into()); }), &gc, codes::UNSUPPORTED_ALG);
-    try_proof(&edit(&good_header, &|h| { h.insert("alg".into(), "HS256".into()); }), &gc, codes::UNSUPPORTED_ALG);
-    try_proof(&edit(&good_header, &|h| { h.insert("alg".into(), "EdDSA".into()); }), &gc, codes::BAD_KEY);
-    try_proof(&edit(&good_header, &|h| { h.insert("crit".into(), serde_json::json!(["exp"])); }), &gc, codes::BAD_PROOF);
-    try_proof(&edit(&good_header, &|h| { h.remove("jwk"); }), &gc, codes::BAD_PROOF);
-    try_proof(
-        &edit(&good_header, &|h| {
-            h["jwk"]["d"] = b64u(&[1; 32]).into();
-        }),
-        &gc,
-        codes::BAD_KEY,
-    );
+fn malformed_proof_headers_are_refused() {
+    let probe = Probe::new();
+    let claims = probe.claim_bytes();
+    assert!(probe.verify(&probe.header_bytes(), &claims).is_ok());
+    let cases: [Case; 8] = [
+        (
+            |h| _ = h.insert("typ".into(), "JWT".into()),
+            codes::BAD_PROOF,
+        ),
+        (|h| _ = h.remove("typ"), codes::BAD_PROOF),
+        (
+            |h| _ = h.insert("alg".into(), "none".into()),
+            codes::UNSUPPORTED_ALG,
+        ),
+        (
+            |h| _ = h.insert("alg".into(), "HS256".into()),
+            codes::UNSUPPORTED_ALG,
+        ),
+        // EdDSA with a P-256 key.
+        (
+            |h| _ = h.insert("alg".into(), "EdDSA".into()),
+            codes::BAD_KEY,
+        ),
+        (
+            |h| _ = h.insert("crit".into(), serde_json::json!(["exp"])),
+            codes::BAD_PROOF,
+        ),
+        (|h| _ = h.remove("jwk"), codes::BAD_PROOF),
+        // A private key in the jwk.
+        (|h| h["jwk"]["d"] = b64u(&[1; 32]).into(), codes::BAD_KEY),
+    ];
+    for (edit, code) in cases {
+        let r = probe.verify(&Probe::edited(&probe.header, edit), &claims);
+        rejected_with(r, DPOP, code);
+    }
     // Another key in the header than the one that signed: the signature
     // fails.
-    let b = key("b");
-    try_proof(&client::header(&b).to_string().into_bytes(), &gc, codes::BAD_SIGNATURE);
-    // Claim rules.
-    for claim in ["jti", "htm", "htu", "iat"] {
-        try_proof(&gh, &edit(&good_claims, &|c| { c.remove(claim); }), codes::BAD_PROOF);
+    let other = client::header(&key("b")).to_string().into_bytes();
+    rejected_with(probe.verify(&other, &claims), DPOP, codes::BAD_SIGNATURE);
+}
+
+#[test]
+fn malformed_proof_claims_are_refused() {
+    let probe = Probe::new();
+    let header = probe.header_bytes();
+    let cases: [Case; 8] = [
+        (|c| _ = c.remove("jti"), codes::BAD_PROOF),
+        (|c| _ = c.remove("htm"), codes::BAD_PROOF),
+        (|c| _ = c.remove("htu"), codes::BAD_PROOF),
+        (|c| _ = c.remove("iat"), codes::BAD_PROOF),
+        (
+            |c| _ = c.insert("iat".into(), "1791700000".into()),
+            codes::BAD_PROOF,
+        ),
+        (
+            |c| _ = c.insert("iat".into(), serde_json::json!(1.5)),
+            codes::BAD_PROOF,
+        ),
+        (
+            |c| _ = c.insert("htm".into(), "PO ST".into()),
+            codes::BAD_PROOF,
+        ),
+        (
+            |c| _ = c.insert("jti".into(), "x".repeat(257).into()),
+            codes::BAD_PROOF,
+        ),
+    ];
+    for (edit, code) in cases {
+        let r = probe.verify(&header, &Probe::edited(&probe.claims, edit));
+        rejected_with(r, DPOP, code);
     }
-    try_proof(&gh, &edit(&good_claims, &|c| { c.insert("iat".into(), "1791700000".into()); }), codes::BAD_PROOF);
-    try_proof(&gh, &edit(&good_claims, &|c| { c.insert("iat".into(), serde_json::json!(1.5)); }), codes::BAD_PROOF);
-    try_proof(&gh, &edit(&good_claims, &|c| { c.insert("htm".into(), "PO ST".into()); }), codes::BAD_PROOF);
-    try_proof(&gh, &edit(&good_claims, &|c| { c.insert("jti".into(), "x".repeat(257).into()); }), codes::BAD_PROOF);
     // A claim named twice: the JSON is not I-JSON, whichever copy a parser
     // would keep.
+    let ctx = probe.gate.context(&probe.cred);
     let dup = format!(
         r#"{{"jti":"j1","htm":"POST","htu":"u","iat":{NOW},"bnap_ctx":"{}","bnap_ctx":"{}"}}"#,
         hex::encode([0u8; 32]),
         hex::encode(ctx.0)
     );
-    try_proof(&gh, dup.as_bytes(), codes::BAD_PROOF);
-    // The good one, for contrast.
-    let mut c = cred.clone();
-    set_dpop_body(&mut c, client::body(&client::sign_raw(&a, &gh, &gc), None));
-    assert!(gate.verify_attest(&c, DPOP, NOW).is_ok());
+    rejected_with(
+        probe.verify(&header, dup.as_bytes()),
+        DPOP,
+        codes::BAD_PROOF,
+    );
 }
 
 #[test]
@@ -1090,14 +1306,21 @@ fn only_attest_parts_without_a_witness_verify() {
 
 #[test]
 fn an_unreachable_authority_fails_closed() {
-    let gate = Gate::new(None, vec![AttestEntry::new(DPOP, Effect::Waive)], Arc::new(Down));
+    let gate = Gate::new(
+        None,
+        vec![AttestEntry::new(DPOP, Effect::Waive)],
+        Arc::new(Down),
+    );
     for token in [None, Some("tok-a")] {
         let cred = Cred::dpop(&key("a"), token, "j1").build(&gate);
         assert!(matches!(
             gate.verify_attest(&cred, DPOP, NOW),
             Err(SchemeError::Unavailable(_))
         ));
-        assert_eq!(gate.process(&cred, NOW).unwrap_err(), ErrorCode::Unavailable);
+        assert_eq!(
+            gate.process(&cred, NOW).unwrap_err(),
+            ErrorCode::Unavailable
+        );
     }
     // A proof that fails its own checks never reaches the authority.
     let mut cred = Cred::dpop(&key("a"), None, "j2").build(&gate);

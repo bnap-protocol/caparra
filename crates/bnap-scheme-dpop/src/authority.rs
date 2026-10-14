@@ -1,13 +1,13 @@
 //! The operator's word on tokens and keys.
 //!
-//! A DPoP proof shows that the client holds a key; it says nothing about
+//! A `DPoP` proof shows that the client holds a key; it says nothing about
 //! whether the operator should honour that key. Anyone can make a fresh key
 //! and sign a perfect proof with it, so a waive, discount or quota granted
 //! to any key would be granted to everyone. The [`Authority`] is where the
 //! operator decides: an access token its authorization server issued (RFC
 //! 9068 JWT validation or RFC 7662 introspection, which report the token's
-//! `cnf.jkt`, RFC 9449 section 6), or a DPoP key it registered on its own
-//! (the "API keys with DPoP" of the overview's plug catalogue).
+//! `cnf.jkt`, RFC 9449 section 6), or a `DPoP` key it registered on its own
+//! (the "API keys with `DPoP`" of the overview's plug catalogue).
 //!
 //! An authority is operator-trusted and may be online. It is never asked
 //! before the proof's cheap checks and its signature passed.
@@ -19,14 +19,14 @@ use crate::jose::Thumbprint;
 /// What an authority knows about an active access token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TokenInfo {
-    /// The token's `cnf.jkt`: the thumbprint of the DPoP key it is bound
+    /// The token's `cnf.jkt`: the thumbprint of the `DPoP` key it is bound
     /// to, or `None` for a token that is not sender-constrained (a bearer
     /// token).
     pub jkt: Option<Thumbprint>,
 }
 
 impl TokenInfo {
-    /// A token bound to the DPoP key `jkt`.
+    /// A token bound to the `DPoP` key `jkt`.
     #[must_use]
     pub fn bound_to(jkt: Thumbprint) -> Self {
         Self { jkt: Some(jkt) }
@@ -57,11 +57,11 @@ pub struct AuthorityError(pub String);
 /// The operator's check of access tokens and registered keys.
 #[async_trait::async_trait]
 pub trait Authority: Send + Sync {
-    /// Checks an access token at `now`: is it active, and which DPoP key
+    /// Checks an access token at `now`: is it active, and which `DPoP` key
     /// (`cnf.jkt`) is it bound to?
     async fn check_token(&self, token: &str, now: u64) -> Result<TokenStatus, AuthorityError>;
 
-    /// Whether a DPoP key presented without an access token is one the
+    /// Whether a `DPoP` key presented without an access token is one the
     /// operator registered. The default registers none, so a proof alone
     /// never verifies.
     async fn check_key(&self, jkt: &Thumbprint, now: u64) -> Result<bool, AuthorityError> {
@@ -92,7 +92,7 @@ impl StaticAuthority {
         self
     }
 
-    /// Registers a DPoP key that is accepted without a token.
+    /// Registers a `DPoP` key that is accepted without a token.
     #[must_use]
     pub fn with_key(mut self, jkt: Thumbprint) -> Self {
         self.keys.insert(jkt);

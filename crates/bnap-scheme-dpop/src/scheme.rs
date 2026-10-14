@@ -14,10 +14,10 @@ use crate::body::{BearerBody, DpopBody};
 use crate::codes;
 use crate::proof::{self, ProofCheck};
 
-/// The scheme ID of OAuth access tokens and API keys with DPoP.
+/// The scheme ID of OAuth access tokens and API keys with `DPoP`.
 pub const DPOP: &str = "httpauth:DPoP";
 
-/// The scheme ID of the same tokens without DPoP.
+/// The scheme ID of the same tokens without `DPoP`.
 pub const BEARER: &str = "httpauth:Bearer";
 
 fn reject(scheme: &str, code: &str, detail: impl Into<String>) -> SchemeError {
@@ -61,7 +61,7 @@ fn unavailable(e: &crate::authority::AuthorityError) -> SchemeError {
     SchemeError::Unavailable(e.to_string())
 }
 
-/// `httpauth:DPoP`: an OAuth access token, or a registered key, with a DPoP
+/// `httpauth:DPoP`: an OAuth access token, or a registered key, with a `DPoP`
 /// proof (RFC 9449) that carries the Context in its `bnap_ctx` claim.
 ///
 /// `verify` checks the proof ([`proof::check`]), then asks the
@@ -123,8 +123,8 @@ impl CredentialScheme for DpopScheme {
 
     async fn verify(&self, part: &SchemePart, cx: &VerifyCtx<'_>) -> Result<Verified, SchemeError> {
         attest_part(DPOP, part, cx)?;
-        let body =
-            DpopBody::parse(&part.body).map_err(|e| reject(DPOP, codes::BAD_BODY, e.to_string()))?;
+        let body = DpopBody::parse(&part.body)
+            .map_err(|e| reject(DPOP, codes::BAD_BODY, e.to_string()))?;
         let token = body.access_token.as_deref();
         let checked = proof::check(
             body.proof.as_bytes(),
@@ -145,7 +145,11 @@ impl CredentialScheme for DpopScheme {
                 .map_err(|e| unavailable(&e))?
             {
                 TokenStatus::Inactive => {
-                    return Err(reject(DPOP, codes::INVALID_TOKEN, "the token is not active"));
+                    return Err(reject(
+                        DPOP,
+                        codes::INVALID_TOKEN,
+                        "the token is not active",
+                    ));
                 }
                 TokenStatus::Active(info) => match info.jkt {
                     None => {
@@ -190,12 +194,12 @@ impl CredentialScheme for DpopScheme {
 }
 
 /// `httpauth:Bearer`: the same OAuth access tokens and API keys without
-/// DPoP. Class none in the registry, so the socket never lets it waive,
+/// `DPoP`. Class none in the registry, so the socket never lets it waive,
 /// discount or carry a quota (draft-00 section 7, enforced in bnap-core);
 /// it can only satisfy a `required` attestation.
 ///
 /// `verify` asks the [`Authority`] whether the token is active and refuses
-/// a token bound to a DPoP key (`DPOP_BOUND_TOKEN`): sent without its
+/// a token bound to a `DPoP` key (`DPOP_BOUND_TOKEN`): sent without its
 /// proof, such a token is a downgrade (RFC 9449 section 7.1). It returns
 /// one local ID, SHA-256 of the token, and no quota identity, as the
 /// registry entry says.

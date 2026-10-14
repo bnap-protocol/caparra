@@ -1,6 +1,6 @@
-//! Checking a DPoP proof (RFC 9449 section 4.3) against a BNAP request.
+//! Checking a `DPoP` proof (RFC 9449 section 4.3) against a BNAP request.
 //!
-//! The proof is a JWT the client signs with its DPoP key. For BNAP it
+//! The proof is a JWT the client signs with its `DPoP` key. For BNAP it
 //! carries one more claim, [`BNAP_CTX_CLAIM`] (`bnap_ctx`): the lowercase hex
 //! of the credential's Context (draft-00 5.2). That claim is what makes the
 //! attestation class A: the proof embeds everything the client chose (the
@@ -19,7 +19,7 @@
 //! | 6 | The signature verifies under the `jwk` header |
 //! | 7 | The `jwk` has no private key material |
 //! | 8, 9 | Not compared with the request: see below |
-//! | 10 | Not used: BNAP has no `DPoP-Nonce`; the OfferID inside the Context plays its part |
+//! | 10 | Not used: BNAP has no `DPoP-Nonce`; the `OfferID` inside the Context plays its part |
 //! | 11 | `iat` is not in the future (60 s of skew), and not older than `max_age` when one is set |
 //! | 12 | `ath` is the hash of the access token presented with it, and absent without one |
 //!
@@ -47,7 +47,7 @@ use crate::jose::{self, Alg, JoseError, PublicJwk, Thumbprint};
 /// The JWT claim that carries the Context, as lowercase hex.
 pub const BNAP_CTX_CLAIM: &str = "bnap_ctx";
 
-/// The `typ` of a DPoP proof (RFC 9449 4.2).
+/// The `typ` of a `DPoP` proof (RFC 9449 4.2).
 pub const DPOP_TYP: &str = "dpop+jwt";
 
 /// The longest `jti` accepted, in bytes.
@@ -90,7 +90,7 @@ pub struct CheckedProof {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ProofError {
-    /// Not a well-formed DPoP proof.
+    /// Not a well-formed `DPoP` proof.
     #[error("malformed proof: {0}")]
     Malformed(String),
     /// An algorithm this scheme does not verify.
@@ -141,7 +141,7 @@ fn string<'a>(o: &'a Map<String, Value>, name: &str) -> Result<&'a str, ProofErr
     }
 }
 
-/// Checks a DPoP proof against the request's Context, the clock and the
+/// Checks a `DPoP` proof against the request's Context, the clock and the
 /// access token presented with it. Cheap checks run first: the signature is
 /// checked only once the claims name this Context.
 pub fn check(proof: &[u8], chk: &ProofCheck<'_>) -> Result<CheckedProof, ProofError> {
@@ -151,7 +151,9 @@ pub fn check(proof: &[u8], chk: &ProofCheck<'_>) -> Result<CheckedProof, ProofEr
         return Err(malformed("typ is not dpop+jwt"));
     }
     if h.contains_key("crit") {
-        return Err(malformed("crit names extensions this scheme does not understand"));
+        return Err(malformed(
+            "crit names extensions this scheme does not understand",
+        ));
     }
     let alg = Alg::from_jws(string(h, "alg")?).ok_or(ProofError::UnsupportedAlg)?;
     let jwk = PublicJwk::from_value(h.get("jwk").ok_or_else(|| malformed("jwk is missing"))?)

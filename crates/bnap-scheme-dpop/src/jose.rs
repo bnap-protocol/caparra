@@ -1,9 +1,9 @@
-//! The JOSE pieces a DPoP proof needs, in pure Rust: compact JWS (RFC
+//! The JOSE pieces a `DPoP` proof needs, in pure Rust: compact JWS (RFC
 //! 7515), public JWKs (RFC 7517, RFC 8037), JWK SHA-256 thumbprints (RFC
 //! 7638), ES256 through `p256` and `EdDSA` through `ed25519-dalek`. Nothing
 //! here links OpenSSL.
 //!
-//! Every decoder is strict, because a DPoP body MUST be canonical (draft-00
+//! Every decoder is strict, because a `DPoP` body MUST be canonical (draft-00
 //! 5.1, "Canonical bodies"): base64url without padding and with zero
 //! trailing bits, JSON read as I-JSON (a member named twice at any depth is
 //! refused, [`bnap_core::manifest::parse_strict`]), ES256 signatures with a
@@ -18,7 +18,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bnap_core::hash::sha256;
 use serde_json::{Map, Value};
 
-/// A JWK SHA-256 thumbprint (RFC 7638): the identity of a DPoP key, the
+/// A JWK SHA-256 thumbprint (RFC 7638): the identity of a `DPoP` key, the
 /// `cnf.jkt` of a token bound to it, and the scheme's local ID.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Thumbprint(pub [u8; 32]);
@@ -257,8 +257,8 @@ impl PublicJwk {
             Alg::Es256 => {
                 use p256::ecdsa::signature::Verifier as _;
                 let vk = self.p256()?;
-                let sig = p256::ecdsa::Signature::from_slice(sig)
-                    .map_err(|_| JoseError::BadSignature)?;
+                let sig =
+                    p256::ecdsa::Signature::from_slice(sig).map_err(|_| JoseError::BadSignature)?;
                 if sig.normalize_s() != sig {
                     return Err(JoseError::NonCanonicalSignature);
                 }
@@ -294,7 +294,8 @@ pub struct Jws {
 /// and a payload that are JSON objects naming no member twice.
 pub fn parse_compact(token: &[u8]) -> Result<Jws, JoseError> {
     let mut parts = token.split(|b| *b == b'.');
-    let (Some(h), Some(p), Some(s), None) = (parts.next(), parts.next(), parts.next(), parts.next())
+    let (Some(h), Some(p), Some(s), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
     else {
         return Err(JoseError::Encoding("not three dot-separated parts"));
     };
@@ -336,7 +337,7 @@ mod tests {
         );
     }
 
-    /// The DPoP proof of RFC 9449 figure 13, with its access token.
+    /// The `DPoP` proof of RFC 9449 figure 13, with its access token.
     const RFC9449_PROOF: &str = concat!(
         "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6Ik",
         "VDIiwieCI6Imw4dEZyaHgtMzR0VjNoUklDUkRZOXpDa0RscEJoRjQyVVFVZldWQVdCR",
@@ -414,7 +415,10 @@ mod tests {
             b64u(&[2; 32])
         ))
         .unwrap();
-        assert!(matches!(PublicJwk::from_value(&off), Err(JoseError::Key(_))));
+        assert!(matches!(
+            PublicJwk::from_value(&off),
+            Err(JoseError::Key(_))
+        ));
     }
 
     #[test]

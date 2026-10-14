@@ -1,8 +1,8 @@
-//! The client side: making a DPoP proof that carries the Context, and the
+//! The client side: making a `DPoP` proof that carries the Context, and the
 //! attest body around it.
 //!
 //! A client computes the Context of the credential it is about to send
-//! (draft-00 5.2: the OfferID, the request's action scope, its chosen value
+//! (draft-00 5.2: the `OfferID`, the request's action scope, its chosen value
 //! and attestation schemes, its extensions), signs a proof whose
 //! `bnap_ctx` claim is that Context in lowercase hex, and puts the proof,
 //! with its access token if it has one, in the `httpauth:DPoP` attest body.
@@ -16,7 +16,7 @@ use crate::body::DpopBody;
 use crate::jose::{Alg, PublicJwk, Thumbprint, b64u};
 use crate::proof::{BNAP_CTX_CLAIM, DPOP_TYP};
 
-/// A DPoP signing key.
+/// A `DPoP` signing key.
 #[derive(Clone)]
 pub enum ProofKey {
     /// A P-256 key, signing ES256.
@@ -157,7 +157,7 @@ pub fn sign_raw(key: &ProofKey, header: &[u8], payload: &[u8]) -> String {
     format!("{input}.{}", b64u(&sig))
 }
 
-/// A DPoP proof for `c`, signed with `key`.
+/// A `DPoP` proof for `c`, signed with `key`.
 #[must_use]
 pub fn sign_proof(key: &ProofKey, c: &ProofClaims<'_>) -> String {
     sign_raw(
