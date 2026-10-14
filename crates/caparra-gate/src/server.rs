@@ -162,13 +162,10 @@ pub async fn start(
     })
 }
 
+type AddAddr = fn(http::Request<axum::body::Body>) -> http::Request<axum::body::Body>;
+
 /// Puts the connection's peer address in a [`ClientAddr`] extension.
-fn with_addr<S>(
-    inner: S,
-) -> tower::util::MapRequest<
-    S,
-    fn(http::Request<axum::body::Body>) -> http::Request<axum::body::Body>,
-> {
+fn with_addr<S>(inner: S) -> tower::util::MapRequest<S, AddAddr> {
     fn add(mut req: http::Request<axum::body::Body>) -> http::Request<axum::body::Body> {
         if let Some(ConnectInfo(a)) = req.extensions().get::<ConnectInfo<SocketAddr>>().copied() {
             req.extensions_mut().insert(ClientAddr(a.ip()));

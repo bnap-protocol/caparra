@@ -2,6 +2,13 @@
 //! L402 and MPP over the fake rail, notes funded and spent, DPoP waive and
 //! discount, metering, replays, SPENT, size caps, scrubbing, the manifest.
 
+#![allow(
+    clippy::many_single_char_names,
+    clippy::doc_markdown,
+    clippy::too_many_arguments,
+    clippy::too_many_lines
+)]
+
 mod common;
 
 use bnap_core::credential::{OfferRef, SchemePart};
@@ -67,7 +74,7 @@ async fn a_402_carries_offers_natives_and_required() {
     assert_eq!(f.pay[0].amount, 2100);
     assert_eq!(f.pay[0].rate, Some(500));
     assert_eq!(f.attest[0].scheme, "httpauth:DPoP");
-    assert!(f.native.is_empty());
+    assert_eq!(f.native, Vec::new());
     let exact = a.exact_offer();
     let schemes: Vec<_> = exact
         .fields()
@@ -200,7 +207,7 @@ async fn pay_with_mpp_inside_a_bnap_credential() {
     .await;
     assert_eq!(other.status, 402);
     assert_eq!(other.error(), Some(ErrorCode::WrongScope));
-    assert!(!other.offers().is_empty());
+    assert_ne!(other.offers().len(), 0);
 }
 
 #[tokio::test]

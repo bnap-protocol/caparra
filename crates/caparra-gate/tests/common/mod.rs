@@ -305,6 +305,13 @@ impl World {
     }
 
     pub async fn with_extra(extra: &str) -> Self {
+        let _ = tracing_subscriber::fmt()
+            .with_test_writer()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+            )
+            .try_init();
         let dir = tempfile::tempdir().unwrap();
         let seen = Arc::new(Seen::default());
         let up = upstream(seen.clone()).await;

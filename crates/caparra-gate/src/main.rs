@@ -120,7 +120,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             runtime()?.block_on(async {
                 let running = caparra_gate::server::start(&cfg, system_clock(), None).await?;
                 tokio::select! {
-                    _ = shutdown_signal() => {
+                    () = shutdown_signal() => {
                         tracing::info!("stopping");
                         running.stop().await;
                     }

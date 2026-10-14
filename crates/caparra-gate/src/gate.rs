@@ -57,6 +57,12 @@ pub const SETTLE_MARGIN: u64 = 5;
 /// exact-scope offers with natives, draft-00 5.1).
 pub const MAX_CACHED_OFFERS: usize = 50_000;
 
+/// The lifetime of an exact-scope offer that carries `bnap:notes`.
+#[must_use]
+pub fn notes_exact_lifetime(exact: u64, pending_timeout: u64) -> u64 {
+    exact + pending_timeout + CLOCK_SKEW
+}
+
 /// A route, resolved, with its route scope.
 #[derive(Debug, Clone)]
 pub struct GateRoute {
@@ -183,7 +189,7 @@ impl Gate {
             offer_key: s.manifest.offer_key.clone(),
             receipt_key: s.manifest.receipt_key.clone(),
             manifest: Bytes::from(s.manifest.bytes.clone()),
-            limits: s.manifest.limits.clone(),
+            limits: s.manifest.limits,
             clock,
             exact_lifetime: s.exact_lifetime,
             route_lifetime: s.route_lifetime,
@@ -412,6 +418,11 @@ impl Inner {
                 );
             }
         };
+        let fund = http_req
+            .headers
+            .get(BNAP_FUND)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
         // The application gets the request without the BNAP fields.
         let mut forward = HttpReq::from_parts(parts, body);
         for f in fields::REQUEST_FIELDS {
@@ -419,18 +430,13 @@ impl Inner {
         }
         let result = match extracted {
             None => {
-                let fund = forward
-                    .headers()
-                    .get(BNAP_FUND)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_owned);
                 return Admit::Answer(
                     self.challenge(ri, action_scope, addr, fund.as_deref(), now)
                         .await,
                 );
             }
             Some(RawCredential::Bnap(bytes)) => {
-                self.bnap_input(ri, &bytes, action_scope, addr, now).await
+                self.bnap_input(ri, &bytes, action_scope, addr, now)
             }
             Some(RawCredential::Native { scheme, bytes }) => {
                 // The native credential travelled in Authorization; it is
@@ -596,10 +602,10 @@ impl Inner {
         }
         let mut offers = Vec::new();
         let mut natives = Vec::new();
-        if plan.section.scope == bnap_core::manifest::RouteScopeMode::Route {
-            if let Some(o) = self.route_offer(ri, now).await? {
-                offers.push(o);
-            }
+        if plan.section.scope == bnap_core::manifest::RouteScopeMode::Route
+            && let Some(o) = self.route_offer(ri, now).await?
+        {
+            offers.push(o);
         }
         let may_mint = |limiter: &Limiter<IpAddr>| match addr {
             Some(a) => limiter.hit(&a, now).is_ok(),
@@ -757,8 +763,16 @@ impl Inner {
         now: u64,
     ) -> Result<Option<Offer>, ErrorObject> {
         let plan = &self.routes[ri].plan;
+        let has_notes = entries
+            .iter()
+            .any(|e| e.scheme == bnap_scheme_notes::SCHEME_ID);
         let lifetime = if route_scope {
             self.route_lifetime
+        } else if has_notes {
+            // A notes entry admits nothing after expires - pending_timeout
+            // - 60 s (notes 5.4): give the client the same usable window
+            // as any exact offer.
+            notes_exact_lifetime(self.exact_lifetime, self.limits.pending_timeout)
         } else {
             self.exact_lifetime
         };
@@ -905,7 +919,7 @@ impl Inner {
     }
 
     #[allow(clippy::type_complexity)]
-    async fn bnap_input(
+    fn bnap_input(
         &self,
         ri: usize,
         bytes: &[u8],
@@ -1259,23 +1273,19 @@ impl Inner {
     /// The answer to a replay: the kept answer if there is one, otherwise
     /// the receipt alone (6.4).
     fn replay_answer(&self, r: &Recorded, receipt: HeaderMap) -> Answer {
-        let mut resp = match r.record().response.as_deref().and_then(decode_kept) {
-            Some(k) => {
-                let mut resp = Response::new(k.body);
-                *resp.status_mut() = k.status;
-                if let Some(ct) = k.content_type {
-                    resp.headers_mut().insert(CONTENT_TYPE, ct);
-                }
-                resp
+        let mut resp = if let Some(k) = r.record().response.as_deref().and_then(decode_kept) {
+            let mut resp = Response::new(k.body);
+            *resp.status_mut() = k.status;
+            if let Some(ct) = k.content_type {
+                resp.headers_mut().insert(CONTENT_TYPE, ct);
             }
-            None => {
-                let body =
-                    serde_json::json!({ "bnap": { "replayed": true, "response_kept": false } });
-                let mut resp = Response::new(Bytes::from(body.to_string()));
-                resp.headers_mut()
-                    .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-                resp
-            }
+            resp
+        } else {
+            let body = serde_json::json!({ "bnap": { "replayed": true, "response_kept": false } });
+            let mut resp = Response::new(Bytes::from(body.to_string()));
+            resp.headers_mut()
+                .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+            resp
         };
         resp.headers_mut().extend(receipt);
         resp.headers_mut()

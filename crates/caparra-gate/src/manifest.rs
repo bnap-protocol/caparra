@@ -89,10 +89,9 @@ pub fn check(
         ));
     }
     let limits = Limits::from_manifest(&m.limits).map_err(|e| bad(e.to_string()))?;
-    let longest = cfg
-        .gate
-        .offer_lifetime_s
-        .max(cfg.gate.route_offer_lifetime_s);
+    let longest =
+        crate::gate::notes_exact_lifetime(cfg.gate.offer_lifetime_s, limits.pending_timeout)
+            .max(cfg.gate.route_offer_lifetime_s);
     limits
         .check_offer_lifetime(longest)
         .map_err(|e| bad(e.to_string()))?;
