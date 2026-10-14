@@ -52,6 +52,9 @@ exceptions = [
   # signer uses for BDHKE and DLEQ. BlueOak-1.0.0 is an OSI-approved
   # permissive license (use, change and distribute, keep the notice).
   { crate = "minicbor", allow = ["BlueOak-1.0.0"] },
+  # fedimint-tonic-lnd, the LND gRPC client of bnap-rail-lnd (pinned in the
+  # workspace dependencies), is MITNFA as well: MIT plus the same clause.
+  { crate = "fedimint-tonic-lnd", allow = ["MITNFA"] },
 ]
 
 [licenses.private]
