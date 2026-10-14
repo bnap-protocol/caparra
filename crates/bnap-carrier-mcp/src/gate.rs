@@ -146,7 +146,11 @@ impl OfferCache {
 pub struct Gate {
     cfg: GateConfig,
     offers: Mutex<OfferCache>,
+    denied_tasks: Mutex<std::collections::VecDeque<String>>,
 }
+
+/// How many task IDs of priced calls the gate remembers to deny.
+const DENIED_TASKS: usize = 4096;
 
 impl std::fmt::Debug for Gate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -264,6 +268,7 @@ impl GateBuilder {
         Ok(Gate {
             cfg,
             offers: Mutex::new(OfferCache::default()),
+            denied_tasks: Mutex::new(std::collections::VecDeque::new()),
         })
     }
 }
@@ -345,6 +350,30 @@ impl Gate {
         action_scope(&self.cfg.server_uri, tool, arguments)
     }
 
+    /// Records the task a priced tool answered with: the call settled
+    /// FAILED, so the task is cancelled and its ID never served (`tasks/*`
+    /// are not priced).
+    pub fn deny_task(&self, task_id: &str) {
+        let mut d = self
+            .denied_tasks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if d.len() >= DENIED_TASKS {
+            d.pop_front();
+        }
+        d.push_back(task_id.to_owned());
+    }
+
+    /// True for the task of a priced call ([`Self::deny_task`]).
+    #[must_use]
+    pub fn task_denied(&self, task_id: &str) -> bool {
+        self.denied_tasks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .any(|t| t == task_id)
+    }
+
     fn cached(&self, id: &OfferId) -> Option<Offer> {
         self.offers
             .lock()
@@ -410,8 +439,8 @@ impl Gate {
         // The tool gets the arguments as the scope hashed them: re-read
         // from their JCS bytes, so `2.0` reaches it as `2`.
         let mut params = params;
-        if let Some(a) = params.arguments.as_ref() {
-            let canonical = arguments_jcs(Some(a))
+        {
+            let canonical = arguments_jcs(params.arguments.as_ref())
                 .ok()
                 .and_then(|b| serde_json::from_slice::<Map<String, Value>>(&b).ok());
             let Some(canonical) = canonical else {

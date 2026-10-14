@@ -193,6 +193,13 @@ let app = router("/mcp", Arc::new(gate), rmcp_config_with_allowed_hosts,
   `requestState` reach the tool but are not in the scope, so a priced call
   that carries either is MALFORMED (-32602) before anything else (repair
   round 1). Candidate for the MCP carrier note: bind them, or forbid them.
+- **A priced tool that answers as a task** (rmcp `CreateTaskResult`,
+  SEP-2663) settles FAILED; `PricedTools` cancels the task through the
+  inner handler's `cancel_task` and remembers its ID (`Gate::deny_task`,
+  the last 4096), and `tasks/get` and `tasks/update` for that ID answer
+  -32602, so a result is never served through the unpriced task methods
+  (repair round 2).
+- **Absent arguments reach the tool as `{}`**, as the scope reads them.
 - **After the commit, no fresh offer.** A failure to settle or sign once
   the credential is committed answers UNAVAILABLE (-32603, no offer), so a
   client is never told to pay again for a call it already paid.
@@ -213,7 +220,7 @@ let app = router("/mcp", Arc::new(gate), rmcp_config_with_allowed_hosts,
 
 ## Tests
 
-`cargo test -p bnap-carrier-mcp`: 32 tests.
+`cargo test -p bnap-carrier-mcp`: 33 tests.
 
 | Where | What |
 | --- | --- |
@@ -226,7 +233,7 @@ let app = router("/mcp", Arc::new(gate), rmcp_config_with_allowed_hosts,
 
 See "Checker" below for the final verdict.
 
-- `cargo test -p bnap-carrier-mcp --locked`: 32 passed.
+- `cargo test -p bnap-carrier-mcp --locked`: 33 passed.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: clean
   (protoc installed in the sandbox for `bnap-rail-lnd`).
 - `cargo fmt --all --check`: clean.
@@ -266,6 +273,13 @@ See "Checker" below for the final verdict.
 | The tool saw `2.0` where the payer sent `2` (same scope) | LOW | The tool gets the arguments re-read from the JCS bytes | `the_tool_sees_the_canonical_arguments` |
 | The action's timeout started at the tool, not at the commit's clock | LOW | The limit is `pending_timeout` minus the time since the commit's clock | none (needs a slow verifier) |
 | A settle failure after the tool ran could answer -32043 with a fresh offer | LOW | Post-commit failures answer UNAVAILABLE without an offer | none (the shipped schemes' settle does not fail) |
+
+## Repair round 2
+
+| Finding | Severity | Fix | Test (failed before the fix) |
+| --- | --- | --- | --- |
+| A priced tool answering as a Task kept running after FAILED, its result reachable through the forwarded `tasks/get` | MEDIUM | Cancel the task, deny its ID on `tasks/get` and `tasks/update` | `a_priced_tool_that_answers_as_a_task_is_cancelled_and_its_task_denied` |
+| Absent arguments and `{}` share a scope but reached the tool as `None` and `Some({})` | LOW | The tool always gets the canonical object | covered by `the_tool_sees_the_canonical_arguments` path |
 
 ## Checker
 

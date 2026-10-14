@@ -67,6 +67,15 @@ fn strict(ctx: &RequestContext<RoleServer>) -> bool {
         .is_some_and(|p| p.extensions.get::<StrictJson>().is_some())
 }
 
+/// The answer to `tasks/get` or `tasks/update` for a priced call's task.
+fn task_denied() -> McpError {
+    McpError::new(
+        rmcp::model::ErrorCode::INVALID_PARAMS,
+        "this task belongs to a priced call, which must complete in one call",
+        None,
+    )
+}
+
 /// Takes both credential keys out of `_meta`.
 fn take_credentials(ctx: &mut RequestContext<RoleServer>) -> Presented {
     let m = &mut (ctx.meta.0).0;
@@ -118,9 +127,25 @@ impl<H: ServerHandler> ServerHandler for PricedTools<H> {
         let presented = take_credentials(&mut context);
         let strict = strict(&context);
         let inner = &self.inner;
+        let gate = &self.gate;
         self.gate
-            .call(request, presented, strict, move |p| {
-                inner.call_tool(p, context)
+            .call(request, presented, strict, move |p| async move {
+                let cancel_context = context.clone();
+                let r = inner.call_tool(p, context).await;
+                // A task would keep running after the gate settles the call
+                // FAILED, its result reachable through the unpriced tasks/*
+                // methods: cancel it and deny its ID.
+                if let Ok(CallToolResponse::Task(t)) = &r {
+                    let id = t.task.task_id.clone();
+                    gate.deny_task(&id);
+                    if let Err(e) = inner
+                        .cancel_task(CancelTaskParams::new(id), cancel_context)
+                        .await
+                    {
+                        tracing::warn!(error = %e.message, "could not cancel a priced call's task");
+                    }
+                }
+                r
             })
             .await
     }
@@ -301,6 +326,9 @@ impl<H: ServerHandler> ServerHandler for PricedTools<H> {
         request: GetTaskParams,
         context: RequestContext<RoleServer>,
     ) -> Result<GetTaskResult, McpError> {
+        if self.gate.task_denied(&request.task_id) {
+            return Err(task_denied());
+        }
         self.inner.get_task(request, context).await
     }
 
@@ -309,6 +337,9 @@ impl<H: ServerHandler> ServerHandler for PricedTools<H> {
         request: UpdateTaskParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
+        if self.gate.task_denied(&request.task_id) {
+            return Err(task_denied());
+        }
         self.inner.update_task(request, context).await
     }
 

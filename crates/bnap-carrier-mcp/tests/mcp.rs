@@ -34,8 +34,9 @@ use bnap_scheme_dpop::{DpopScheme, StaticAuthority};
 use bnap_scheme_l402::{L402, MacaroonKeys, OfferInvoices, Token};
 use bnap_scheme_mpp::{ChallengeKeys, ChargeRequest, LightningCharge, Network};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, JsonObject, MetaObject,
-    RequestMetaObject, ServerCapabilities, ServerConfig,
+    CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams, ContentBlock,
+    CreateTaskResult, JsonObject, MetaObject, RequestMetaObject, ServerCapabilities, ServerConfig,
+    Task, TaskStatus,
 };
 use rmcp::service::{RequestContext, RunningService};
 use rmcp::transport::StreamableHttpClientTransport;
@@ -56,9 +57,20 @@ const DPOP: &str = bnap_scheme_dpop::DPOP;
 struct Tools {
     runs: Arc<AtomicUsize>,
     saw_secret: Arc<AtomicUsize>,
+    cancelled: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl ServerHandler for Tools {
+    #[allow(clippy::unused_async_trait_impl)]
+    async fn cancel_task(
+        &self,
+        request: CancelTaskParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        self.cancelled.lock().unwrap().push(request.task_id);
+        Ok(())
+    }
+
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
     }
@@ -79,6 +91,13 @@ impl ServerHandler for Tools {
         let text = format!("{} #{n} {args}", request.name);
         match &*request.name {
             "fails" => Ok(CallToolResult::error(vec![ContentBlock::text(text)]).into()),
+            // The tool answers as a task that keeps running in the background.
+            "spawns" => Ok(CallToolResponse::Task(CreateTaskResult::new(Task::new(
+                format!("task-{n}"),
+                TaskStatus::Working,
+                "2026-10-14T00:00:00Z",
+                "2026-10-14T00:00:00Z",
+            )))),
             _ => Ok(CallToolResult::success(vec![ContentBlock::text(text)]).into()),
         }
     }
@@ -144,6 +163,8 @@ struct World {
     dpop_key: ProofKey,
     clock: Arc<AtomicU64>,
     client: RunningService<RoleClient, ()>,
+    cancelled: Arc<std::sync::Mutex<Vec<String>>>,
+    gate: Arc<Gate>,
 }
 
 fn gate(fake: &Arc<FakeRail>, uri: &str, dpop_key: &ProofKey, clock: &Arc<AtomicU64>) -> Gate {
@@ -196,7 +217,8 @@ fn gate(fake: &Arc<FakeRail>, uri: &str, dpop_key: &ProofKey, clock: &Arc<Atomic
     .rail(fake.clone())
     .tool("weather", price.clone())
     .tool("forecast", price.clone())
-    .tool("fails", price)
+    .tool("fails", price.clone())
+    .tool("spawns", price)
     .tool(
         "agent",
         ToolPrice::new().attest(AttestEntry::new(DPOP, Effect::Waive)),
@@ -220,11 +242,14 @@ async fn world_with(strict: bool) -> World {
     let dpop_key = ProofKey::es256(&[0x33; 32]).unwrap();
     let gate = Arc::new(gate(&fake, &url, &dpop_key, &clock));
     let receipt_key = gate.config().receipt_key;
+    let gate_handle = gate.clone();
     let runs = Arc::new(AtomicUsize::new(0));
     let saw_secret = Arc::new(AtomicUsize::new(0));
+    let cancelled = Arc::new(std::sync::Mutex::new(Vec::new()));
     let tools = Tools {
         runs: runs.clone(),
         saw_secret: saw_secret.clone(),
+        cancelled: cancelled.clone(),
     };
     let app = if strict {
         router(
@@ -259,6 +284,8 @@ async fn world_with(strict: bool) -> World {
         dpop_key,
         clock,
         client,
+        cancelled,
+        gate: gate_handle,
     }
 }
 
@@ -875,4 +902,24 @@ async fn the_tool_sees_the_canonical_arguments() {
         .unwrap()
         .to_owned();
     assert!(text.ends_with(r#"{"n":2}"#), "{text}");
+}
+
+#[tokio::test]
+async fn a_priced_tool_that_answers_as_a_task_is_cancelled_and_its_task_denied() {
+    let w = world().await;
+    let a = json!({"job": 1});
+    let (_, offer) = w.offer("spawns", &a).await;
+    let cred = l402_credential(&offer, &pay_l402(&w, &offer));
+    let (code, e) = w
+        .call(params("spawns", &a, Some(bnap_meta(&cred))))
+        .await
+        .err();
+    assert_eq!(code, wire::INTERNAL_ERROR);
+    // It reached commit: FAILED, with its receipt, and no fresh offer.
+    w.check_receipt(&e.receipt.unwrap(), &offer, Status::Failed, false);
+    assert_eq!(e.offers, []);
+    // The background task was cancelled, and its ID is never served.
+    assert_eq!(*w.cancelled.lock().unwrap(), ["task-1"]);
+    assert!(w.gate.task_denied("task-1"));
+    assert!(!w.gate.task_denied("task-2"));
 }
