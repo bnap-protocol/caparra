@@ -366,11 +366,16 @@ impl SignedManifest {
     }
 }
 
-/// Parses JSON bytes into a [`Value`], refusing an object that names a
-/// member twice at any depth ([`ManifestError::DuplicateMember`]) and any
-/// bytes after the value. Names are compared after unescaping, so `"root"`
-/// and `"r\u006fot"` are the same name.
-fn parse_strict(bytes: &[u8]) -> Result<Value, ManifestError> {
+/// Parses JSON bytes into a [`Value`] as I-JSON (RFC 7493) requires of
+/// anything JCS will hash: an object that names a member twice at any
+/// depth is refused ([`ManifestError::DuplicateMember`]), and so are bytes
+/// after the value ([`ManifestError::Json`]). Names are compared after
+/// unescaping, so `"root"` and `"r\u006fot"` are the same name.
+///
+/// [`SignedManifest::parse`] reads the manifest with it. Any other JSON
+/// input that is signed or hashed through JCS, such as a carrier's, should
+/// be read with it too, so the hashed value is the one every parser sees.
+pub fn parse_strict(bytes: &[u8]) -> Result<Value, ManifestError> {
     let dup = RefCell::new(None);
     let mut de = serde_json::Deserializer::from_slice(bytes);
     let parsed = serde::de::DeserializeSeed::deserialize(Strict(&dup), &mut de).and_then(|v| {
@@ -584,6 +589,35 @@ impl fmt::Display for KeyUse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strict_json_refuses_names_repeated_at_any_depth() {
+        assert!(parse_strict(br#"{"a":[{"b":1,"c":{"d":true}}],"b":2}"#).is_ok());
+        for bad in [
+            &br#"{"a":1,"a":1}"#[..],
+            br#"{"a":[{"b":1,"b":2}]}"#,
+            br#"[[{"x":{"y":1,"y":1}}]]"#,
+            br#"{"a":1,"a":2}"#,
+        ] {
+            assert!(
+                matches!(parse_strict(bad), Err(ManifestError::DuplicateMember(_))),
+                "{}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+        assert_eq!(
+            parse_strict(br#"{"a":1,"a":2}"#),
+            Err(ManifestError::DuplicateMember("a".into()))
+        );
+        assert!(matches!(
+            parse_strict(b"{} {}"),
+            Err(ManifestError::Json(_))
+        ));
+        assert!(matches!(
+            parse_strict(b"{\"a\":"),
+            Err(ManifestError::Json(_))
+        ));
+    }
 
     #[test]
     fn origins() {
