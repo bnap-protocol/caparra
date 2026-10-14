@@ -166,17 +166,18 @@ impl Gate {
     /// A gate whose offer lists `bnap:notes` at `price` sat (none without
     /// a price) and `attest`.
     fn new(price: Option<u64>, attest: Vec<AttestEntry>, authority: Arc<dyn Authority>) -> Self {
-        Self::with_offer(scope(), price, attest, authority)
+        Self::with_offer(scope(), NOW + 300, price, attest, authority)
     }
 
     fn with_offer(
         scope: Scope,
+        expires: u64,
         price: Option<u64>,
         attest: Vec<AttestEntry>,
         authority: Arc<dyn Authority>,
     ) -> Self {
         let key = offer_key();
-        let mut f = OfferFields::new(scope, NOW + 300, key.public_key(), [5; 16]);
+        let mut f = OfferFields::new(scope, expires, key.public_key(), [5; 16]);
         if let Some(p) = price {
             f.pay = vec![PayEntry::new(NOTES, p, "sat")];
         }
@@ -728,6 +729,7 @@ fn a_proof_whose_bnap_ctx_names_another_context_is_refused() {
     let other_request = cred.context(&gate.offer.offer_id(), &Scope(sha256(b"GET /admin")));
     let other_gate = Gate::with_offer(
         scope(),
+        NOW + 300,
         Some(2100),
         vec![AttestEntry::discount(DPOP, 1000)],
         authority(),
@@ -849,8 +851,11 @@ fn a_re_encoded_proof_cannot_take_the_credential_under_another_replay_key() {
 
 #[test]
 fn a_quota_counts_down_and_refuses_past_its_limit() {
-    // 3 actions per hour per DPoP key, on a 21 sat entry.
-    let gate = Gate::new(
+    // 3 actions per hour per DPoP key, on a 21 sat entry, in a route
+    // offer that lives two hours.
+    let gate = Gate::with_offer(
+        scope(),
+        NOW + 7200,
         Some(21),
         vec![AttestEntry::quota(DPOP, 3, 3600)],
         authority(),
