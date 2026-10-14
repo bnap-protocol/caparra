@@ -194,7 +194,10 @@ mod tests {
         let r = Registry::embedded();
         assert_eq!(r.class_of("bnap:notes"), Some(BindingClass::S));
         assert_eq!(r.class_of("httpauth:L402"), Some(BindingClass::O));
-        assert_eq!(r.class_of("payment:lightning/charge"), Some(BindingClass::O));
+        assert_eq!(
+            r.class_of("payment:lightning/charge"),
+            Some(BindingClass::O)
+        );
         assert_eq!(r.class_of("httpsig:web-bot-auth"), Some(BindingClass::A));
         assert_eq!(r.class_of("vnd.example.unknown"), None);
         let notes = r.effective("bnap:notes", PartKind::Credential);

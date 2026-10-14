@@ -413,8 +413,10 @@ impl Refusal {
             ),
             Code::RateLimited => format!("The server is rate limiting. Retry{wait}."),
             Code::Required => "The server requires a BNAP credential.".to_owned(),
-            _ => "The server is unavailable. Run `bnap resume` later to get the answer or a refund."
-                .to_owned(),
+            _ => {
+                "The server is unavailable. Run `bnap resume` later to get the answer or a refund."
+                    .to_owned()
+            }
         };
         Self {
             source: Source::Server,

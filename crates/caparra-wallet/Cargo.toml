@@ -27,7 +27,6 @@ base64.workspace = true
 ed25519-dalek.workspace = true
 hex.workspace = true
 nwc.workspace = true
-rand.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true
@@ -40,6 +39,7 @@ zeroize.workspace = true
 # The in-test BNAP server of `testkit`.
 axum = { workspace = true, optional = true }
 bitcoin = { workspace = true, optional = true }
+tower = { workspace = true, optional = true, features = ["util"] }
 
 [features]
 # A small BNAP server (manifest, notes issuer, L402, MPP, Web Bot Auth) on
@@ -49,6 +49,7 @@ bitcoin = { workspace = true, optional = true }
 testkit = [
   "dep:axum",
   "dep:bitcoin",
+  "dep:tower",
   "bnap-core/test-support",
   "bnap-scheme-notes/test-support",
 ]
