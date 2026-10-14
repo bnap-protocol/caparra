@@ -869,3 +869,21 @@ fn a_wallet_picks_notes_for_a_price() {
     assert!(client::select_notes(&notes, fee, 600, 16).is_none());
     assert!(client::select_notes(&notes, fee, 570, 1).is_none());
 }
+
+#[test]
+fn a_price_0_swap_returns_the_whole_value_on_an_active_keyset() {
+    // Section 11: a swap is an ordinary request on a route priced at 0; the
+    // whole value comes back as change. Here it moves notes from B
+    // (inputs only) to A.
+    let g = Gate::new();
+    let mut w = Wallet::new("swap");
+    let notes = w.notes(&keyset_b(), &[512, 256]);
+    let offer = g.exact_offer(0, NOW + 900);
+    let paid = w.pay(&offer, &notes, None, &a(), &Opts::default());
+    let resp = g.handle(&paid.credential, &Opts::default()).unwrap();
+    assert_eq!(resp.fields().charged, 0);
+    let got = change(&g, &paid, &resp);
+    assert!(got.matches_rule);
+    assert_eq!(total(&got.notes), 768);
+    assert!(got.notes.iter().all(|n| n.keyset == a()));
+}
