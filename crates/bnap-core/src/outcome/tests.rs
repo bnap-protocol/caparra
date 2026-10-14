@@ -1127,6 +1127,167 @@ fn concurrent_quota_admissions_never_exceed_the_limit() {
     store.0.inspect(|t| assert_eq!(t.outcomes_len(), 3));
 }
 
+/// A store that answers the first `miss` outcome lookups with "no record",
+/// as a lookup taken just before another copy's commit would, and waits
+/// `delay` before every call, so concurrent copies interleave.
+struct Racing {
+    inner: MemoryStore,
+    miss: std::sync::Mutex<usize>,
+    delay: std::time::Duration,
+}
+
+impl Racing {
+    fn new(miss: usize, delay_us: u64) -> Self {
+        Self {
+            inner: MemoryStore::new(),
+            miss: std::sync::Mutex::new(miss),
+            delay: std::time::Duration::from_micros(delay_us),
+        }
+    }
+
+    fn wait(&self) {
+        if !self.delay.is_zero() {
+            std::thread::sleep(self.delay);
+        }
+    }
+
+    /// The next `n` outcome lookups find no record.
+    fn miss_next(&self, n: usize) {
+        *self.miss.lock().unwrap() = n;
+    }
+}
+
+#[async_trait::async_trait]
+impl UseStore for Racing {
+    async fn commit(&self, plan: &CommitPlan) -> Result<Commit, StoreError> {
+        self.wait();
+        self.inner.commit(plan).await
+    }
+
+    async fn counter(&self, key: &CounterKey) -> Result<u64, StoreError> {
+        self.wait();
+        self.inner.counter(key).await
+    }
+
+    async fn outcome(&self, rk: &ReplayKey) -> Result<Option<OutcomeRecord>, StoreError> {
+        self.wait();
+        {
+            let mut miss = self.miss.lock().unwrap();
+            if *miss > 0 {
+                *miss -= 1;
+                return Ok(None);
+            }
+        }
+        self.inner.outcome(rk).await
+    }
+
+    async fn settle(
+        &self,
+        rk: &ReplayKey,
+        s: &Settlement,
+        pending_timeout: u64,
+    ) -> Result<Settle, StoreError> {
+        self.wait();
+        self.inner.settle(rk, s, pending_timeout).await
+    }
+
+    async fn expire_pending(
+        &self,
+        created_before: u64,
+        now: u64,
+    ) -> Result<Vec<ReplayKey>, StoreError> {
+        self.wait();
+        self.inner.expire_pending(created_before, now).await
+    }
+
+    async fn record_refund(
+        &self,
+        rk: &ReplayKey,
+        scheme_result: Option<&[u8]>,
+    ) -> Result<Option<OutcomeRecord>, StoreError> {
+        self.wait();
+        self.inner.record_refund(rk, scheme_result).await
+    }
+
+    async fn purge(&self, created_before: u64, now: u64) -> Result<u64, StoreError> {
+        self.wait();
+        self.inner.purge(created_before, now).await
+    }
+}
+
+#[test]
+fn a_copy_that_missed_the_record_is_pending_not_underpaid() {
+    // The checker's MEDIUM-LOW finding, as one interleaving: two copies of
+    // one quota-priced credential (a lost connection, then a retry). Copy A
+    // commits and fills the quota of 1; copy B looked up outcome[rk] just
+    // before that commit, found nothing, then priced against the full
+    // counter. It answered Price(Underpaid { 21, 10 }) with pay and
+    // Underpaid { u64::MAX, 0 } without; it is PENDING (6.4): its notes are
+    // consumed and its change will be recorded.
+    let l = limits();
+    for (c, notes) in [(1, Some(10)), (2, None)] {
+        let store = Racing::new(0, 0);
+        let r = quota_req(c, 1, notes, T0);
+        new(r.process_in(&store, &l));
+        store.miss_next(1);
+        assert_eq!(
+            r.at(T0 + 1).process_in(&store, &l),
+            Err(ProcessError::Pending {
+                retry_after: l.pending_timeout - 1
+            }),
+            "notes {notes:?}"
+        );
+        // Another identity's copy that also missed is still refused on
+        // price: re-reading finds no record for it.
+        store.miss_next(1);
+        let other = Req {
+            ctx: ctx(c + 10),
+            ..r.at(T0 + 2)
+        };
+        assert!(matches!(
+            other.process_in(&store, &l),
+            Err(ProcessError::Price(PriceError::Underpaid { .. }))
+        ));
+    }
+}
+
+#[test]
+fn concurrent_copies_of_one_quota_priced_credential_are_never_underpaid() {
+    // The checker's barrier probe: 24 copies of one credential (quota 1,
+    // notes worth 10 on a 21 sat entry) start together on a store that
+    // takes 300 us per call, 20 rounds. Before the fix, 51 to 151 of 460
+    // copies answered UNDERPAID. Every copy is now New (exactly one per
+    // round) or PENDING.
+    const N: usize = 24;
+    let l = limits();
+    for round in 0..20u8 {
+        let store = Racing::new(0, 300);
+        let r = quota_req(round, 1, Some(10), T0);
+        let barrier = Barrier::new(N);
+        let answers: Vec<_> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..N)
+                .map(|_| {
+                    let (store, barrier, r, l) = (&store, &barrier, &r, &l);
+                    s.spawn(move || {
+                        barrier.wait();
+                        r.process_in(store, l)
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let new = answers
+            .iter()
+            .filter(|a| matches!(a, Ok(Admitted::New(_))))
+            .count();
+        let pending = answers
+            .iter()
+            .filter(|a| matches!(a, Err(ProcessError::Pending { .. })))
+            .count();
+        assert_eq!((new, pending), (1, N - 1), "round {round}: {answers:?}");
+    }
+}
+
 #[test]
 fn concurrent_replays_after_a_crash_refund_once() {
     // Security review, outcome lead (b): a crash leaves a quota-priced

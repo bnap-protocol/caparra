@@ -25,7 +25,11 @@
 //!    every single use and every counter limit in one serializable
 //!    transaction, so a pricing read that is stale by then can never admit
 //!    more than the store allows: it aborts with `RATE_LIMITED` and
-//!    consumes nothing.
+//!    consumes nothing. When the fresh path fails before the commit (STALE,
+//!    POLICY, UNDERPAID, ...), `outcome[rk]` is read again: a copy of the
+//!    same credential that committed after step 2's lookup is what filled
+//!    the quota this copy priced against, and its record answers this copy
+//!    (PENDING, or a replay), never a refusal.
 //!
 //! [`process`] answers:
 //!
@@ -373,24 +377,22 @@ pub async fn process<S: UseStore + ?Sized>(
     }
     // (iv) A new credential: its offer must still be valid, then price it
     // and commit. The commit re-checks every single use and every counter.
-    fresh_offer(req)?;
-    let admission = admit(
-        store,
-        &AdmitInput {
-            offer: req.offer,
-            pay: req.pay.clone(),
-            attest: req.attest,
-            now,
-        },
-    )
-    .await?;
-    let plan = CommitPlan::build(
-        uses,
-        &admission,
-        req.offer.expires,
-        now,
-        limits.replay_window,
-    )?;
+    let (admission, plan) = match price(store, req, uses, limits).await {
+        Ok(priced) => priced,
+        Err(ProcessError::Store(e)) => return Err(ProcessError::Store(e)),
+        // Another copy of this credential may have committed after the
+        // lookup above (a retry racing its lost first attempt), and its
+        // commit is what made pricing fail: it filled the quota this copy
+        // read. That commit wrote the counter and outcome[rk] in one
+        // transaction, so a read that saw the full counter sees the record
+        // too: answer this copy from it (PENDING, or a replay).
+        Err(e) => {
+            return match store.outcome(&rk).await? {
+                Some(rec) => classify(store, rk, rec, now, limits).await,
+                None => Err(e),
+            };
+        }
+    };
     match store.commit(&plan).await? {
         Commit::New => Ok(Admitted::New(Pending {
             replay_key: rk,
@@ -403,6 +405,35 @@ pub async fn process<S: UseStore + ?Sized>(
             retry_after: at_least_one(counter.resets_at.saturating_sub(now)),
         }),
     }
+}
+
+/// The fresh path before the commit: the offer must still be valid, then
+/// admission (section 7, counters read from `store`) and the commit plan.
+async fn price<S: UseStore + ?Sized>(
+    store: &S,
+    req: &Request<'_>,
+    uses: Uses,
+    limits: &Limits,
+) -> Result<(Admission, CommitPlan), ProcessError> {
+    fresh_offer(req)?;
+    let admission = admit(
+        store,
+        &AdmitInput {
+            offer: req.offer,
+            pay: req.pay.clone(),
+            attest: req.attest,
+            now: req.now,
+        },
+    )
+    .await?;
+    let plan = CommitPlan::build(
+        uses,
+        &admission,
+        req.offer.expires,
+        req.now,
+        limits.replay_window,
+    )?;
+    Ok((admission, plan))
 }
 
 /// A fresh commit needs an offer, and a quote for the chosen pay entry,
