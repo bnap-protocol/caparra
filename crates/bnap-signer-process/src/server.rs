@@ -13,7 +13,7 @@ use bnap_signer_file::FileSigner;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
 
-use crate::trust::{DirInfo, parent_dir};
+use crate::trust::{DirInfo, parent_dir, peer_allowed};
 use crate::wire::{
     FrameError, Reply, Request, WireSignature, decode_request, encode_reply, read_frame,
     write_frame,
@@ -255,8 +255,7 @@ impl Server {
                 },
             };
             match stream.peer_cred() {
-                Ok(c)
-                    if c.uid() == socket.owner || self.options.allowed_uids.contains(&c.uid()) => {}
+                Ok(c) if peer_allowed(c.uid(), socket.owner, &self.options.allowed_uids) => {}
                 Ok(c) => {
                     tracing::warn!(
                         uid = c.uid(),
@@ -390,5 +389,87 @@ impl Server {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bnap_signer_file::testkit::KEY_FILE;
+
+    use super::*;
+    use crate::wire::{decode_reply, encode_request};
+
+    /// Serves on a socket in a fresh directory whose owner, as far as the
+    /// server knows, is `owner`, admitting `allowed` as well, and sends one
+    /// request from this test (which runs as the socket file's real owner).
+    /// The reply, or `None` when the server closed the connection unread.
+    async fn ask_as_owner(owner: impl Fn(u32) -> u32, allowed: Vec<u32>) -> Option<Reply> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.sock");
+        let mut socket = SignerSocket::bind(&path).unwrap();
+        socket.owner = owner(socket.owner);
+        let server = Arc::new(Server::new(
+            Arc::new(FileSigner::from_toml(KEY_FILE).unwrap()),
+            ServeOptions {
+                allowed_uids: allowed,
+                ..ServeOptions::default()
+            },
+        ));
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(server.serve(socket, async {
+            let _ = stopped.await;
+        }));
+        let mut conn = UnixStream::connect(&path).await.unwrap();
+        let req = Request::VerifyUnblinded {
+            keyset: vec![1; 33],
+            unit: "sat".into(),
+            amount: 1,
+            secret: b"a secret".to_vec(),
+            c: [2; 33],
+        };
+        let io = Duration::from_secs(5);
+        // The server may close the connection before or after the request
+        // arrives; either way no reply comes back.
+        let _ = write_frame(&mut conn, &encode_request(req), io).await;
+        let reply = read_frame(&mut conn, io, io)
+            .await
+            .ok()
+            .map(|b| decode_reply(&b).unwrap());
+        let _ = stop.send(());
+        task.await.unwrap().unwrap();
+        reply
+    }
+
+    fn own_uid() -> u32 {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::metadata(file.path()).unwrap().uid()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_owner_is_served() {
+        let reply = ask_as_owner(|own| own, Vec::new()).await;
+        assert!(
+            matches!(reply, Some(Reply::Unblinded { y: None })),
+            "{reply:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_user_who_is_neither_the_owner_nor_allowed_is_not_served() {
+        let me = own_uid();
+        // The socket "belongs" to another user, so this test's process is
+        // a stranger to the server.
+        let other = |own: u32| own.wrapping_add(1);
+        assert_eq!(ask_as_owner(other, Vec::new()).await, None);
+        assert_eq!(
+            ask_as_owner(other, vec![me.wrapping_add(2), me.wrapping_add(3)]).await,
+            None
+        );
+        // Named in the allowed users, the same process is served.
+        let reply = ask_as_owner(other, vec![me.wrapping_add(2), me]).await;
+        assert!(
+            matches!(reply, Some(Reply::Unblinded { y: None })),
+            "{reply:?}"
+        );
     }
 }

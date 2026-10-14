@@ -53,6 +53,14 @@ impl DirInfo {
     }
 }
 
+/// Whether the signer serves a connection whose peer runs as `uid`: the
+/// socket's `owner` (the signer's own user) or one of `allowed`. Root is not
+/// admitted unless it is listed. The file mode of the socket only decides
+/// who can reach it; this is the access control.
+pub(crate) fn peer_allowed(uid: u32, owner: u32, allowed: &[u32]) -> bool {
+    uid == owner || allowed.contains(&uid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,6 +82,20 @@ mod tests {
         assert!(d(7).owned_by(&[3, 7]));
         assert!(!d(8).owned_by(&[3, 7]));
         assert!(!d(8).owned_by(&[]));
+    }
+
+    #[test]
+    fn only_the_owner_and_allowed_users_are_served() {
+        assert!(peer_allowed(501, 501, &[]));
+        assert!(peer_allowed(502, 501, &[502, 503]));
+        assert!(peer_allowed(503, 501, &[502, 503]));
+        assert!(!peer_allowed(504, 501, &[502, 503]));
+        assert!(!peer_allowed(502, 501, &[]));
+        assert!(
+            !peer_allowed(0, 501, &[]),
+            "root is not admitted unless listed"
+        );
+        assert!(peer_allowed(0, 501, &[0]));
     }
 
     #[test]
