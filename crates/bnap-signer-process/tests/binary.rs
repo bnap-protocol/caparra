@@ -1,0 +1,416 @@
+//! The `bnap-signer` binary on a temporary socket: the shared Signer
+//! behaviour suite through `ProcessSigner`, and what the process refuses on
+//! the wire, at start-up and in its logs.
+
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use bnap_core::hash::{Digest, OfferId, Scope, tagged_hash};
+use bnap_core::offer::{OfferFields, PayEntry};
+use bnap_core::response::{ResponseFields, Status};
+use bnap_core::sign::{Purpose, UnsignedOffer};
+use bnap_core::test_support::unsigned_response;
+use bnap_plug::Signer;
+use bnap_signer_file::testkit::{self, KEY_FILE};
+use bnap_signer_process::ProcessSigner;
+use bnap_signer_process::wire::{
+    ErrorKind, MAX_FRAME, Reply, Request, WirePurpose, decode_reply, encode_request,
+};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixStream;
+
+/// The secrets in [`KEY_FILE`], which must never leave the process.
+const SECRETS: [&str; 3] = [
+    "bda3aea2a2aae7f8373847fa9ea2937fa8befc1da0d83a3071da3c458f13a6b6",
+    "03cd229c5c5926c3fba5ce72f70d3ac6d632506b9a461c12201b4e8849d9b494",
+    "4a7627233f8531b73f6cd8d2b708fede917ebf29f7a518537cc7e0ac5a77c998",
+];
+
+/// A running `bnap-signer`, killed on drop.
+struct Running {
+    child: Child,
+    dir: tempfile::TempDir,
+    socket: PathBuf,
+}
+
+impl Running {
+    fn log(&self) -> String {
+        std::fs::read_to_string(self.dir.path().join("stderr.log")).unwrap_or_default()
+    }
+
+    fn signer(&self) -> Arc<dyn Signer> {
+        Arc::new(ProcessSigner::new(&self.socket))
+    }
+
+    /// SIGTERM, then the exit status.
+    fn terminate(mut self) -> (std::process::ExitStatus, String, PathBuf) {
+        let pid = self.child.id().to_string();
+        Command::new("kill").args(["-TERM", &pid]).status().unwrap();
+        let status = wait(&mut self.child, Duration::from_secs(10)).expect("stops on SIGTERM");
+        (status, self.log(), self.socket.clone())
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn wait(child: &mut Child, within: Duration) -> Option<std::process::ExitStatus> {
+    let until = Instant::now() + within;
+    while Instant::now() < until {
+        if let Some(s) = child.try_wait().unwrap() {
+            return Some(s);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    None
+}
+
+/// Writes the key file with `mode` and spawns the binary with `args`.
+fn spawn(mode: u32, args: &[&str], env: &[(&str, &str)]) -> (Child, tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let keys = dir.path().join("keys.toml");
+    std::fs::write(&keys, KEY_FILE).unwrap();
+    std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(mode)).unwrap();
+    let socket = dir.path().join("s.sock");
+    let log = std::fs::File::create(dir.path().join("stderr.log")).unwrap();
+    let child = Command::new(env!("CARGO_BIN_EXE_bnap-signer"))
+        .arg("--keys")
+        .arg(&keys)
+        .arg("--socket")
+        .arg(&socket)
+        .args(args)
+        .envs(env.iter().copied())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(log)
+        .spawn()
+        .unwrap();
+    (child, dir, socket)
+}
+
+fn start_with(args: &[&str], env: &[(&str, &str)]) -> Running {
+    let (child, dir, socket) = spawn(0o600, args, env);
+    let mut running = Running { child, dir, socket };
+    let until = Instant::now() + Duration::from_secs(20);
+    loop {
+        if std::os::unix::net::UnixStream::connect(&running.socket).is_ok() {
+            return running;
+        }
+        if let Some(status) = running.child.try_wait().unwrap() {
+            panic!("bnap-signer exited with {status}: {}", running.log());
+        }
+        assert!(
+            Instant::now() < until,
+            "bnap-signer did not start: {}",
+            running.log()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn start() -> Running {
+    start_with(&[], &[])
+}
+
+fn assert_no_secret(text: &str) {
+    for s in SECRETS {
+        assert!(!text.contains(s), "a secret leaked");
+        assert!(!text.contains(&s.to_uppercase()), "a secret leaked");
+    }
+}
+
+// ------------------------------------------------- the shared suite
+
+#[tokio::test(flavor = "multi_thread")]
+async fn signs_offers_and_acks_with_the_key_for_their_use() {
+    let p = start();
+    testkit::signs_offers_and_acks_with_the_key_for_their_use(&p.signer()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refuses_foreign_messages() {
+    let p = start();
+    testkit::refuses_foreign_messages(&p.signer()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn blind_signatures_verify_with_the_cashu_crate() {
+    let p = start();
+    testkit::blind_signatures_verify_with_the_cashu_crate(&p.signer()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn notes_are_checked_against_their_secret() {
+    let p = start();
+    testkit::notes_are_checked_against_their_secret(&p.signer()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refuses_outputs_over_the_cap() {
+    let p = start();
+    testkit::refuses_outputs_over_the_cap(&p.signer()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refuses_zero_amounts_and_empty_batches() {
+    let p = start();
+    testkit::refuses_zero_amounts_and_empty_batches(&p.signer()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refuses_outputs_it_must_not_sign() {
+    let p = start();
+    testkit::refuses_outputs_it_must_not_sign(&p.signer()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn change_goes_through_the_store_ledger() {
+    let p = start();
+    testkit::change_goes_through_the_store_ledger(p.signer()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_whole_suite_runs_and_no_secret_reaches_the_logs() {
+    let p = start_with(&[], &[("RUST_LOG", "trace")]);
+    testkit::run(p.signer()).await;
+    let (status, log, socket) = p.terminate();
+    assert!(status.success(), "{status}: {log}");
+    assert!(log.contains("op=\"blind_sign\""), "requests are logged");
+    assert!(log.contains("holding keyset"), "keysets are logged");
+    assert_no_secret(&log);
+    assert!(!socket.exists(), "the socket is removed on SIGTERM");
+}
+
+// ------------------------------------------------------ start-up
+
+#[test]
+fn the_socket_is_private() {
+    let p = start();
+    let mode = std::fs::metadata(&p.socket).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+}
+
+#[test]
+fn a_key_file_with_bad_permissions_is_refused() {
+    for mode in [0o644, 0o640, 0o604] {
+        let (mut child, dir, socket) = spawn(mode, &[], &[]);
+        let status = wait(&mut child, Duration::from_secs(20)).expect("exits");
+        assert_eq!(status.code(), Some(2), "mode {mode:o}");
+        let log = std::fs::read_to_string(dir.path().join("stderr.log")).unwrap();
+        assert!(log.contains("chmod 600"), "{log}");
+        assert_no_secret(&log);
+        assert!(!socket.exists(), "no socket without keys");
+    }
+}
+
+#[test]
+fn a_socket_that_is_served_is_not_taken_over() {
+    let p = start();
+    let mut second = Command::new(env!("CARGO_BIN_EXE_bnap-signer"))
+        .arg("--keys")
+        .arg(p.dir.path().join("keys.toml"))
+        .arg("--socket")
+        .arg(&p.socket)
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let status = wait(&mut second, Duration::from_secs(20)).expect("exits");
+    assert_eq!(status.code(), Some(2));
+    let mut log = String::new();
+    std::io::Read::read_to_string(&mut second.stderr.take().unwrap(), &mut log).unwrap();
+    assert!(log.contains("another process is serving"), "{log}");
+}
+
+// --------------------------------------------------------- the wire
+
+async fn send(stream: &mut UnixStream, body: &[u8]) {
+    let len = u32::try_from(body.len()).unwrap().to_be_bytes();
+    stream.write_all(&len).await.unwrap();
+    stream.write_all(body).await.unwrap();
+}
+
+/// The next reply on `stream`, or `None` when the server closed it.
+async fn recv(stream: &mut UnixStream) -> Option<Reply> {
+    let mut len = [0u8; 4];
+    stream.read_exact(&mut len).await.ok()?;
+    let mut body = vec![0u8; usize::try_from(u32::from_be_bytes(len)).unwrap()];
+    stream.read_exact(&mut body).await.ok()?;
+    Some(decode_reply(&body).unwrap())
+}
+
+async fn ask(stream: &mut UnixStream, req: Request) -> Option<Reply> {
+    send(stream, &encode_request(req)).await;
+    recv(stream).await
+}
+
+fn refused(reply: Option<Reply>) -> bool {
+    matches!(
+        reply,
+        Some(Reply::Error {
+            kind: ErrorKind::Refused,
+            ..
+        })
+    )
+}
+
+async fn closed(stream: &mut UnixStream) -> bool {
+    let mut b = [0u8; 1];
+    matches!(
+        tokio::time::timeout(Duration::from_secs(5), stream.read(&mut b)).await,
+        Ok(Ok(0) | Err(_))
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_objects_bnap_core_builds_are_signed() {
+    let p = start();
+    let fx = testkit::fixture();
+    let mut f = OfferFields::new(Scope([1; 32]), 1_999_999_999, fx.offer_key, [0; 16]);
+    f.pay.push(PayEntry::new("bnap:notes", 21, "sat"));
+    let offer = UnsignedOffer::new(&f, Some(&[7; 32])).unwrap();
+    let s = offer.message().signed_bytes().to_vec();
+    let schnorr = |purpose, key: bnap_core::Key, signed: Vec<u8>| Request::Schnorr {
+        purpose,
+        key: key.0,
+        signed,
+    };
+    let mut c = UnixStream::connect(&p.socket).await.unwrap();
+    // The digest itself, or any 32 bytes, under the offer key.
+    let digest = tagged_hash(Purpose::OfferSig.tag(), &s).to_vec();
+    assert!(refused(
+        ask(&mut c, schnorr(WirePurpose::OfferSig, fx.offer_key, digest)).await
+    ));
+    assert!(refused(
+        ask(
+            &mut c,
+            schnorr(WirePurpose::OfferSig, fx.offer_key, vec![0; 32])
+        )
+        .await
+    ));
+    // The offer as an ack, and under the receipt key the signer holds.
+    assert!(refused(
+        ask(&mut c, schnorr(WirePurpose::Ack, fx.offer_key, s.clone())).await
+    ));
+    assert!(refused(
+        ask(&mut c, schnorr(WirePurpose::Ack, fx.receipt_key, s.clone())).await
+    ));
+    assert!(refused(
+        ask(
+            &mut c,
+            schnorr(WirePurpose::OfferSig, fx.receipt_key, s.clone())
+        )
+        .await
+    ));
+    // A Response that names the offer key.
+    let fields = ResponseFields {
+        status: Status::Ok,
+        replayed: false,
+        charged: 1,
+        unit: Some("sat".into()),
+        offer_id: OfferId([1; 32]),
+        digest: Digest([2; 32]),
+        metered_units: None,
+        scheme_result: None,
+        receipt_key: fx.offer_key,
+        settled_at: 1,
+        unknown: Vec::new(),
+    };
+    let r = unsigned_response(&fields)
+        .unwrap()
+        .message()
+        .signed_bytes()
+        .to_vec();
+    assert!(refused(
+        ask(&mut c, schnorr(WirePurpose::Ack, fx.offer_key, r)).await
+    ));
+    // The connection still serves the real thing.
+    let Some(Reply::Signature { sig }) =
+        ask(&mut c, schnorr(WirePurpose::OfferSig, fx.offer_key, s)).await
+    else {
+        panic!("the offer is signed");
+    };
+    offer
+        .finish(&bnap_core::Signature(sig))
+        .unwrap()
+        .verify_signature()
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn malformed_frames_close_the_connection_and_the_server_carries_on() {
+    let p = start();
+    for body in [
+        &b"not json"[..],
+        br#"{"v":2,"req":{"verify_unblinded":{"keyset":"","unit":"sat","amount":1,"secret":"","c":"00"}}}"#,
+        br#"{"v":1,"req":{"sign_digest":{"digest":"00"}}}"#,
+    ] {
+        let mut c = UnixStream::connect(&p.socket).await.unwrap();
+        send(&mut c, body).await;
+        assert!(refused(recv(&mut c).await));
+        assert!(closed(&mut c).await, "closed after a malformed request");
+    }
+    // A length above the limit: refused before the body is read.
+    let mut c = UnixStream::connect(&p.socket).await.unwrap();
+    c.write_all(&u32::try_from(MAX_FRAME + 1).unwrap().to_be_bytes())
+        .await
+        .unwrap();
+    assert!(refused(recv(&mut c).await));
+    assert!(closed(&mut c).await);
+    // The server still answers.
+    testkit::signs_offers_and_acks_with_the_key_for_their_use(&p.signer()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_and_slow_connections_time_out() {
+    let p = start_with(&["--idle-timeout-ms", "200", "--io-timeout-ms", "200"], &[]);
+    let mut idle = UnixStream::connect(&p.socket).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(closed(&mut idle).await, "an idle connection is closed");
+    let mut slow = UnixStream::connect(&p.socket).await.unwrap();
+    slow.write_all(&[0, 0, 0, 100, b'{']).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(
+        closed(&mut slow).await,
+        "a frame that never ends is cut off"
+    );
+    testkit::signs_offers_and_acks_with_the_key_for_their_use(&p.signer()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_signer_that_is_gone_or_silent_is_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let gone = ProcessSigner::new(dir.path().join("none.sock"));
+    let fx = testkit::fixture();
+    let one = [testkit::output(1).output];
+    let lim = testkit::limit(Status::Ok, 1);
+    assert!(matches!(
+        gone.blind_sign(&fx.active.id, &one, &lim).await,
+        Err(bnap_plug::SignerError::Unavailable(_))
+    ));
+    // A socket that accepts and never answers.
+    let path = dir.path().join("silent.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let hold = tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((s, _)) = listener.accept().await {
+            held.push(s);
+        }
+    });
+    let silent = ProcessSigner::new(&path).with_timeout(Duration::from_millis(200));
+    let started = Instant::now();
+    assert!(matches!(
+        silent.blind_sign(&fx.active.id, &one, &lim).await,
+        Err(bnap_plug::SignerError::Unavailable(_))
+    ));
+    assert!(started.elapsed() < Duration::from_secs(3));
+    hold.abort();
+    assert_eq!(silent.socket(), Path::new(&path));
+}
