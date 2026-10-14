@@ -46,6 +46,19 @@ retry() {
 synced() { "$1" getinfo | grep -q '"synced_to_chain": *true'; }
 mine() { btc generatetoaddress "$1" "$2" >/dev/null; }
 
+# One setup at a time: test processes may run this script in parallel.
+lock="$here/.lock"
+n=0
+until mkdir "$lock" 2>/dev/null; do
+	n=$((n + 1))
+	if [ "$n" -ge 600 ]; then
+		say "another up.sh holds $lock; remove it if no setup is running"
+		exit 1
+	fi
+	sleep 1
+done
+trap 'rmdir "$lock"' EXIT INT TERM
+
 say "starting the containers"
 dc up -d --wait --quiet-pull
 

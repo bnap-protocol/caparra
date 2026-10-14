@@ -609,6 +609,8 @@ dependencies = [
  "bnap-rail-lnd",
  "bnap-scheme-l402",
  "bnap-scheme-mpp",
+ "hex",
+ "serde_json",
  "tokio",
 ]
 

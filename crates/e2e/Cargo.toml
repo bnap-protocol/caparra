@@ -12,7 +12,7 @@ authors.workspace = true
 [features]
 # Tests against the Lightning regtest network of devenv/regtest. Without
 # this feature they are compiled out, so the normal test job skips them.
-regtest = ["dep:bnap-rail-lnd", "dep:tokio"]
+regtest = ["dep:bnap-rail-lnd", "dep:tokio", "dep:serde_json", "dep:hex"]
 
 [dependencies]
 bnap-core = { workspace = true, features = ["test-support"] }
@@ -23,6 +23,8 @@ bnap-scheme-mpp.workspace = true
 async-trait.workspace = true
 bnap-rail-lnd = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
 
 [lints]
 workspace = true
