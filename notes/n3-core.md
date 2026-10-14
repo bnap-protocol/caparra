@@ -184,16 +184,18 @@ rather than patched: the socket's decision for one request is now a single
 bnap-core entry point, `outcome::process`, which detects replays before it
 prices anything. "The process contract" below states what it guarantees;
 "Re-cut (round 3)" lists every input of that round with its status, test
-and commit.
+and commit, and "Re-cut, repair round 1" the five findings the checkers
+raised against the re-cut.
 
 ### Public API: `bnap-core`
 
 | Module | What it exposes |
 | --- | --- |
-| `pricing` (section 7) | `VerifiedAttest` (`new`, `with_quota_id`), `QuotaUse`, `PriceDecision` (`price`, `price_wide`, `quota_counter`; fields `waive`, `discounts`, `quota`, `ignored`), `decide`, `quota_candidates`, `Backing { source, amount, unit }`, `BackingSource::{Rail(RailId), Note(Y)}` (`single_id`), `note_id`, `NOTE_TAG`, `backed_value`, `Refund::{None, OutOfBand, Atomic}` (`from_token`, `of`, `as_str`, `returns_change`), `PayValue { scheme, claimed, backing, refund }`, `AdmitInput`, `admit`, `Admission` (private fields; `decision`, `price`, `pay`, `metered`, `settle`), `AdmittedPay` (private fields; `index`, `scheme`, `unit`, `amount`, `rate`, `claimed`, `backed`, `value`, `backing`, `refund`), `Charge`, `ChangeCap` (sealed; `get`, `unit`, `status`), `PriceError` (`code`; `Policy`, `Underpaid`, `NotOffered`, `UnitMismatch`), `NO_PAY_BASE`, `metered_entry_allowed` |
+| `pricing` (section 7) | `VerifiedAttest` (`new`, `with_quota_id`), `QuotaUse`, `PriceDecision` (`price`, `price_wide`, `quota_counter`; fields `waive`, `discounts`, `quota`, `ignored`), `decide`, `quota_candidates`, `Backing { source, amount, unit }`, `BackingSource::{Rail(RailId), Note(Y)}` (`single_id`), `note_id`, `NOTE_TAG`, `backed_value`, `Refund::{None, OutOfBand, Atomic}` (`from_token`, `of`, `as_str`, `returns_change`), `PayValue { scheme, claimed, backing, refund }`, `AdmitInput`, `admit`, `Admission` (private fields; `decision`, `price`, `pay`, `metered`, `settle`), `AdmittedPay` (private fields; `index`, `scheme`, `unit`, `amount`, `rate`, `claimed`, `backed`, `value`, `backing`, `refund`), `Charge` (pure pricing, private fields; `status`, `charged`, `metered_units`, `change`, `unit`), `ChangeCap` (sealed, bound to one outcome; `replay_key`, `get`, `unit`, `status`), `PriceError` (`code`; `Policy`, `Underpaid`, `NotOffered`, `UnitMismatch`), `NO_PAY_BASE`, `metered_entry_allowed` |
+| `note` | `hash_to_curve(secret) -> Option<[u8; 33]>` (NUT-00, checked against the NUT-00 vectors), `DOMAIN_SEPARATOR` |
 | `policy` (section 11) | `PROPERTIES` (embedded table), `PropertyDef` (`rank`, `value`, `applies`), `property`, `PartKind`, `Part` (`known`, `unknown`), `PropertyVector`, `EffectiveVector` (`compute`, `rank`, `value`, `to_tokens`), `Require` (`parse`, `from_pairs`, `satisfied_by`), `RoutePolicy` (`admits`, `select`), `Candidate`, `Selection`, `PolicyError` |
-| `store` (6.2 to 6.4) | `UseStore` (async trait; `settle(rk, s, pending_timeout)`, `purge(created_before, now)`), `OutcomeRecord` (`pending(&plan)`, `needs_refund`; fields `refund_recorded`, `keep_until`, `refund_cap`, `unit`), `OutcomeStatus`, `CounterUse`, `UseModel`, `SchemeUses`, `CommitPlan` (no public constructor; `replay_key`, `ids`, `singles`, `counters`, `now`, `keep_until`, `refund_cap`, `unit`), `PlanError`, `Commit`, `Settlement` (`new`, `with_scheme_result`, `with_response`), `Settle`, `StoreError`, `UseTable`, `logic::{commit, settle, expire_pending, record_refund, purge}` |
-| `outcome` (section 6) | async `process` (the one entry point), `settle(store, &Pending, &Settlement, &Limits)`, `record_refund(store, &Recorded, Option<&[u8]>)`, `sweep`, all generic over `S: UseStore + ?Sized`; `Request` (what the gate verified), `Admitted::{New(Pending), Replay(Recorded)}`, `Pending` (sealed; `replay_key`, `admission`, `charge`), `Recorded` (sealed; `replay_key`, `record`, `replayed`, `needs_refund`, `refund_cap`, `receipt`), `ReceiptInput`, `ProcessError` (`code`, `retry_after`, `to_error_object`; `Spent`, `Pending`, `RateLimited`, `Stale`, `Price`, `Plan`, `Store`), `SettleError` (`AlreadySettled(Box<Recorded>)`, `Unknown`, `Store`), `Sweep` |
+| `store` (6.2 to 6.4) | `UseStore` (async trait; `commit(&CommitPlan)`, `counter`, `outcome`, `settle(&SettleRequest)`, `expire_pending(&SweepWindow)`, `record_refund(&RefundRequest)`, `purge(&SweepWindow)`), `OutcomeRecord` (`pending(&plan)`, `needs_refund`; fields `refund_recorded`, `keep_until`, `refund_cap`, `unit`), `OutcomeStatus`, `CounterUse`, `UseModel`, `SchemeUses`, `CommitPlan` (no public constructor; `replay_key`, `ids`, `singles`, `counters`, `now`, `keep_until`, `refund_cap`, `unit`), `PlanError`, `Commit`, `Settlement` (private fields; `new(&OutcomeCharge, settled_at)`, `with_scheme_result`, `with_response`, getters), `SettleRequest`, `RefundRequest`, `SweepWindow` (each: private fields, getters, no public constructor), `Settle`, `StoreError`, `UseTable`, `logic::{commit, settle, expire_pending, record_refund, purge}` |
+| `outcome` (section 6) | async `process` (the one entry point), `settle(store, &Pending, &Settlement, &Limits)`, `record_refund(store, &Recorded, Option<&[u8]>)`, `sweep`, all generic over `S: UseStore + ?Sized`; `Request` (what the gate verified), `Admitted::{New(Pending), Replay(Recorded)}`, `Pending` (sealed; `replay_key`, `admission`, `charge -> OutcomeCharge`), `OutcomeCharge` (sealed; `replay_key`, `status`, `charged`, `metered_units`, `cap`), `Recorded` (sealed; `replay_key`, `record`, `replayed`, `needs_refund`, `refund_cap`, `receipt`), `ReceiptInput`, `ProcessError` (`code`, `retry_after`, `to_error_object`; `Spent`, `Pending`, `RateLimited`, `Stale`, `Price`, `Plan`, `Store`), `SettleError` (`AlreadySettled(Box<Recorded>)`, `Unknown`, `WrongOutcome`, `Store`), `Sweep` |
 | `limits` (part A module, extended) | `Limits::from_manifest` now returns `Result<Limits, LimitsError>`; `REFUND_MARGIN`, `LimitsError::ReplayWindowTooShort`, `min_replay_window`, `validate`, `check_offer_lifetime`, `record_window` |
 | `sign` | `CoreMessage` (sealed; `purpose`, `key`, `digest`, `sign_with`, `verify`), `Purpose` (`key_use`, `tag`), `UnsignedOffer` (`new`, `message`, `finish`, `finish_with_limit`), `UnsignedResponse` (same), `SignError` |
 | `test_support`, feature `test-support` | `MemoryStore` (`new`, `set_unavailable`, `inspect`), `MemoryTable`, `block_on`, `conformance` (`run`, `Executor`, `Spin`, and each scenario as a function) |
@@ -203,12 +205,12 @@ and commit.
 | Module | What it exposes |
 | --- | --- |
 | `scheme` | `CredentialScheme` (`id`, `offer`, `native`, `verify`, `settle`, `recover_native`), `Verified { use_ids, rail_ids, value, quota_id }` (`uses`, `quota_use_id`), `LocalId`, `RailRef`, `OfferCtx`, `OfferRole`, `SchemeOffer`, `NativeCtx`, `NativeArtifact`, `Entry`, `VerifyCtx`, `SettleCtx`, `NativeCredential`, `SchemeError` (`rejected`, `code`, `to_error_object`) |
-| `signer` | `Signer` (`schnorr`, `verify_unblinded(keyset, unit, amount, y, c)`, `blind_sign(keyset, outputs, &ChangeLimit)`; an empty batch or an output of amount 0 MUST be refused), `CappedSigner` (`verify_only(inner, unit)`, `for_change(inner, &ChangeCap, ReplayKey) -> (CappedSigner, SettleGuard)`, `cap`, `remaining`, `unit`, `notes`, `verify_unblinded`, `blind_sign`), `SettleGuard` (`close`, closes on drop), `ChangeLimit { replay_key, status, unit, cap }`, `ChangeLedger` (`new`, `reserve`, `total`, `forget`), `Point`, `KeysetId`, `BlindedOutput`, `BlindSignature`, `Dleq`, `SignerError` |
+| `signer` | `Signer` (`schnorr`, `verify_unblinded(keyset, unit, amount, secret, c) -> Option<Point>`, the signer deriving `Y = hash_to_curve(secret)` itself; `blind_sign(keyset, outputs, &ChangeLimit)`, one running total per `ReplayKey`; an empty batch or an output of amount 0 MUST be refused), `CappedSigner` (`verify_only(inner, unit)`, `for_change(inner, &ChangeCap) -> (CappedSigner, SettleGuard)`, `cap`, `remaining`, `unit`, `notes`, `verify_unblinded(keyset, amount, secret, c) -> Option<Point>`, `blind_sign`), `SettleGuard` (`close`, closes on drop), `ChangeLimit { replay_key, status, unit, cap }`, `ChangeLedger` (`new`, `reserve`, `total(rk)`, `forget`), `Point`, `KeysetId`, `BlindedOutput`, `BlindSignature`, `Dleq`, `SignerError` |
 | `rail` | `FundingRail` (`kind`, `request`, `status`, `confirm`), `confirm_rail_id -> RailPayment`, `RailPayment { rail_id, amount, unit }` (`backing`), `PayId`, `PayRequest`, `PayState`, `Confirmed { canonical, state, amount, unit }`, `RailError` |
 | `carrier` | `Carrier` (associated `Request` and `Response`; `name`, `action_scope`, `route_scope`, `extract`, `offer`, `receipt`, `error`), `RawCredential`, `Challenge`, `NativeChallenge` |
 | `policy` | `Pricer`, `PricerError`, `Judge` (`admit`, `after`), `Decision` (`error`), `Action` |
 | `pay` | `PaySource`, `Budget`, `PayProof`, `PayError`, `within_budget` |
-| re-exports | `UseStore`, `Commit`, `CommitPlan`, `OutcomeRecord`, `Settle`, `Settlement`, `StoreError`, `CoreMessage`, `ChangeCap`, `Properties` (= `EffectiveVector`) |
+| re-exports | `UseStore`, `Commit`, `CommitPlan`, `OutcomeRecord`, `Settle`, `Settlement`, `SettleRequest`, `RefundRequest`, `SweepWindow`, `StoreError`, `CoreMessage`, `ChangeCap`, `Properties` (= `EffectiveVector`) |
 
 Every async trait uses `async-trait`, so each plug can be held as
 `Arc<dyn Trait>`; `tests/plugs.rs` drives them all that way. `Carrier` is
@@ -223,8 +225,11 @@ them.
 
 1. Verify each part: `let view = CappedSigner::verify_only(signer,
    &entry.unit)`, then `scheme.verify(part, &VerifyCtx { signer: &view,
-   .. })`. Verification reads no use state. The view keeps every note the
-   signer accepted, once per `Y`.
+   .. })`. Verification reads no use state. A scheme names a note by its
+   secret (`view.verify_unblinded(keyset, amount, secret, c)`), never by
+   its point: the signer and the view each derive `Y =
+   hash_to_curve(secret)` and the view keeps every note the signer
+   accepted, once per that `Y` (N3b-28).
 2. Confirm each `RailRef` with the rail plug of its kind:
    `confirm_rail_id(rail, &r)` refuses a payment that is not `Paid` and
    returns a `RailPayment` (the `RailId`, computed from the rail's own kind
@@ -252,14 +257,19 @@ them.
       the store's commit, which re-checks every single use and every counter
       in one transaction: `Admitted::New(pending)`, SPENT or `RATE_LIMITED`.
       If the same credential committed between the lookup and this commit,
-      the record is classified as in step 2.
+      the record is classified as in step 2. If the fresh path fails before
+      the commit (STALE, POLICY, UNDERPAID, a plan error), `outcome[rk]` is
+      read once more and a record found is classified as in step 2: a copy
+      of the same credential that committed after the lookup is what filled
+      the quota this copy priced against.
 4. On `Admitted::New(pending)`: run the action; `let charge =
-   pending.charge(status, units)`; `let (capped, guard) =
-   CappedSigner::for_change(signer, &charge.cap, *pending.replay_key())`;
-   `scheme.settle(part, &verified, &SettleCtx { status: charge.status,
-   charged: charge.charged, .. }, &capped)`; `guard.close()` as soon as it
-   returns; then `outcome::settle(store, &pending, &Settlement::new(&charge,
-   now).with_scheme_result(r).with_response(kept), &limits)`:
+   pending.charge(status, units)` (an `OutcomeCharge`, bound to the
+   outcome); `let (capped, guard) = CappedSigner::for_change(signer,
+   charge.cap())`; `scheme.settle(part, &verified, &SettleCtx { status:
+   charge.status(), charged: charge.charged(), .. }, &capped)`;
+   `guard.close()` as soon as it returns; then `outcome::settle(store,
+   &pending, &Settlement::new(&charge, now).with_scheme_result(r)
+   .with_response(kept), &limits)`:
    - `Ok(recorded)`: answer from it.
    - `Err(SettleError::AlreadySettled(recorded))`: the timeout won, through
      a sweep, a replay, or this settle itself coming after `created +
@@ -268,7 +278,7 @@ them.
      the refund below and answer from the `Recorded` it returns; otherwise
      answer from `recorded`. Either way the answer is not `replayed`
      (N3b-18): core set the flag.
-   - Any other error: UNAVAILABLE.
+   - Any other error (`Unknown`, `WrongOutcome`, `Store`): UNAVAILABLE.
 5. On `Admitted::Replay(recorded)`: if `recorded.needs_refund()`, run the
    refund below; otherwise answer from `recorded`, which has `replayed`
    set.
@@ -276,15 +286,16 @@ them.
 
 **The refund** of a timed-out outcome: `let cap =
 recorded.refund_cap().unwrap()` (status FAILED, the cap the commit recorded:
-the admitted value for an `atomic` scheme, 0 otherwise, N3b-26),
-`scheme.settle` with status FAILED and charge 0 under
-`CappedSigner::for_change(signer, &cap, *recorded.replay_key())`, the guard
-closed when it returns, then `outcome::record_refund(store, &recorded,
-result.as_deref())` (first write wins; `None` when the scheme has nothing
-to refund; a credential without pay has no value scheme to settle and
-records `None`), and answer from the `Recorded` it returns.
-`Recorded::receipt` returns `None` while a refund is due, so this step
-cannot be skipped.
+the admitted value for an `atomic` scheme, 0 otherwise, N3b-26, bound to
+the outcome's `ReplayKey`), `scheme.settle` with status FAILED and charge 0
+under `CappedSigner::for_change(signer, &cap)`, the guard closed when it
+returns, then `outcome::record_refund(store, &recorded, result.as_deref())`
+(first write wins; `None` when the scheme has nothing to refund; a
+credential without pay has no value scheme to settle and records `None`),
+and answer from the `Recorded` it returns. `Recorded::receipt` returns
+`None` while a refund is due, so no answer is made before a refund is
+recorded. Core cannot see whether the scheme's FAILED settle ran, so the
+gate MUST NOT call `record_refund` without running it.
 
 7. Sign the receipt: `let fields = recorded.receipt(&ReceiptInput { .. })
    .unwrap()`, `let u = UnsignedResponse::new(&fields)?`, `let sig =
@@ -293,9 +304,10 @@ cannot be skipped.
    `record_refund`) returned.
 8. Run `outcome::sweep(store, now, &limits)` periodically: PENDING past
    `pending_timeout` goes to FAILED; settled records past
-   `limits.record_window()` are deleted once their `keep_until` has passed
-   (N3b-25); single uses stay. A signer using `ChangeLedger` may `forget` a
-   `ReplayKey` once its replay window has passed.
+   `limits.record_window()` are deleted once `keep_until + 60` has passed
+   (N3b-25, one clock skew for the gate's other clocks); single uses stay.
+   A signer using `ChangeLedger` may `forget` a `ReplayKey` once its replay
+   window has passed.
 
 ### The `process` contract
 
@@ -322,15 +334,33 @@ ProcessError>` is the socket's whole decision for one verified request.
   transaction, so a pricing read that is stale by then aborts with
   `RATE_LIMITED` and consumes nothing (section 7): it can never admit more
   than the store allows.
+- **A copy that missed its own commit is answered from the record.** When
+  the fresh path fails before the commit (STALE, POLICY, UNDERPAID, a plan
+  error), `process` reads `outcome[rk]` again and classifies a record it
+  finds (PENDING, or a replay). The commit writes the counter increment and
+  the record in one transaction, so a read that saw the full counter also
+  sees the record: two copies of one quota-priced credential presented at
+  once give one New and one PENDING, never UNDERPAID.
 - **A fresh commit needs a live offer.** A credential the store does not
   know, on an offer or quote that expired (60 s skew), is STALE; a known
   one is still answered from its outcome (the core side of N3b-22).
 - **No other path.** `CommitPlan` has no public constructor and the
   store-reading admission is private (compile_fail doctests in
   `outcome::Pending`); `settle` takes the `Pending` only `process` makes;
-  every answer is a `Recorded`, whose `replayed` flag core sets. The pure
+  every answer is a `Recorded`, whose `replayed` flag core sets. Every
+  write the store takes is sealed the same way: `SettleRequest`,
+  `RefundRequest` and `SweepWindow` have no public constructor, a
+  `Settlement` is built only from the `OutcomeCharge` of a `Pending` and
+  carries its `ReplayKey` (`settle` refuses one made for another outcome
+  with `WrongOutcome`), and a `ChangeCap` carries the `ReplayKey` it was
+  computed for, so `CappedSigner::for_change` takes nothing else
+  (compile_fail doctests in `store` and `bnap_plug::signer`). The pure
   `pricing::admit` stays public for offers and tests, but an `Admission`
-  alone commits nothing.
+  alone commits nothing and its `Charge` grants no change budget.
+- **What stays the gate's to keep.** Core cannot see a plug call: it
+  cannot check that the scheme's FAILED settle ran before `record_refund`,
+  or that the action ran before `settle`. The gate MUST NOT record a
+  refund it did not compute.
 
 | `process` returns | Meaning | Gate step |
 | --- | --- | --- |
@@ -340,7 +370,7 @@ ProcessError>` is the socket's whole decision for one verified request.
 | `Err(Spent)` | A single used under another `ReplayKey`, or the record window passed | SPENT |
 | `Err(RateLimited { retry_after })` | A counter is full at commit | `RATE_LIMITED` |
 | `Err(Stale(_))` | New credential, expired offer or quote | STALE |
-| `Err(Price(_))` | Admission refused | POLICY, UNDERPAID, `NOT_OFFERED`, `BAD_CREDENTIAL` |
+| `Err(Price(_))` | Admission refused, and no copy of the credential committed meanwhile | POLICY, UNDERPAID, `NOT_OFFERED`, `BAD_CREDENTIAL` |
 | `Err(Plan(_))` | Offer outlives the record; bad rate config | POLICY; UNAVAILABLE |
 | `Err(Store(_))` | Store unreachable | UNAVAILABLE, fail closed |
 
@@ -378,10 +408,12 @@ refuses a `replay_window` below `pending_timeout + 120`, and calls
   timed-out outcome needs no admission and can only return what the commit
   consumed, whatever the replaying request presents.
 - **A record outlives its offer** (N3b-25). The record keeps `keep_until =
-  expires + 60`, and `purge` never deletes a record before then, whatever
-  window it is given; a fresh commit on an expired offer is STALE. Together
-  they stop a credential without single uses from being admitted again
-  after a sweep ran with a shorter `replay_window` than the commit saw.
+  expires + 60`, and `purge` never deletes a record until `keep_until +
+  60 < now`, whatever window it is given; a fresh commit on an expired
+  offer is STALE. Together they stop a credential without single uses from
+  being admitted again after a sweep ran with a shorter `replay_window`
+  than the commit saw, or on a request whose clock reads up to a clock
+  skew behind the sweep's.
 - **A late settle loses to the timeout in the store** (N3b-24).
   `UseStore::settle` takes `pending_timeout`; a settle with `settled_at >
   created + pending_timeout` times the outcome out in the same transaction
@@ -403,18 +435,43 @@ refuses a `replay_window` below `pending_timeout + 120`, and calls
   closes it when `settle` returns, so a kept clone signs nothing. A call
   that fails after the reservation keeps its share spent, since the signer
   may have signed. At the signer, every call carries a `ChangeLimit`
-  (`ReplayKey`, status, unit, total cap), and the signer MUST keep a
-  running total per settlement; `ChangeLedger` does this, counting each
-  distinct output (keyset, amount, `B'`) once, so a deterministic settle
-  that runs again signs the same notes for nothing, and pinning the first
-  cap a settlement is named with (ERRATA N3b-16). The signer also refuses
-  a keyset that is not in the limit's unit.
-- **`ChangeCap` is sealed, and so is its source.** `Admission` and
+  (`ReplayKey`, status, unit, cap), and the signer MUST keep one running
+  total per `ReplayKey`, across the OK change and the FAILED refund of the
+  outcome; `ChangeLedger` does this, counting each distinct output
+  (keyset, amount, `B'`) once across both statuses, so a deterministic
+  settle that runs again signs the same notes for nothing, and pinning the
+  first cap each status is named with (ERRATA N3b-16). So at most the
+  outcome's value is ever signed for it, change and refund together. The
+  signer also refuses a keyset that is not in the limit's unit.
+- **An honest refund is a superset of the change** (N3b-16). `bnap:notes`
+  signs `outputs` on OK and `outputs` with `refund_outputs` on FAILED, so
+  when a late OK settle signed the change before the timeout won, the
+  refund re-signs those outputs for nothing and adds only the refund
+  outputs: the client is paid in full, and a scheme that keeps its change
+  signatures to return them with the refund gets nothing extra signed.
+- **`ChangeCap` is sealed, and bound to one outcome.** `Admission` and
   `AdmittedPay` have private fields and only `pricing::admit` makes them
   (a compile_fail doctest shows an `Admission` literal does not compile),
-  so `Admission::settle` is the only way to a `ChangeCap` and the cap is
-  always computed from an admitted value. `ChangeCap` carries the entry's
-  unit and the settlement's status.
+  and `Admission::settle` returns a pure `Charge` that grants nothing. A
+  `ChangeCap` is made only by `Pending::charge` (from the admission the
+  commit was priced with) and `Recorded::refund_cap` (from the cap the
+  commit recorded), and carries that outcome's `ReplayKey`, the entry's
+  unit and the settlement's status. `CappedSigner::for_change` takes only
+  the cap, so a budget is always counted against the outcome it was
+  computed for.
+- **A note is named by its secret** (N3b-28). `Signer::verify_unblinded`
+  takes the note's secret, computes `Y = hash_to_curve(secret)` itself
+  (NUT-00, `bnap_core::note`) and returns the `Y` it checked; the capped
+  view derives `Y` too and refuses a signer answer naming another point.
+  From one note `(Y, C)`, every multiple `(m·Y, m·C)` passes a check of
+  `C = k·y` for a caller-chosen `y`, so a scheme that names `y` could make
+  one note count many times.
+- **Every store write is sealed.** `UseStore::settle`, `expire_pending`,
+  `record_refund` and `purge` take `SettleRequest`, `SweepWindow` and
+  `RefundRequest`: private fields, getters for store implementers,
+  constructors private to bnap-core. A `Settlement` has private fields and
+  carries the `ReplayKey` of the `OutcomeCharge` it was built from;
+  `outcome::settle` refuses one made for another outcome.
 - **Only an `atomic` scheme gets a change budget.** The cap is
   `value - charged` when the scheme's registered refund property, which
   the gate passes in `PayValue.refund`, is `atomic`, and 0 for `none` and
@@ -500,7 +557,7 @@ refuses a `replay_window` below `pending_timeout + 120`, and calls
 | N3b-13 | 6.4 | A replay after `pending_timeout` but before the sweep ran | The replay times the outcome out at once and proceeds as a FAILED replay |
 | N3b-14 | 6.3, 6.4 | `retry_after` values | PENDING: seconds until `created + pending_timeout`; `RATE_LIMITED`: seconds until the full counter's epoch ends; at least 1 |
 | N3b-15 | 7 admit, 6.1 | Admission compares the price with "the scheme's verified value", but 6.1 makes schemes untrusted and bnap-plug contains them: read literally, a scheme can cite a real but small payment and claim any value, and the change cap follows the claim | **Not the literal reading.** The value counted is `min(scheme claim, backing)`: payments a rail confirmed as final plus notes the signer verified, each once, in the entry's unit (`sat` and `msat` convert exactly, rounded down; any other unit is refused with `BAD_CREDENTIAL`). Every backing payment and note is committed as a single use. A value scheme with neither (a facilitator scheme) must confirm through a `FundingRail` of its kind. Owner decision needed on the wording of section 7 |
-| N3b-16 | 6.4, 7, overview signer | The overview's `blind_sign(.., cap)` takes a per-call cap with no settlement identity, so neither the scheme host nor an out-of-process signer can bound a scheme that calls it repeatedly | Each call names its settlement (`ChangeLimit`: `ReplayKey`, status, unit, total cap) and the signer keeps a running total per `ReplayKey` and status, counting each distinct output once. Totals are per status because a timed-out `ReplayKey` is settled twice (the late OK settle and the FAILED refund) and the status changes exactly once, so at most one is ever recorded and sent. The first cap named for a settlement bounds it. So at most `value - charged` plus `value` is ever signed per `ReplayKey`, and only one of them reaches the client, as long as a scheme has no channel to the client but the gate (true for WASM plugs; compiled-in plugs are first-party). A single total per `ReplayKey` would bound the signing at `value`, but would short an honest client whose late OK settle signed change before the timeout won. Owner decision: keep per status, or require schemes to make the refund a superset of the change |
+| N3b-16 | 6.4, 7, overview signer | The overview's `blind_sign(.., cap)` takes a per-call cap with no settlement identity, so neither the scheme host nor an out-of-process signer can bound a scheme that calls it repeatedly | Each call names its settlement (`ChangeLimit`: `ReplayKey`, status, unit, cap) and the signer keeps **one running total per `ReplayKey`**, across the late OK settle and the FAILED refund of a timed-out outcome, counting each distinct output once across both, each call bounded by the first cap named for its status. So at most `value` is ever signed per `ReplayKey`. The earlier per-status totals let a hostile atomic scheme keep its change signatures and return them inside the refund's `scheme_result` (`value - charged` plus `value` signed). An honest refund is a superset of the change (`bnap:notes` FAILED signs `outputs` and `refund_outputs`), so it re-signs the change for nothing and is paid in full. Owner to confirm: schemes MUST make the refund a superset of the change |
 | N3b-17 | 6.4 Replay | A timed-out outcome whose scheme has nothing to refund leaves `scheme_result` empty, so "refund recorded" cannot be read from `scheme_result` | `OutcomeRecord.refund_recorded` marks it; `record_refund` takes `Option<&[u8]>`; no receipt is made while a refund is due |
 | N3b-18 | 6.4, 8.1 `replayed` | The late action whose settle lost to the timeout answers its own request from the recorded FAILED outcome | `replayed` is false: the Response answers the request that ran the action, not a replay |
 | N3b-19 | 6.1, 6.2; N3b-15 | Notes verified by the shared signer are single-use across schemes. Draft-00 scopes every `UseId` by scheme, so a note the operator's signer verified, carried by two value schemes (`bnap:notes` and a Cashu NUT-24 adapter), has two `UseId`s and was admitted once per scheme | A backing note commits under `H_"bnap/note"(Y)` (Y the 33-byte point), which does not depend on the scheme, like a `RailId`; the scheme's own `UseId`s stay singles too. One note admits one action whichever scheme carries it |
@@ -509,9 +566,10 @@ refuses a `replay_window` below `pending_timeout + 120`, and calls
 | N3b-22 | 4.4 step 4, 6.4 | A replay is checked like any credential, so once its offer has expired it is STALE before it reaches the store. An exact-scope offer that lives less than `pending_timeout` past the commit therefore leaves a crash-orphaned outcome's refund uncollectable, whatever the limits | **Core side done, gate decision open.** `process` looks up `outcome[rk]` before it checks expiry, answers a known credential from its outcome, and refuses a fresh commit on an expired offer or quote with STALE. A gate that takes the first option of the owner decision runs 4.4 as usual and, on STALE only, still calls `process` for an authentic offer: it answers replays and never commits. Owner decision: that, or require offers to outlive `pending_timeout`. The gate node owns 4.4 |
 | N3b-23 | 3, 7 vs 6.4 | Section 3's flow and section 7 price before commit (step 3 "price ... check value", step 4 "commit"), while 6.4 promises an OK or FAILED outcome inside `replay_window` its stored answer and makes replaying how a client fetches a missed receipt. Read literally, a quota-priced credential whose own commit filled the quota is refused on replay (UNDERPAID at 2⁶⁴ − 1 without pay, or at the entry amount), its recorded change is unreachable, and a crash-orphaned outcome's refund waits for a sweep | **Not the literal order.** `outcome::process` computes the `ReplayKey` (which needs no price), looks up `outcome[rk]` and classifies a known credential (replay, PENDING, SPENT) before any pricing; only a new credential is priced and committed. Owner decision: reword section 3 and 6.4 ("Before commit") to say replay detection precedes pricing |
 | N3b-24 | 6.4 Timeout | Whether the late action's settle can still win when no sweep or replay has timed the outcome out | No: the store's settle refuses a settle with `settled_at > created + pending_timeout` and times the outcome out in the same transaction, so the late action takes the refund path. Extends N3b-7 and N3b-13: no answer depends on sweep timing |
-| N3b-25 | 6.1, 12 "Retention" | 6.1's `expires + 60 <= now + replay_window` is checked at commit with the commit's limits, but purge runs later, possibly with other limits (a manifest that lowered `replay_window`). The probe: a reusable-only credential was purged and admitted again as New while its offer was valid | The record keeps `keep_until = expires + 60` and purge never deletes it before then; a fresh commit on an expired offer is STALE, so a purged credential can never be admitted again |
+| N3b-25 | 6.1, 12 "Retention" | 6.1's `expires + 60 <= now + replay_window` is checked at commit with the commit's limits, but purge runs later, possibly with other limits (a manifest that lowered `replay_window`). The probe: a reusable-only credential was purged and admitted again as New while its offer was valid | The record keeps `keep_until = expires + 60` and purge never deletes it until `keep_until + 60 < now`; a fresh commit on an expired offer is STALE. The extra clock skew covers a request whose clock reads up to 60 s behind the sweep's (taken before a slow check, or on another gate instance), so a purged credential can never be admitted again |
 | N3b-26 | 6.4, 7 | What the refund of a timed-out outcome is computed from once its replay is no longer priced | From the commit: the record keeps the FAILED refund cap (the admitted value for an `atomic` scheme, 0 otherwise) and the entry's unit. Backing a replay presents beyond what the commit consumed (6.1 keeps backing notes out of the `ReplayKey`) is neither consumed nor refunded |
 | N3b-27 | overview signer, 6.4 | Blinded outputs of amount 0, and empty batches, carry no value but are signer work without bound under any cap | Refused by `CappedSigner::blind_sign` before the budget is touched and by `ChangeLedger::reserve`; the `Signer` trait states the rule |
+| N3b-28 | overview signer, 6.1, 12 "Untrusted schemes", `schemes/bnap-notes.md` | The overview's `verify_unblinded(ks, y, c)` takes the point `Y` from the caller. From one note `(Y, C = k·Y)`, every multiple `(m·Y, m·C)` passes `C == k·y`, each with its own `note_id`, so a broken scheme (one that reads `Y` off the wire) makes one note count many times, against 12's "a broken scheme cannot make one payment count twice" | **Not the overview's signature.** `verify_unblinded(keyset, unit, amount, secret, c) -> Option<Point>`: the signer computes `Y = hash_to_curve(secret)` (NUT-00) and returns the `Y` it checked; the capped view derives it too and keeps only that `Y`. The overview's signer trait needs the same change |
 
 ### Tests, part B
 
@@ -549,10 +607,25 @@ refuses a `replay_window` below `pending_timeout + 120`, and calls
   `cashu:nut24` in both orders; a refund with nothing to return; a late
   settle answering from the FAILED record; a settle past the timeout with
   no sweep (the checker's LOW probe) and one at the deadline; the limits
-  rules (window floor, offer lifetime, minimum window, hand-built limits).
+  rules (window floor, offer lifetime, minimum window, hand-built limits);
+  a copy of a quota-priced credential that missed its own commit answered
+  PENDING, with and without pay (one interleaving, through a store whose
+  lookup misses once), and the checker's barrier probe (24 copies, 20
+  rounds, 300 us per store call: one New, the rest PENDING); a request
+  lagging the first purging sweep by 1, 30 or 60 s answered from the
+  record or STALE, never New; a settlement charged for one outcome refused
+  on another (`WrongOutcome`).
+- `src/note.rs`: `hash_to_curve` against the three NUT-00 vectors.
 - `src/test_support.rs`: the conformance suite passes on `MemoryStore`,
   and a store that checks and counts in two locked steps fails its
-  concurrent scenario.
+  concurrent scenario; purge keeps a record at `keep_until + 60` and
+  deletes it at `keep_until + 61`.
+- Doctests, all compile_fail: no `CoreMessage` from raw bytes (both
+  crates), no `Admission` literal, no `Pending` literal, no
+  `CommitPlan::build`, no `Settlement` literal (E0451), no
+  `SettleRequest::new`, `RefundRequest::new`, `SweepWindow::new` or
+  `ChangeCap::new` outside bnap-core (E0624). Each was also compiled on its
+  own to check that it fails for that reason.
 - `src/manifest.rs` and `tests/negative.rs`: I-JSON, a member named twice
   at the top level, in `routes[0]`, in `routes[0].price`, in `keys[0]`, in
   arrays and with an escaped spelling, refused; equal names in different
@@ -579,7 +652,17 @@ refuses a `replay_window` below `pending_timeout + 120`, and calls
 - `tests/sign.rs`: the section 14 offer and Response reproduced byte for
   byte through `UnsignedOffer` and `UnsignedResponse`; wrong keys and bad
   signatures refused.
-- `bnap-plug/tests/plugs.rs`: the capped signer (over the cap, overflow,
+- `bnap-plug/tests/plugs.rs` (the test signer checks notes with real
+  secp256k1 BDHKE math, `C = k·hash_to_curve(secret)`): a scaled `(m·Y,
+  m·C)` or negated note never verifies and one real note in five
+  credentials admits one action, with a change cap of 29, never 979 (the
+  checker's HIGH probe); a hostile atomic scheme that keeps its OK change
+  signatures and returns them with the refund gets at most the value
+  minted (96, not 142), after a late settle and after a slow action; an
+  honest scheme whose refund re-signs its change is paid in full (96
+  minted, and 46 on time); the ledger bounds change and refund of one
+  `ReplayKey` together in either order and pins the first cap per
+  status; the capped signer (over the cap, overflow,
   two calls whose sum exceeds the cap, 16 concurrent clones that sign 99
   of a 100 cap in 3 sat steps, a clone used after the guard closed, a
   guard dropped at once, a mismatched answer, 1,000 zero-amount outputs, a
@@ -605,22 +688,21 @@ refuses a `replay_window` below `pending_timeout + 120`, and calls
   1,000 sat for a 21 sat entry that signs no change and no refund; plus a string carrier, judge
   decisions, budgets and scheme error codes.
 
-#### Status at hand-off, part B (after the re-cut, round 3)
+#### Status at hand-off, part B (after the re-cut, repair round 1)
 
 - `cargo-q nextest run -p bnap-core -p bnap-plug --features
-  bnap-core/test-support`, and the same without the feature: 188 tests,
-  188 passed (161 in `bnap-core`, 27 in `bnap-plug`).
-- `cargo-q test --doc -p bnap-core -p bnap-plug`: 5 doctests pass, all
-  compile_fail: no `CoreMessage` from raw bytes in either crate, no
-  `Admission` literal, no `Pending` literal, no `CommitPlan::build` outside
-  bnap-core.
+  bnap-core/test-support`, and the same without the feature: 198 tests,
+  198 passed (167 in `bnap-core`, 31 in `bnap-plug`).
+- `cargo-q test --doc -p bnap-core -p bnap-plug`: 10 doctests pass, all
+  compile_fail (listed under "Tests, part B").
 - `cargo-q clippy -p bnap-core -p bnap-plug --all-targets --locked -- -D
   warnings`, with and without `--features bnap-core/test-support`: clean
   (pedantic included, toolchain 1.99.0).
 - `RUSTDOCFLAGS="-D warnings" cargo-q doc -p bnap-core -p bnap-plug
   --no-deps --features bnap-core/test-support`: clean. `cargo-q fmt
-  --check`: clean. `ops/leak-guard.sh`: clean. `Cargo.lock` unchanged by
-  the re-cut (no new dependency).
+  --check`: clean. `ops/leak-guard.sh`: clean. `Cargo.lock` unchanged
+  (no new dependency: the plug tests reach secp256k1 through
+  `bnap_core::secp256k1`).
 
 ### Repair round 1
 
@@ -678,6 +760,20 @@ credential.
 | S5c | Security 5, lead c: counters checked then incremented outside one atomic step in non-logic stores | Documented on `UseStore` (serializable means one atomic step per method) and tested: `test_support::conformance`, which a two-step store fails. Wiring it into `bnap-store-tests` is **deferred** to the store node, which owns that stub crate | `test_support::tests::the_memory_store_conforms`, `a_store_that_checks_and_counts_in_two_steps_fails_conformance` | `9b1ee98` |
 | S5d | Security 5, lead d: `RailId`s must be single even when the scheme's model is rate or reusable | Closed: `Uses::collect` adds every `RailId` to the singles whatever the model | `outcome::tests::rail_ids_are_single_whatever_the_scheme_model` | `544ac2c` |
 
+### Re-cut, repair round 1
+
+Non-author checkers failed the re-cut with five findings. Each has a test
+that failed before its fix (run and seen failing, with the numbers below)
+and passes after, committed with the fix.
+
+| # | Finding | Fix | Test that proves it | Commit |
+| --- | --- | --- | --- | --- |
+| R1 | HIGH, money path: `Signer::verify_unblinded` took `Y` from the scheme, so a scaled pair `(m·Y, m·C)` of one real note passed `C == k·y` with a new `note_id` each time. With real BDHKE math one 50 sat note admitted 5 actions out of 5 | The scheme passes the note's secret; the signer computes `Y = hash_to_curve(secret)` (NUT-00, new `bnap_core::note`) and returns it; the capped view derives `Y` itself, refuses a signer answer naming another point, and tallies only that `Y` (N3b-28) | `plugs::a_scaled_or_negated_note_never_counts_and_one_note_admits_one_action` (before: the probe counted 5 New for one note); `note::tests::hash_to_curve_matches_the_nut_00_vectors` | `fe65a17` |
+| R2 | MEDIUM-LOW: TOCTOU between the `outcome[rk]` lookup and admission; a copy of a quota-priced credential that raced its own commit answered UNDERPAID instead of PENDING | When the fresh path fails before the commit, `process` reads `outcome[rk]` again and classifies a record it finds | `outcome::tests::a_copy_that_missed_the_record_is_pending_not_underpaid` (before: `Underpaid { price: 21, value: 10 }`), `concurrent_copies_of_one_quota_priced_credential_are_never_underpaid` (before: 11 of 24 copies UNDERPAID in round 1) | `a3633e9` |
+| R3 | LOW: purge deleted a record as soon as `keep_until < now`, and a fresh commit is STALE only when `now > keep_until`, so a request whose clock lagged the sweep's by 1 s was admitted again as New | Purge only when `keep_until + 60 < now` (N3b-25); docs, the conformance scenario and the retention test pin the new edge | `outcome::tests::a_lagging_clock_never_readmits_a_purged_credential` (before: the sweep at `keep_until + 1` purged 1); conformance `purge_keeps_what_must_stay` | `4e90acf` |
+| R4 | LOW, API sealing: the store trait's writes took raw arguments, `Settlement` had public fields and any one settled any outcome, `record_refund(None)` could skip the refund, and `for_change` paired a cap with any `ReplayKey` | `SettleRequest`, `RefundRequest`, `SweepWindow` sealed; `Settlement` private and bound to its `OutcomeCharge`'s `ReplayKey` (`WrongOutcome` otherwise); `ChangeCap` carries its `ReplayKey` and `for_change` takes only the cap; `Charge` is pure pricing. `record_refund` cannot see the plug call, so its docs say the gate MUST NOT skip the refund settle (no longer "cannot") | `outcome::tests::a_settlement_settles_only_the_outcome_it_was_charged_for` (before: the other outcome settled OK); compile_fail doctests in `store` and `bnap_plug::signer` | `0b7aa89` |
+| R5 | A hostile atomic value scheme got more than the value signed: when an outcome opened an OK change budget and then ended FAILED, it signed both budgets in full and returned the kept change inside the refund's `scheme_result` | `ChangeLedger` keeps one total per `ReplayKey` across both statuses, each distinct output once, each call bounded by its status's first cap; an honest refund is a superset of the change (N3b-16) | `plugs::a_hostile_atomic_scheme_never_gets_more_than_the_value_signed` (before: 142 sat minted for 96 paid), `the_ledger_bounds_change_and_refund_together`; `an_honest_refund_that_re_signs_its_change_is_paid_in_full` keeps the honest path whole | `5775363` |
+
 ### Changes to part A files
 
 - `OfferFields::to_stream` and `ResponseFields::to_stream` are
@@ -705,6 +801,16 @@ credential.
 - Downstream crates that want `MemoryStore` or the conformance suite add
   `bnap-core = { path = "../bnap-core", features = ["test-support"] }` to
   their dev-dependencies.
+- **API changes in the re-cut's repair round 1**: `Signer::verify_unblinded`
+  and `CappedSigner::verify_unblinded` take the note's secret instead of
+  `Y` and return `Option<Point>`; `ChangeLedger::total` takes only the
+  `ReplayKey` and the signer keeps one total per outcome;
+  `CappedSigner::for_change(inner, &ChangeCap)` takes no `ReplayKey`;
+  `Pending::charge` returns `OutcomeCharge`; `pricing::Charge` fields are
+  getters and `cap` is `change()`; `Settlement` fields are private and
+  `Settlement::new` takes an `OutcomeCharge`; `UseStore::settle`,
+  `expire_pending`, `record_refund` and `purge` take `SettleRequest`,
+  `SweepWindow` and `RefundRequest`; `SettleError` gains `WrongOutcome`.
 - **API changes in the re-cut** for anyone who used the round 2 API:
   `outcome::commit`, `outcome::admit`, `CommitError`, `AdmitError`,
   `store::PlanInput` and the public `CommitPlan::build` are gone; call
@@ -726,9 +832,10 @@ credential.
   an `Executor` for the store's runtime (deferred item S5c), and may add
   the state-machine scenarios of `src/outcome/tests.rs` through `process`.
   Persist the new record fields `keep_until`, `refund_cap` and `unit`;
-  `settle` takes `pending_timeout` and must time a late settle out in the
-  same transaction; `purge` takes `now` and must keep a record until its
-  `keep_until` has passed.
+  `settle(&SettleRequest)` must time a settle later than `created +
+  req.pending_timeout()` out in the same transaction; `purge(&SweepWindow)`
+  must keep a record until `keep_until + 60 < window.now()`. The request
+  types have getters only: a store reads them and never builds one.
 - **Registry**: `policy::PROPERTIES` is an embedded copy of
   `registry/properties.toml`; replace it with the export and add a test
   that the order matches. The gate supplies each entry's vector and its
@@ -745,10 +852,12 @@ credential.
   (`credential::native_context`, `native_digest`) is not wired into a flow.
 - **Signers** (`bnap-signer-file`, `bnap-signer-process`): `schnorr` MUST
   check that the key named by the `CoreMessage` is held for
-  `purpose().key_use()`. `verify_unblinded` MUST answer false for a keyset
-  not in the given unit. `blind_sign` MUST refuse a keyset not in
+  `purpose().key_use()`. `verify_unblinded` MUST compute `Y =
+  hash_to_curve(secret)` itself (`bnap_core::note::hash_to_curve`), check
+  `C = k·Y` against that point only, return it, and answer `None` for a
+  keyset not in the given unit. `blind_sign` MUST refuse a keyset not in
   `limit.unit`, MUST refuse an empty batch and any output of amount 0, and
-  MUST keep the running total per settlement:
+  MUST keep one running total per `ReplayKey`, across OK and FAILED:
   `ChangeLedger::reserve` before signing does both the total and the
   dedupe. `ChangeLedger` is in memory; a signer that restarts forgets
   totals, which is safe only because the gate never sends change before
@@ -762,7 +871,12 @@ credential.
   already answers a known credential whatever its offer's expiry and
   refuses a new one with STALE, so the first option needs only the gate to
   call `process` for an authentic but expired offer.
-- **Schemes** (`bnap-scheme-*`): `Verified.value` is a claim in the chosen
+- **Schemes** (`bnap-scheme-*`): an atomic scheme MUST make its FAILED
+  refund a superset of its OK change (re-sign the change outputs, then add
+  the refund outputs), as `bnap:notes` does: the signer bounds change and
+  refund of one outcome together at the value, so a refund that signs
+  fresh outputs for the whole value after a late OK settle is refused.
+  `Verified.value` is a claim in the chosen
   pay entry's unit, and admission counts it only up to the backing. A
   facilitator or notes scheme must not rely on scheme-scoped `UseId`s for
   value the operator's signer confirmed: the socket consumes such a note
@@ -770,9 +884,10 @@ credential.
   Cashu adapter and `bnap:notes` can never both spend one note. Only a
   scheme registered `refund = "atomic"` gets a change cap above 0. A
   rail scheme names its payments in `rail_ids`; a notes scheme checks
-  every note through `cx.signer.verify_unblinded` (the view names a note
-  by its 33-byte `Y`; the commit consumes it under `H_"bnap/note"(Y)`
-  whatever the scheme's own use IDs are); a facilitator scheme (x402, card) needs a `FundingRail` of its
+  every note through `cx.signer.verify_unblinded(keyset, amount, secret,
+  c)` and uses the `Y` it returns (the view keeps the note under that
+  33-byte `Y`; the commit consumes it under `H_"bnap/note"(Y)` whatever the
+  scheme's own use IDs are); a facilitator scheme (x402, card) needs a `FundingRail` of its
   kind to confirm its payments, or it is always UNDERPAID above price 0.
 - **Stores** also need the `refund_recorded` flag and the
   `record_refund(rk, Option<&[u8]>)` rule of `store::logic`.
@@ -783,5 +898,7 @@ credential.
 - Part A's review item on duplicate JSON member names in the manifest is
   closed (S1). A carrier that hashes JSON through JCS (MCP) should read it
   with `manifest::parse_strict` too.
-- Owner decisions open from this node: N3b-1, N3b-15, N3b-16, N3b-22 and
-  N3b-23 (spec wording for replay detection before pricing).
+- Owner decisions open from this node: N3b-1, N3b-15, N3b-16 (confirm
+  that schemes MUST make the refund a superset of the change), N3b-22,
+  N3b-23 (spec wording for replay detection before pricing) and N3b-28
+  (the overview's `verify_unblinded` signature).
