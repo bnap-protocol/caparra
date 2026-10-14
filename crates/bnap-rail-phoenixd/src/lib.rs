@@ -34,8 +34,13 @@ use serde::Deserialize;
 
 /// phoenixd's default listen address.
 pub const DEFAULT_URL: &str = "http://127.0.0.1:9740";
-/// How long invoices live unless the configuration says otherwise.
-pub const DEFAULT_EXPIRY: u64 = 3_600;
+/// How long invoices live unless the configuration says otherwise: five
+/// minutes, the lifetime of an exact-scope offer (draft-00 section 10 asks
+/// for minutes). An invoice must not outlive the offer that carries it: a
+/// payment made after the offer is STALE is refused, and a class O scheme
+/// refunds nothing, so the Lightning schemes refuse to offer such an
+/// invoice. Set the expiry to the gate's exact-scope offer lifetime or less.
+pub const DEFAULT_EXPIRY: u64 = 300;
 /// How long an API call may take before the rail gives up.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The webhook signature header.
@@ -51,7 +56,7 @@ pub struct PhoenixdConfig {
     pub password: String,
     /// The `webhook-secret`, to check webhooks with.
     pub webhook_secret: Option<String>,
-    /// Invoice lifetime in seconds.
+    /// Invoice lifetime in seconds: at most the exact-scope offer lifetime.
     pub expiry: u64,
     /// The longest an API call may take.
     pub timeout: Duration,

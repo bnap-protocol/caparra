@@ -25,8 +25,11 @@ use bnap_core::hash::{TaggedHasher, sha256};
 use bnap_core::ids::rail;
 use bnap_plug::{Confirmed, FundingRail, PayId, PayRequest, PayState, RailError, RailRef};
 
-/// How long an invoice lives unless [`FakeRail::with_ttl`] says otherwise.
-pub const DEFAULT_TTL: u64 = 600;
+/// How long an invoice lives unless [`FakeRail::with_ttl`] says otherwise:
+/// five minutes, the lifetime of an exact-scope offer. Like every rail's
+/// invoices, the fake's must not outlive the offer that carries them; the
+/// Lightning schemes refuse to offer one that does.
+pub const DEFAULT_TTL: u64 = 300;
 
 /// The tag the preimages derive under.
 const PREIMAGE_TAG: &str = "bnap-rail-fake/preimage";
@@ -320,6 +323,17 @@ mod tests {
             (c.state, c.amount, c.unit.as_str()),
             (PayState::Paid, 21, "sat")
         );
+    }
+
+    #[test]
+    fn default_invoices_end_with_a_five_minute_offer() {
+        // An invoice must not outlive the exact-scope offer that carries it
+        // (bnap-scheme-l402, bnap-scheme-mpp refuse to offer one), and those
+        // offers live minutes (draft-00 section 10).
+        let rail = FakeRail::new([1; 32]);
+        rail.set_now(1_000);
+        let r = block_on(rail.request(21, "sat", [7; 32])).unwrap();
+        assert_eq!(r.expires, 1_300);
     }
 
     #[test]

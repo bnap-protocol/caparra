@@ -31,8 +31,13 @@ use nwc::prelude::{
     NostrWalletConnectOptions, NostrWalletConnectURI, TransactionState, TransactionType, nip47,
 };
 
-/// How long invoices live unless the configuration says otherwise.
-pub const DEFAULT_EXPIRY: u64 = 3_600;
+/// How long invoices live unless the configuration says otherwise: five
+/// minutes, the lifetime of an exact-scope offer (draft-00 section 10 asks
+/// for minutes). An invoice must not outlive the offer that carries it: a
+/// payment made after the offer is STALE is refused, and a class O scheme
+/// refunds nothing, so the Lightning schemes refuse to offer such an
+/// invoice. Set the expiry to the gate's exact-scope offer lifetime or less.
+pub const DEFAULT_EXPIRY: u64 = 300;
 /// How long a wallet request may take before the rail gives up.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -62,7 +67,8 @@ impl NwcRail {
         Self::with(uri, DEFAULT_EXPIRY, DEFAULT_TIMEOUT)
     }
 
-    /// A rail with an invoice expiry and a request timeout.
+    /// A rail with an invoice expiry (at most the exact-scope offer
+    /// lifetime) and a request timeout.
     pub fn with(uri: &str, expiry: u64, timeout: Duration) -> Result<Self, RailError> {
         // The relay connections use rustls; give it a provider first.
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
@@ -335,6 +341,9 @@ mod tests {
         let uri = format!("nostr+walletconnect://{pk}?relay=wss%3A%2F%2Frelay.example&secret={sk}");
         let r = NwcRail::new(&uri).unwrap();
         assert!(!format!("{r:?}").contains(sk));
+        // The default expiry is no longer than a five-minute exact-scope
+        // offer: the Lightning schemes refuse an invoice that outlives it.
+        assert!(format!("{r:?}").contains("expiry: 300"), "{r:?}");
         assert_eq!(r.kind(), "ln");
     }
 }

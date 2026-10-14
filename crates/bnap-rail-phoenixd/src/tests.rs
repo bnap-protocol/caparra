@@ -127,7 +127,7 @@ async fn an_invoice_is_created_with_the_memo_as_description_hash() {
     assert_eq!(
         seen.body,
         format!(
-            "amountSat=21&descriptionHash={}&expirySeconds=3600",
+            "amountSat=21&descriptionHash={}&expirySeconds=300",
             hex::encode([7; 32])
         )
     );

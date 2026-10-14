@@ -31,8 +31,13 @@ use fedimint_tonic_lnd::LightningClient;
 use fedimint_tonic_lnd::lnrpc::invoice::InvoiceState;
 use fedimint_tonic_lnd::lnrpc::{Invoice, PaymentHash};
 
-/// How long invoices live unless the configuration says otherwise.
-pub const DEFAULT_EXPIRY: u64 = 3_600;
+/// How long invoices live unless the configuration says otherwise: five
+/// minutes, the lifetime of an exact-scope offer (draft-00 section 10 asks
+/// for minutes). An invoice must not outlive the offer that carries it: a
+/// payment made after the offer is STALE is refused, and a class O scheme
+/// refunds nothing, so the Lightning schemes refuse to offer such an
+/// invoice. Set the expiry to the gate's exact-scope offer lifetime or less.
+pub const DEFAULT_EXPIRY: u64 = 300;
 /// How long a node call may take before the rail gives up.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -45,7 +50,7 @@ pub struct LndConfig {
     pub cert: PathBuf,
     /// A macaroon allowed to add and look up invoices (`invoice.macaroon`).
     pub macaroon: PathBuf,
-    /// Invoice lifetime in seconds.
+    /// Invoice lifetime in seconds: at most the exact-scope offer lifetime.
     pub expiry: u64,
     /// The longest a node call may take.
     pub timeout: Duration,
@@ -367,6 +372,9 @@ mod tests {
     fn configuration_has_defaults() {
         let c = LndConfig::new("https://127.0.0.1:10009", "tls.cert", "invoice.macaroon");
         assert_eq!(c.expiry, DEFAULT_EXPIRY);
+        // No longer than a five-minute exact-scope offer: the Lightning
+        // schemes refuse an invoice that outlives its offer.
+        assert_eq!(c.expiry, 300);
         assert_eq!(c.timeout, DEFAULT_TIMEOUT);
     }
 
