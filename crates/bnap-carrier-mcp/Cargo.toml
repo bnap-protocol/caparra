@@ -8,5 +8,28 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[dependencies]
+bnap-core.workspace = true
+bnap-plug.workspace = true
+bnap-scheme-mpp.workspace = true
+axum.workspace = true
+base64.workspace = true
+rmcp = { workspace = true, features = ["transport-streamable-http-server"] }
+serde_json.workspace = true
+serde_json_canonicalizer.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+hex.workspace = true
+bnap-core = { workspace = true, features = ["test-support"] }
+bnap-rail-fake.workspace = true
+bnap-scheme-dpop.workspace = true
+bnap-scheme-l402.workspace = true
+reqwest.workspace = true
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
+
 [lints]
 workspace = true
