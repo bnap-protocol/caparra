@@ -19,7 +19,7 @@
 use bnap_core::class::BindingClass;
 use bnap_core::hash::{Context, RailId, Scope};
 use bnap_core::ids;
-use bnap_core::limits::Limits;
+use bnap_core::limits::{CLOCK_SKEW, Limits};
 use bnap_core::offer::{AttestEntry, OfferFields, PayEntry};
 use bnap_core::outcome::{self, Admitted, Pending, ProcessError, Recorded, Request, SettleError};
 use bnap_core::pricing::{Backing, BackingSource, PayValue, PriceError, Refund};
@@ -28,7 +28,7 @@ use bnap_core::store::{
     ChangeOutput, OutcomeRecord, OutcomeStatus, Reserve, SchemeUses, Settlement, UseModel, UseStore,
 };
 use bnap_core::test_support::conformance::Executor;
-use bnap_core::{ReplayKey, Status, VerifiedAttest};
+use bnap_core::{CounterKey, ReplayKey, Status, VerifiedAttest};
 
 use std::sync::Mutex;
 
@@ -760,6 +760,72 @@ pub fn audit<S: UseStore + ?Sized>(store: &S, exec: &impl Executor, log: &Log) {
             live,
             "the shared counter counts the outcomes that are not FAILED"
         );
+    }
+}
+
+/// Counter pruning spares every live epoch. Counter pruning is each
+/// store's own `prune_counters(now)`, outside [`UseStore`], so the test
+/// hands it in as `prune` (returns how many counters it deleted), with
+/// `plant` to write a raw counter row of value 1 and the given `resets_at`
+/// (`None` for NULL), bypassing the store.
+///
+/// A commit at [`T0`] under a rate of 10 per minute and one under a quota
+/// with a one-hour epoch each make a counter of 1. Pruning deletes a
+/// counter only once its epoch ended more than a clock skew before `now`
+/// (`resets_at + 60 < now`): nothing at `T0`, at the rate epoch's end or a
+/// skew after it; one second later the rate counter goes (it reads 0)
+/// while the quota counter of the live epoch still reads 1, until its own
+/// epoch ends. Rows the store cannot order are never pruned, at any `now`:
+/// a NULL `resets_at` and one at or above 2^63 (stored negative). A store
+/// that pruned live counters would give back room inside the current
+/// epoch, admitting uses past the rate or the quota.
+pub fn pruning_spares_live_counters<S: UseStore + ?Sized>(
+    store: &S,
+    exec: &impl Executor,
+    prune: impl Fn(u64) -> u64,
+    plant: impl Fn(&CounterKey, Option<u64>),
+) {
+    let rate =
+        new(exec.block_on(Req::note(1, &note(1), 96, 50, Some((10, b"who"))).process(store)));
+    let quota = new(exec.block_on(Req::quota(2, b"quota-who", 5).process(store)));
+    let rate_key = record(store, exec, rate.replay_key()).counters[0];
+    let quota_key = *record(store, exec, quota.replay_key())
+        .counters
+        .last()
+        .expect("the quota counter");
+    let rate_end = (T0 / 60 + 1) * 60;
+    let quota_end = (T0 / 3600 + 1) * 3600;
+    assert!(
+        rate_end + CLOCK_SKEW + 1 < quota_end,
+        "T0 leaves the quota epoch live"
+    );
+    let unordered = [
+        (CounterKey([0xc0; 32]), None),
+        (CounterKey([0xc1; 32]), Some(1 << 63)),
+        (CounterKey([0xc2; 32]), Some(u64::MAX)),
+    ];
+    for (key, resets_at) in &unordered {
+        plant(key, *resets_at);
+    }
+    let count = |key: &CounterKey| exec.block_on(store.counter(key)).unwrap();
+    for now in [0, T0, rate_end, rate_end + CLOCK_SKEW] {
+        assert_eq!(prune(now), 0, "no epoch ended a skew before {now}");
+        assert_eq!((count(&rate_key), count(&quota_key)), (1, 1), "at {now}");
+    }
+    assert_eq!(prune(rate_end + CLOCK_SKEW + 1), 1, "the rate epoch ended");
+    assert_eq!(count(&rate_key), 0);
+    assert_eq!(count(&quota_key), 1, "the live quota epoch stays");
+    assert_eq!(prune(quota_end + CLOCK_SKEW), 0);
+    assert_eq!(count(&quota_key), 1);
+    assert_eq!(
+        prune(quota_end + CLOCK_SKEW + 1),
+        1,
+        "the quota epoch ended"
+    );
+    assert_eq!(count(&quota_key), 0);
+    assert_eq!(prune(u64::MAX), 0, "a row the store cannot order stays");
+    for (key, resets_at) in &unordered {
+        assert_eq!(count(key), 1, "resets_at {resets_at:?} is never pruned");
     }
 }
 

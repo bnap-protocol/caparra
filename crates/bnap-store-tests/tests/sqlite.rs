@@ -147,6 +147,27 @@ fn mixed_load_moves_each_outcome_once() {
 }
 
 #[test]
+fn pruning_spares_live_counters() {
+    let exec = Tokio::new();
+    let held = fresh(&exec);
+    let store = &held.store;
+    scenarios::pruning_spares_live_counters(
+        store,
+        &exec,
+        |now| exec.block_on(store.prune_counters(now)).unwrap(),
+        |key, resets_at| {
+            exec.block_on(
+                sqlx::query("INSERT INTO counter (counter_key, value, resets_at) VALUES (?, 1, ?)")
+                    .bind(&key.0[..])
+                    .bind(resets_at.map(u64::cast_signed))
+                    .execute(store.pool()),
+            )
+            .unwrap();
+        },
+    );
+}
+
+#[test]
 fn the_schema_is_applied_once_and_a_store_reopens_its_file() {
     let exec = Tokio::new();
     let dir = tempfile::tempdir().unwrap();
