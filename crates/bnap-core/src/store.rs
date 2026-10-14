@@ -785,6 +785,11 @@ pub enum Reserve {
     /// An empty batch, or an output of amount 0: no value, only signer
     /// work and record growth. Nothing was written.
     NoValue,
+    /// The outcome's result is recorded, so the batch's new outputs would
+    /// pay out beyond it (6.4): it left PENDING, and this is not the refund
+    /// of a timed-out outcome whose refund is still due. Nothing was
+    /// written. Outputs reserved before are still accepted.
+    Settled,
     /// No outcome under that `ReplayKey`: never committed, or purged after
     /// its record window, when no settlement of it can run any more.
     Unknown,
@@ -842,7 +847,7 @@ impl StoreError {
 /// commits of one plan and of plans sharing a single, commits against one
 /// counter, settles racing the timeout on an outcome that shares its
 /// counter, concurrent refunds of one timed-out outcome, and change
-/// reservations racing settles, or sweeps, on one record
+/// reservations racing settles, sweeps, or a refund record on one outcome
 /// ([`Self::reserve_change`]).
 #[async_trait::async_trait]
 pub trait UseStore: Send + Sync {
@@ -889,14 +894,18 @@ pub trait UseStore: Send + Sync {
     /// instance and every signer.
     ///
     /// Outputs already reserved for the outcome, under either status, count
-    /// nothing (the same output makes the same note). The new ones are
-    /// added to the outcome's running total, across its OK change and its
-    /// FAILED refund, only if the total stays within the cap: the smallest
-    /// of `req.cap()`, the record's [`OutcomeRecord::refund_cap`] (the
-    /// admitted value) and, for OK, the cap the first OK reservation named.
-    /// Otherwise nothing is written ([`Reserve::OverCap`]). An empty batch
-    /// or an output of amount 0 is refused ([`Reserve::NoValue`]), and an
-    /// outcome without a record ([`Reserve::Unknown`]).
+    /// nothing (the same output makes the same note). New ones are taken
+    /// only before the result they pay is recorded: while the outcome is
+    /// PENDING, or, for a FAILED reservation, while a timed-out outcome
+    /// [needs its refund](OutcomeRecord::needs_refund); otherwise nothing
+    /// is written ([`Reserve::Settled`]). They are added to the outcome's
+    /// running total, across its OK change and its FAILED refund, only if
+    /// the total stays within the cap: the smallest of `req.cap()`, the
+    /// record's [`OutcomeRecord::refund_cap`] (the admitted value) and, for
+    /// OK, the cap the first OK reservation named. Otherwise nothing is
+    /// written ([`Reserve::OverCap`]). An empty batch or an output of
+    /// amount 0 is refused ([`Reserve::NoValue`]), and an outcome without a
+    /// record ([`Reserve::Unknown`]).
     ///
     /// One serializable transaction, like every write: a reservation never
     /// interleaves with another, or with a settle, timeout, refund or purge
@@ -1098,6 +1107,14 @@ pub mod logic {
             return Reserve::Reserved {
                 total: rec.change_total,
             };
+        }
+        // Fresh outputs only before the result they pay is recorded: change
+        // and an in-time refund while PENDING, a timed-out outcome's refund
+        // while it is due. Otherwise they would pay out beyond the recorded
+        // scheme_result (6.4).
+        let open = rec.status == OutcomeStatus::Pending || (!ok && rec.needs_refund());
+        if !open {
+            return Reserve::Settled;
         }
         let total = fresh
             .iter()

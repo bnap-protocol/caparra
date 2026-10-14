@@ -618,6 +618,99 @@ fn concurrent_refunds_of_one_outcome_sign_its_value_once() {
 }
 
 #[test]
+fn no_change_is_signed_after_the_settle_is_recorded() {
+    // The checker's probe (change_can_be_signed_after_the_settle_is_recorded):
+    // an OK cap used after the store recorded the settle signed 46 sat of
+    // change while the record kept scheme_result None, so every replay
+    // answered without it, against 6.4 ("The scheme MUST NOT pay out
+    // anything beyond that recorded result"). Fresh outputs are now
+    // reserved only while the outcome is PENDING.
+    let inner = Arc::new(TestSigner::new());
+    let o = sat(96, 50);
+    let charge = o.pending.charge(Status::Ok, 0);
+    let s = Settlement::new(&charge, NOW);
+    let rec = block_on(outcome::settle(
+        &*o.store,
+        &o.pending,
+        &s,
+        &Limits::default(),
+    ))
+    .unwrap();
+    assert_eq!(rec.record().scheme_result, None);
+    let (late, _g1) = o.view(&inner, charge.cap());
+    assert!(matches!(
+        block_on(late.blind_sign(&ks(), &outputs(1, &[32, 8, 4, 2]))),
+        Err(SignerError::Refused(_))
+    ));
+    let (refund, _g2) = o.view(&inner, &o.cap(Status::Failed));
+    assert!(matches!(
+        block_on(refund.blind_sign(&ks(), &outputs(2, &[64]))),
+        Err(SignerError::Refused(_))
+    ));
+    assert_eq!((inner.minted(), o.reserved()), (0, 0));
+    assert!(inner.calls().is_empty(), "refused before the signer");
+    // Change reserved before the settle, as an honest gate does, can be
+    // signed again after it: the same notes, nothing fresh.
+    let honest = sat(96, 50);
+    let charge = honest.pending.charge(Status::Ok, 0);
+    let reserved = outputs(3, &[32, 8, 4, 2]);
+    let (before, _g3) = honest.view(&inner, charge.cap());
+    block_on(before.blind_sign(&ks(), &reserved)).unwrap();
+    let s = Settlement::new(&charge, NOW);
+    block_on(outcome::settle(
+        &*honest.store,
+        &honest.pending,
+        &s,
+        &Limits::default(),
+    ))
+    .unwrap();
+    let (again, _g4) = honest.view(&inner, charge.cap());
+    block_on(again.blind_sign(&ks(), &reserved)).unwrap();
+    let (fresh, _g5) = honest.view(&inner, charge.cap());
+    assert!(matches!(
+        block_on(fresh.blind_sign(&ks(), &outputs(4, &[1]))),
+        Err(SignerError::Refused(_))
+    ));
+    assert_eq!((inner.minted(), honest.reserved()), (46, 46));
+}
+
+#[test]
+fn a_refund_cap_signs_nothing_after_the_refund_is_recorded() {
+    // The checker's probe (a_refund_cap_signs_after_the_refund_is_recorded):
+    // two replays of a timed-out outcome both took its refund cap; one
+    // signed 10 sat and recorded "refund 10", then the other signed 86
+    // more, 96 minted against a recorded refund of 10. Fresh refund
+    // outputs are now reserved only while the refund is due.
+    let inner = Arc::new(TestSigner::new());
+    let o = sat(96, 50);
+    let l = Limits::default();
+    let late = Settlement::new(
+        &o.pending.charge(Status::Ok, 0),
+        NOW + l.pending_timeout + 1,
+    );
+    let Err(SettleError::AlreadySettled(due)) =
+        block_on(outcome::settle(&*o.store, &o.pending, &late, &l))
+    else {
+        panic!("the late settle loses to the timeout");
+    };
+    assert!(due.needs_refund());
+    let cap = due.refund_cap().unwrap();
+    let (first, _g1) = o.view(&inner, &cap);
+    let (second, _g2) = o.view(&inner, &cap);
+    let refund = outputs(1, &[8, 2]);
+    block_on(first.blind_sign(&ks(), &refund)).unwrap();
+    let rec = block_on(outcome::record_refund(&*o.store, &due, Some(b"refund 10"))).unwrap();
+    assert!(!rec.needs_refund());
+    assert!(matches!(
+        block_on(second.blind_sign(&ks(), &outputs(2, &[64, 16, 4, 2]))),
+        Err(SignerError::Refused(_))
+    ));
+    // The recorded refund's own outputs make the same notes again.
+    block_on(second.blind_sign(&ks(), &refund)).unwrap();
+    assert_eq!((inner.minted(), o.reserved()), (10, 10));
+}
+
+#[test]
 fn the_verify_only_view_signs_nothing() {
     let inner = Arc::new(TestSigner::new());
     let view = CappedSigner::verify_only(inner.clone(), "sat");
@@ -1674,7 +1767,12 @@ fn a_hostile_atomic_scheme_never_gets_more_than_the_value_signed() {
             "minted {}",
             gate.signer.minted()
         );
-        assert_eq!(f.scheme_result.as_deref(), Some(&b"hoard 46"[..]));
+        // A late settle signed its 46 sat of change while the outcome was
+        // still PENDING, and the refund could add nothing fresh past 96.
+        // After the sweep, the OK settle signs nothing (the outcome's FAILED
+        // result is recorded) and the refund signs the whole 96.
+        let want: &[u8] = if late { b"hoard 46" } else { b"hoard 96" };
+        assert_eq!(f.scheme_result.as_deref(), Some(want));
     }
 }
 

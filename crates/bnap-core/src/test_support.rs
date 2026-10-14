@@ -236,8 +236,8 @@ pub fn unsigned_response(fields: &ResponseFields) -> Result<UnsignedResponse, Si
 /// write of the money path: commits of one plan, commits sharing a single,
 /// commits against one counter, settles racing the timeout on an outcome
 /// that shares its rate counter with another, refunds of one timed-out
-/// outcome, and change reservations racing settles, or sweeps, on one
-/// record. Only a store whose every method decides and writes in one
+/// outcome, and change reservations racing settles, sweeps, or a refund
+/// record on one outcome. Only a store whose every method decides and writes in one
 /// serializable step passes them; the tests of this module show a store
 /// that splits any one of those writes in two failing.
 ///
@@ -480,6 +480,8 @@ pub mod conformance {
         concurrent_refunds_record_once(&make(), exec);
         change_is_one_total_per_outcome(&make(), exec);
         concurrent_reservations_keep_one_total(&make(), exec);
+        no_fresh_change_after_the_outcome_settles(&make(), exec);
+        no_fresh_change_after_a_racing_refund(&make(), exec);
         purge_keeps_what_must_stay(&make(), exec);
     }
 
@@ -921,6 +923,28 @@ pub mod conformance {
         Expire(bool),
         /// A reservation of this output, and the store's answer.
         Reserve(Reserve, ChangeOutput),
+        /// A refund record, and the record it returned.
+        Refund(Box<OutcomeRecord>),
+    }
+
+    /// The outputs `answers` got reserved.
+    fn reserved(answers: &[Call]) -> Vec<&ChangeOutput> {
+        answers
+            .iter()
+            .filter_map(|a| match a {
+                Call::Reserve(Reserve::Reserved { .. }, out) => Some(out),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `rec` holds exactly the `reserved` outputs, each worth `each`, and
+    /// their total: no reservation was lost.
+    fn holds(rec: &OutcomeRecord, reserved: &[&ChangeOutput], each: u64) {
+        let n = u64::try_from(reserved.len()).unwrap();
+        assert_eq!(rec.change_total, each * n, "no reservation lost: {rec:?}");
+        assert_eq!(rec.change_outputs.len(), reserved.len());
+        assert!(reserved.iter().all(|o| rec.change_outputs.contains(*o)));
     }
 
     /// The change ledger, concurrently: on an outcome worth 96 sat, four
@@ -931,11 +955,14 @@ pub mod conformance {
     /// settle always finds the outcome PENDING and overlaps the
     /// reservations, and so does a sweep. Which threads move the record
     /// rotates from one round of a kind to the next. Exactly one call moves
-    /// the outcome, exactly three reservations are let through, and the
-    /// record holds all three and their total: a reservation is never lost
-    /// to a write that read the record before it. A store whose
-    /// reservation, or whose settle or timeout, decides on a snapshot and
-    /// writes in a second step fails here.
+    /// the outcome, and the record holds every output let through and their
+    /// total: a reservation is never lost to a write that read the record
+    /// before it. Against a sweep, the timed-out outcome's refund is due,
+    /// so exactly three of four are let through. Against a settle, a fresh
+    /// output gets in only before it (6.4: nothing paid beyond the recorded
+    /// result), so the record every settle returns is the final one. A
+    /// store whose reservation, or whose settle or timeout, decides on a
+    /// snapshot and writes in a second step fails here.
     pub fn concurrent_reservations_keep_one_total<S: UseStore + ?Sized>(
         store: &S,
         exec: &impl Executor,
@@ -968,28 +995,131 @@ pub mod conformance {
                 .filter(|a| match a {
                     Call::Settle(s) => matches!(**s, Settle::Settled(_)),
                     Call::Expire(timed_out) => *timed_out,
-                    Call::Reserve(..) => false,
+                    Call::Reserve(..) | Call::Refund(_) => false,
                 })
                 .count();
             assert_eq!(moved, 1, "exactly one transition: {answers:?}");
-            let reserved: Vec<&ChangeOutput> = answers
-                .iter()
-                .filter_map(|a| match a {
-                    Call::Reserve(Reserve::Reserved { .. }, out) => Some(out),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(reserved.len(), 3, "three of four fit in 96: {answers:?}");
+            let reserved = reserved(&answers);
             let rec = outcome(store, exec, &rk);
-            assert_eq!(rec.change_total, 96, "no reservation lost: {rec:?}");
-            assert_eq!(rec.change_outputs.len(), 3);
-            assert!(reserved.iter().all(|o| rec.change_outputs.contains(*o)));
-            let status = if settles {
-                OutcomeStatus::Ok
+            holds(&rec, &reserved, 32);
+            if settles {
+                assert_eq!(rec.status, OutcomeStatus::Ok);
+                assert!(reserved.len() <= 3, "at most 96: {answers:?}");
+                for a in &answers {
+                    if let Call::Settle(s) = a {
+                        let (Settle::Settled(seen) | Settle::AlreadySettled(seen)) = &**s else {
+                            panic!("the outcome exists");
+                        };
+                        assert_eq!(seen, &rec, "no fresh output after the settle");
+                    }
+                }
             } else {
-                OutcomeStatus::Failed
-            };
-            assert_eq!(rec.status, status);
+                assert_eq!(rec.status, OutcomeStatus::Failed);
+                assert_eq!(reserved.len(), 3, "three of four fit in 96: {answers:?}");
+            }
+        }
+    }
+
+    /// 6.4, "The scheme MUST NOT pay out anything beyond that recorded
+    /// result": a fresh output is reserved only while the outcome is
+    /// PENDING, or for a timed-out outcome's refund while it is due. After
+    /// an OK or a FAILED settle, and once a refund is recorded, new outputs
+    /// are refused under either cap ([`Reserve::Settled`]) and nothing is
+    /// written; outputs reserved before can be reserved again, since they
+    /// make the same notes.
+    pub fn no_fresh_change_after_the_outcome_settles<S: UseStore + ?Sized>(
+        store: &S,
+        exec: &impl Executor,
+    ) {
+        // Settled OK: its change, reserved first, can be signed again.
+        let (p, ok, failed) = valued(1, 96, 50);
+        exec.block_on(store.commit(&p)).unwrap();
+        let change = outs(1, &[32, 8, 4, 2]);
+        let total = Reserve::Reserved { total: 46 };
+        assert_eq!(reserve(store, exec, &ok, &change), total);
+        settle(store, exec, &settlement(&p, Status::Ok, T0 + 1));
+        assert_eq!(reserve(store, exec, &ok, &change), total);
+        assert_eq!(reserve(store, exec, &ok, &outs(2, &[1])), Reserve::Settled);
+        let mut more = change.clone();
+        more.extend(outs(3, &[16]));
+        assert_eq!(reserve(store, exec, &failed, &more), Reserve::Settled);
+        assert_eq!(outcome(store, exec, p.replay_key()).change_total, 46);
+        // Settled FAILED in time: its refund was reserved before the settle.
+        let (q, _, failed_q) = valued(2, 96, 50);
+        exec.block_on(store.commit(&q)).unwrap();
+        settle(store, exec, &settlement(&q, Status::Failed, T0 + 1));
+        assert_eq!(
+            reserve(store, exec, &failed_q, &outs(4, &[1])),
+            Reserve::Settled
+        );
+        // Timed out: the refund is due, so only FAILED outputs get in, and
+        // only until the refund is recorded.
+        let (t, ok_t, failed_t) = valued(3, 96, 50);
+        exec.block_on(store.commit(&t)).unwrap();
+        exec.block_on(store.expire_pending(&past_the_deadline()))
+            .unwrap();
+        assert_eq!(
+            reserve(store, exec, &ok_t, &outs(5, &[1])),
+            Reserve::Settled
+        );
+        let paid = outs(6, &[8, 2]);
+        let total = Reserve::Reserved { total: 10 };
+        assert_eq!(reserve(store, exec, &failed_t, &paid), total);
+        refund(store, exec, t.replay_key(), b"refund 10");
+        assert_eq!(reserve(store, exec, &failed_t, &paid), total);
+        assert_eq!(
+            reserve(store, exec, &failed_t, &outs(7, &[64])),
+            Reserve::Settled
+        );
+        let rec = outcome(store, exec, t.replay_key());
+        assert_eq!((rec.change_total, rec.change_outputs.len()), (10, 2));
+    }
+
+    /// [`no_fresh_change_after_the_outcome_settles`], concurrently: on a
+    /// timed-out outcome whose refund is due, four calls record its refund
+    /// while four reserve a fresh 16 sat refund output each, behind a
+    /// barrier, the roles rotating each round. One refund is recorded; every
+    /// output let through is in the record; and every refund call gets the
+    /// final record, so no fresh output got in after the refund was
+    /// recorded. A store whose reservation or refund decides on a snapshot
+    /// and writes in a second step fails here.
+    pub fn no_fresh_change_after_a_racing_refund<S: UseStore + ?Sized>(
+        store: &S,
+        exec: &impl Executor,
+    ) {
+        for round in 0..ROUNDS {
+            let (p, _, failed) = valued(round, 96, 50);
+            let rk = *p.replay_key();
+            exec.block_on(store.commit(&p)).unwrap();
+            exec.block_on(store.expire_pending(&past_the_deadline()))
+                .unwrap();
+            let answers = race(THREADS, |i| {
+                let tag = u8::try_from(i).unwrap();
+                if (i + usize::from(round)) % 2 == 0 {
+                    let rec = refund(store, exec, &rk, &[round, tag]);
+                    Call::Refund(Box::new(rec))
+                } else {
+                    let mut out = outs(round, &[16]).remove(0);
+                    out.blinded[3] = tag;
+                    let r = reserve(store, exec, &failed, std::slice::from_ref(&out));
+                    Call::Reserve(r, out)
+                }
+            });
+            let rec = outcome(store, exec, &rk);
+            assert!(rec.refund_recorded && !rec.needs_refund(), "{rec:?}");
+            holds(&rec, &reserved(&answers), 16);
+            for a in &answers {
+                match a {
+                    Call::Refund(seen) => {
+                        assert_eq!(**seen, rec, "no fresh output after the refund");
+                    }
+                    Call::Reserve(r, _) => assert!(
+                        matches!(r, Reserve::Reserved { .. } | Reserve::Settled),
+                        "{answers:?}"
+                    ),
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -1169,6 +1299,7 @@ mod tests {
             let exec = &conformance::Spin;
             conformance::commit_is_all_or_nothing(&TwoStep::new(split), exec);
             conformance::change_is_one_total_per_outcome(&TwoStep::new(split), exec);
+            conformance::no_fresh_change_after_the_outcome_settles(&TwoStep::new(split), exec);
             conformance::settle_changes_the_status_once(&TwoStep::new(split), exec);
             conformance::timeout_and_refund(&TwoStep::new(split), exec);
             conformance::purge_keeps_what_must_stay(&TwoStep::new(split), exec);
@@ -1238,6 +1369,11 @@ mod tests {
                 "{split:?}"
             );
         }
+        // A reservation decided on a snapshot taken before a racing refund
+        // record writes after it, paying beyond the recorded refund.
+        assert!((0..8).any(|_| fails(|| {
+            conformance::no_fresh_change_after_a_racing_refund(&TwoStep::new(Split::Reserve), exec);
+        })));
         assert!(fails(|| conformance::run(
             || TwoStep::new(Split::Reserve),
             exec

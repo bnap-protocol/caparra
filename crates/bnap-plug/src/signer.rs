@@ -664,8 +664,11 @@ impl CappedSigner {
     ///    with [`SignerError::OverCap`] when they would take it past the
     ///    cap or the outcome's value, whichever process, gate or signer
     ///    instance signed before, and with [`SignerError::Refused`] when the
-    ///    outcome has no record. A store that cannot be reached is
-    ///    [`SignerError::Unavailable`]: nothing is signed unreserved.
+    ///    outcome has no record, or when its result is already recorded and
+    ///    an output is new (only the outputs reserved before may be signed
+    ///    again once it left PENDING, or once its refund is recorded). A
+    ///    store that cannot be reached is [`SignerError::Unavailable`]:
+    ///    nothing is signed unreserved.
     ///
     /// A call that fails after step 2 keeps its share spent, and one that
     /// fails after step 3 keeps its reservation, since the signer may have
@@ -703,6 +706,11 @@ impl CappedSigner {
             }
             Ok(Reserve::NoValue) => {
                 return Err(SignerError::Refused("no value to sign".into()));
+            }
+            Ok(Reserve::Settled) => {
+                return Err(SignerError::Refused(
+                    "the outcome's result is recorded: no new output can be signed for it".into(),
+                ));
             }
             Ok(Reserve::Unknown) => {
                 return Err(SignerError::Refused(

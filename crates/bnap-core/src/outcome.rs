@@ -722,9 +722,13 @@ pub async fn record_refund<S: UseStore + ?Sized>(
 /// distinct output once, never above the admitted value. Because the store
 /// is durable and shared, the bound holds across signer restarts, gate
 /// restarts and every gate and signer instance on the store, which a
-/// signer's own in-memory total cannot promise. Sign only on
-/// [`Reserve::Reserved`]; a reservation whose signing then fails stays
-/// counted, since the signer may have signed before failing.
+/// signer's own in-memory total cannot promise. New outputs are taken only
+/// before the result they pay is recorded: while the outcome is PENDING
+/// (change, and the refund of an in-time FAILED settle), or for the refund
+/// of a timed-out outcome while [`Recorded::needs_refund`]
+/// ([`Reserve::Settled`] otherwise). Sign only on [`Reserve::Reserved`]; a
+/// reservation whose signing then fails stays counted, since the signer may
+/// have signed before failing.
 pub async fn reserve_change<S: UseStore + ?Sized>(
     store: &S,
     cap: &ChangeCap,
