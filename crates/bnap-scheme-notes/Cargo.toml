@@ -1,12 +1,36 @@
 [package]
 name = "bnap-scheme-notes"
-description = "Payment scheme that accepts Cashu ecash notes."
+description = "The bnap:notes credential scheme: blind Cashu-style notes witnessed by key, with change and funding inside the 402."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+
+[dependencies]
+bnap-core.workspace = true
+bnap-plug.workspace = true
+# BDHKE, hash_to_curve, NUT-12 DLEQ proofs, NUT-02 keyset IDs and NUT-20
+# quote signatures. It takes secp256k1 through `bitcoin`, like bnap-core,
+# so the tree keeps a single secp256k1.
+cashu.workspace = true
+async-trait.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+
+[features]
+# An in-memory issuer store and a keyset-holding test signer, for tests in
+# this and downstream crates. Not durable: never use them in a gate.
+test-support = []
+
+[dev-dependencies]
+bnap-core = { workspace = true, features = ["test-support"] }
+bnap-scheme-notes = { path = ".", features = ["test-support"] }
+serde_json.workspace = true
+# Only to build real regtest BOLT11 invoices in the fake Lightning rail of
+# the tests; already in the tree through bnap-core.
+bitcoin.workspace = true
 
 [lints]
 workspace = true

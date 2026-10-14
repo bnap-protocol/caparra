@@ -49,6 +49,25 @@ python3 -m http.server 8080
 
 ## 6. Run against regtest
 
-> **TODO:** start the local regtest stack (`devenv/regtest/compose.yml`,
-> started with `docker compose up -d`), switch the gate to a real Lightning
-> rail, and repeat step 4. CI runs the same stack in its `regtest` job.
+`devenv/regtest/` is a small Lightning network in Docker: one bitcoind and two
+LND nodes, `payer` and `payee`. The payee is the operator's node; the
+`bnap-rail-lnd` plug talks to it over gRPC on `127.0.0.1:10009`.
+
+```sh
+devenv/regtest/up.sh          # start, fund the payer, open a payer -> payee channel
+. devenv/regtest/.state/env   # BNAP_REGTEST_LND_ADDRESS, _CERT, _MACAROON
+cargo nextest run -p e2e --features regtest
+devenv/regtest/down.sh        # stop and delete everything
+```
+
+`up.sh` is idempotent: it waits until every container is healthy, mines to
+the payer until it can pay, opens the channel once, and copies the payee's
+`tls.cert` and `invoice.macaroon` to `devenv/regtest/.state/`. The e2e tests
+run it themselves, so CI only starts the stack (`docker compose up -d`) and
+runs them. They create an invoice through the LND rail, pay it from the
+payer with `lncli`, check that the rail reports it final with its amount, and
+present the one payment through L402 and `payment:lightning/charge`: one
+action is admitted, the other credential is `SPENT`.
+
+> **TODO:** switch the gate to the LND rail (the address, cert and macaroon
+> above) and repeat step 4.

@@ -1,0 +1,113 @@
+# A small Lightning regtest network for the e2e tests: one bitcoind and two
+# LND nodes. `payer` pays, `payee` is the operator's node that the
+# bnap-rail-lnd plug talks to over gRPC on 127.0.0.1:10009.
+#
+#   devenv/regtest/up.sh     start, wait healthy, fund, open a channel,
+#                            export the payee's TLS cert and macaroon
+#   devenv/regtest/down.sh   stop and remove everything, volumes included
+#
+# CI runs `docker compose -f devenv/regtest/compose.yml up -d` and then the
+# e2e tests, which call up.sh themselves (it is idempotent). Nothing here is
+# a one-shot container, so `up --wait` works.
+#
+# Regtest only: the RPC password and the LND wallets hold no real value.
+
+name: bnap-regtest
+
+x-lnd: &lnd
+  image: lightninglabs/lnd:v0.20.5-beta
+  restart: unless-stopped
+  depends_on:
+    bitcoind:
+      condition: service_healthy
+  mem_limit: 320m
+  cpus: 0.75
+  healthcheck:
+    test: ["CMD", "lncli", "--network=regtest", "getinfo"]
+    interval: 3s
+    timeout: 5s
+    retries: 60
+    start_period: 5s
+
+services:
+  bitcoind:
+    image: bitcoin/bitcoin:29.4
+    restart: unless-stopped
+    command:
+      - bitcoind
+      - -regtest=1
+      - -server=1
+      - -printtoconsole=1
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -rpcuser=bnap
+      - -rpcpassword=bnap
+      - -zmqpubrawblock=tcp://0.0.0.0:28332
+      - -zmqpubrawtx=tcp://0.0.0.0:28333
+      - -fallbackfee=0.0002
+      - -dbcache=8
+      - -maxmempool=8
+      - -par=1
+      - -rpcthreads=4
+    mem_limit: 256m
+    cpus: 0.5
+    volumes:
+      - bitcoind:/home/bitcoin/.bitcoin
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=bnap", "-rpcpassword=bnap", "getblockchaininfo"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  payee:
+    <<: *lnd
+    command:
+      - --noseedbackup
+      - --alias=bnap-payee
+      - --bitcoin.regtest
+      - --bitcoin.node=bitcoind
+      - --bitcoin.defaultchanconfs=1
+      - --bitcoind.rpchost=bitcoind:18443
+      - --bitcoind.rpcuser=bnap
+      - --bitcoind.rpcpass=bnap
+      - --bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+      - --bitcoind.zmqpubrawtx=tcp://bitcoind:28333
+      - --listen=0.0.0.0:9735
+      - --rpclisten=0.0.0.0:10009
+      - --norest
+      - --tlsextradomain=payee
+      - --tlsextradomain=localhost
+      - --tlsextraip=127.0.0.1
+      - --trickledelay=50
+      - --debuglevel=info
+    ports:
+      - "127.0.0.1:10009:10009"
+    volumes:
+      - payee:/root/.lnd
+
+  payer:
+    <<: *lnd
+    command:
+      - --noseedbackup
+      - --alias=bnap-payer
+      - --bitcoin.regtest
+      - --bitcoin.node=bitcoind
+      - --bitcoin.defaultchanconfs=1
+      - --bitcoind.rpchost=bitcoind:18443
+      - --bitcoind.rpcuser=bnap
+      - --bitcoind.rpcpass=bnap
+      - --bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+      - --bitcoind.zmqpubrawtx=tcp://bitcoind:28333
+      - --listen=0.0.0.0:9735
+      - --rpclisten=0.0.0.0:10009
+      - --norest
+      - --tlsextradomain=payer
+      - --trickledelay=50
+      - --debuglevel=info
+    volumes:
+      - payer:/root/.lnd
+
+volumes:
+  bitcoind:
+  payee:
+  payer:

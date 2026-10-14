@@ -2162,3 +2162,27 @@ fn scheme_errors_carry_a_namespaced_code() {
         Err(SchemeError::Unsupported)
     );
 }
+
+#[test]
+fn a_change_view_reads_what_its_outcome_reserved() {
+    // An atomic scheme's refund reads the outputs the store reserved for
+    // its outcome, so it can re-sign them instead of overrunning the
+    // ledger; a verify-only view reads nothing.
+    let inner = Arc::new(TestSigner::new());
+    let o = sat(96, 50);
+    let (ok, guard) = o.change(&inner);
+    assert_eq!(block_on(ok.reserved()).unwrap(), Vec::new());
+    let change = outputs(7, &[32, 8, 4, 2]);
+    block_on(ok.blind_sign(&ks(), &change)).unwrap();
+    guard.close();
+    let (refund, _g) = o.view(&inner, &o.cap(Status::Failed));
+    let seen: BTreeSet<[u8; 33]> = block_on(refund.reserved())
+        .unwrap()
+        .into_iter()
+        .map(|c| c.blinded)
+        .collect();
+    let want: BTreeSet<[u8; 33]> = change.iter().map(|c| c.blinded.0).collect();
+    assert_eq!(seen, want);
+    let view = CappedSigner::verify_only(inner, "sat");
+    assert_eq!(block_on(view.reserved()).unwrap(), Vec::new());
+}

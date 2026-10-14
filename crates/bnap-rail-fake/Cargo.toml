@@ -8,5 +8,14 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[dependencies]
+bnap-core.workspace = true
+bnap-plug.workspace = true
+async-trait.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+bnap-core = { workspace = true, features = ["test-support"] }
+
 [lints]
 workspace = true

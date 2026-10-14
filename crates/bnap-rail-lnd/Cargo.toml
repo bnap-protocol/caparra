@@ -8,5 +8,13 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[dependencies]
+bnap-core.workspace = true
+bnap-plug.workspace = true
+async-trait.workspace = true
+fedimint-tonic-lnd = { workspace = true, features = ["lightningrpc", "tls-aws-lc"] }
+rustls.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
 [lints]
 workspace = true

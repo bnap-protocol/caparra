@@ -51,10 +51,19 @@ cashu = "0.18.1"
 bitcoin = { version = "0.32.102", features = ["serde", "rand-std"] }
 libmacaroon = "0.3.0"
 nwc = "0.44.0"
-fedimint-tonic-lnd = "0.4.0"
+# Trimmed to the RPCs a rail needs; bnap-rail-lnd turns on lightningrpc and
+# tls-aws-lc (the provider reqwest's rustls already brings).
+fedimint-tonic-lnd = { version = "0.4.0", default-features = false }
 mpp = "0.15.1"
 web-bot-auth = "0.7.0"
 josekit = "0.10.3"
+
+# Attestation schemes (DPoP, Web Bot Auth): pure-Rust signature checks, no
+# OpenSSL. ed25519-dalek stays on the 2.x line that web-bot-auth uses, so the
+# tree carries one copy; sfv matches web-bot-auth's structured-field parser.
+p256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "std"] }
+ed25519-dalek = "2.2.0"
+sfv = "0.13.0"
 
 # Encoding and crypto helpers
 serde = { version = "1.0.229", features = ["derive"] }
@@ -65,6 +74,7 @@ hmac = "0.13.0"
 hex = "0.4.3"
 base64 = "0.23.1"
 rand = "0.10.3"
+zeroize = "1.9.1"
 
 # Async runtime, HTTP and MCP
 tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "net", "time", "sync", "signal"] }
@@ -74,6 +84,9 @@ tower = "0.5.3"
 tower-http = { version = "0.7.1", features = ["trace"] }
 hyper = "1.12.0"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "http2", "charset"] }
+# Named directly only to install the process-wide crypto provider (aws-lc-rs,
+# the one reqwest's rustls feature uses) before an LND or NWC connection.
+rustls = { version = "0.23.45", default-features = false, features = ["std", "aws_lc_rs"] }
 rmcp = "3.5.1"
 
 # Storage
