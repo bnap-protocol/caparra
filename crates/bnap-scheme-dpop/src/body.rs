@@ -190,13 +190,16 @@ mod tests {
 
     #[test]
     fn only_the_canonical_form_is_accepted() {
-        let good = dpop(Some("tok")).to_bytes();
         // An unknown odd record, an unknown even record, an experimental
         // one: none of them is verified, so none is allowed.
         for t in [1u64, 3, 4, 1_000_000_001] {
-            let mut b = good.clone();
-            write_record(&mut b, t, b"x");
-            assert_eq!(DpopBody::parse(&b), Err(BodyError::UnknownRecord(t)), "{t}");
+            let mut s = TlvStream::parse(&dpop(Some("tok")).to_bytes(), StreamKind::Nested).unwrap();
+            s.insert(t, b"x".to_vec()).unwrap();
+            assert_eq!(
+                DpopBody::parse(&s.to_bytes()),
+                Err(BodyError::UnknownRecord(t)),
+                "{t}"
+            );
         }
         // An empty access token record is not the same as no token.
         let mut empty = Vec::new();
