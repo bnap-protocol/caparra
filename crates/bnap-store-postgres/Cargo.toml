@@ -8,5 +8,11 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[dependencies]
+bnap-core.workspace = true
+async-trait.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+
 [lints]
 workspace = true
