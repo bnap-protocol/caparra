@@ -81,8 +81,12 @@ struct TestSigner {
     blind_calls: Mutex<Vec<u64>>,
     ledger: ChangeLedger,
     signed: AtomicU64,
+    minted: Mutex<BTreeSet<Minted>>,
     short_answer: bool,
 }
+
+/// One output as the test signer signed it: keyset, amount and `B'`.
+type Minted = (Vec<u8>, u64, [u8; 33]);
 
 impl TestSigner {
     fn new() -> Self {
@@ -92,6 +96,7 @@ impl TestSigner {
             blind_calls: Mutex::new(Vec::new()),
             ledger: ChangeLedger::new(),
             signed: AtomicU64::new(0),
+            minted: Mutex::new(BTreeSet::new()),
             short_answer: false,
         }
     }
@@ -104,6 +109,12 @@ impl TestSigner {
     /// What the signer signed, over every settlement.
     fn signed(&self) -> u64 {
         self.signed.load(Ordering::SeqCst)
+    }
+
+    /// The value of the distinct notes the signer made: an output signed
+    /// twice makes the same note, so it counts once.
+    fn minted(&self) -> u64 {
+        self.minted.lock().unwrap().iter().map(|o| o.1).sum()
     }
 }
 
@@ -149,6 +160,11 @@ impl Signer for TestSigner {
         self.signed.fetch_add(
             outputs.iter().map(|o| o.amount).sum::<u64>(),
             Ordering::SeqCst,
+        );
+        self.minted.lock().unwrap().extend(
+            outputs
+                .iter()
+                .map(|o| (keyset.0.clone(), o.amount, o.blinded.0)),
         );
         let n = if self.short_answer {
             outputs.len().saturating_sub(1)
@@ -272,7 +288,7 @@ fn two_calls_whose_sum_exceeds_the_cap_are_refused() {
         Err(SignerError::OverCap { sum: 1, cap: 0 })
     );
     assert_eq!(inner.signed(), 100);
-    assert_eq!(inner.ledger.total(&rk(1), Status::Ok), 100);
+    assert_eq!(inner.ledger.total(&rk(1)), 100);
 }
 
 #[test]
@@ -324,11 +340,11 @@ fn zero_amount_outputs_and_empty_batches_are_refused() {
         ledger.reserve(&ks(), &[], &limit),
         Err(SignerError::Refused(_))
     ));
-    assert_eq!(ledger.total(&rk(2), Status::Ok), 0);
+    assert_eq!(ledger.total(&rk(2)), 0);
     ledger
         .reserve(&ks(), &outputs(3, &[16, 8]), &limit)
         .unwrap();
-    assert_eq!(ledger.total(&rk(2), Status::Ok), 24);
+    assert_eq!(ledger.total(&rk(2)), 24);
 }
 
 #[test]
@@ -401,33 +417,37 @@ fn the_signer_keeps_a_running_total_per_settlement() {
     // The same outputs again make the same notes: they count nothing.
     let (again, _g3) = CappedSigner::for_change(inner.clone(), &cap, rk(1));
     block_on(again.blind_sign(&ks(), &outputs(1, &[64, 16]))).unwrap();
-    assert_eq!(inner.ledger.total(&rk(1), Status::Ok), 80);
-    // The refund of the same ReplayKey and another outcome have their own
-    // totals.
+    assert_eq!(inner.ledger.total(&rk(1)), 80);
+    // The refund of the same ReplayKey shares the outcome's total: under
+    // its cap of 150 it re-signs the 80 of change for nothing and adds 70,
+    // and nothing beyond. Another outcome has its own total.
     let refund = settled_cap(150, 50, "sat", Status::Failed);
     assert_eq!((refund.get(), refund.status()), (150, Status::Failed));
     let (refunds, _g4) = CappedSigner::for_change(inner.clone(), &refund, rk(1));
-    block_on(refunds.blind_sign(&ks(), &outputs(3, &[128, 16]))).unwrap();
+    let mut superset = outputs(1, &[64, 16]);
+    superset.extend(outputs(3, &[64, 4, 2]));
+    block_on(refunds.blind_sign(&ks(), &superset)).unwrap();
+    let (more, _g8) = CappedSigner::for_change(inner.clone(), &refund, rk(1));
+    assert_eq!(
+        block_on(more.blind_sign(&ks(), &outputs(7, &[1]))),
+        Err(SignerError::OverCap { sum: 151, cap: 150 })
+    );
     let (other, _g5) = CappedSigner::for_change(inner.clone(), &cap, rk(2));
     block_on(other.blind_sign(&ks(), &outputs(4, &[64]))).unwrap();
     assert_eq!(
-        (
-            inner.ledger.total(&rk(1), Status::Ok),
-            inner.ledger.total(&rk(1), Status::Failed),
-            inner.ledger.total(&rk(2), Status::Ok)
-        ),
-        (80, 144, 64)
+        (inner.ledger.total(&rk(1)), inner.ledger.total(&rk(2))),
+        (150, 64)
     );
     // A later call naming the same settlement with a larger cap does not
-    // raise it.
+    // raise it: rk(2)'s OK settlement was first named with 100.
     let bigger = cap_of(1_000, 50);
-    let (raised, _g7) = CappedSigner::for_change(inner.clone(), &bigger, rk(1));
+    let (raised, _g7) = CappedSigner::for_change(inner.clone(), &bigger, rk(2));
     assert_eq!(
         block_on(raised.blind_sign(&ks(), &outputs(6, &[64]))),
-        Err(SignerError::OverCap { sum: 144, cap: 100 })
+        Err(SignerError::OverCap { sum: 128, cap: 100 })
     );
     inner.ledger.forget(&rk(1));
-    assert_eq!(inner.ledger.total(&rk(1), Status::Failed), 0);
+    assert_eq!(inner.ledger.total(&rk(1)), 0);
     // The signer refuses a settlement in a unit its keyset is not in.
     let msat = settled_cap(150, 50, "msat", Status::Ok);
     let (in_msat, _g6) = CappedSigner::for_change(inner.clone(), &msat, rk(3));
@@ -436,6 +456,50 @@ fn the_signer_keeps_a_running_total_per_settlement() {
         block_on(in_msat.blind_sign(&ks(), &outputs(5, &[1]))),
         Err(SignerError::Refused(_))
     ));
+}
+
+#[test]
+fn the_ledger_bounds_change_and_refund_together() {
+    // The hostile-scheme finding at the signer: the OK change of a late
+    // settle (cap value - charged = 46) and the FAILED refund (cap value =
+    // 96) of one ReplayKey. Before, each status had its own total and 142
+    // was signed; now the refund may add only what keeps the total at 96,
+    // whichever settlement came first.
+    let ledger = ChangeLedger::new();
+    let limit = |status, cap| ChangeLimit {
+        replay_key: rk(4),
+        status,
+        unit: "sat".into(),
+        cap,
+    };
+    ledger
+        .reserve(&ks(), &outputs(1, &[32, 8, 4, 2]), &limit(Status::Ok, 46))
+        .unwrap();
+    assert_eq!(
+        ledger.reserve(&ks(), &outputs(2, &[64, 32]), &limit(Status::Failed, 96)),
+        Err(SignerError::OverCap { sum: 142, cap: 96 })
+    );
+    let mut superset = outputs(1, &[32, 8, 4, 2]);
+    superset.extend(outputs(3, &[32, 16, 2]));
+    ledger
+        .reserve(&ks(), &superset, &limit(Status::Failed, 96))
+        .unwrap();
+    assert_eq!(ledger.total(&rk(4)), 96);
+    // The refund first, then a late OK settle: its change outputs are
+    // already in the refund, so they cost nothing, and fresh ones are
+    // refused.
+    let ledger = ChangeLedger::new();
+    ledger
+        .reserve(&ks(), &superset, &limit(Status::Failed, 96))
+        .unwrap();
+    ledger
+        .reserve(&ks(), &outputs(1, &[32, 8, 4, 2]), &limit(Status::Ok, 46))
+        .unwrap();
+    assert!(matches!(
+        ledger.reserve(&ks(), &outputs(9, &[1]), &limit(Status::Ok, 46)),
+        Err(SignerError::OverCap { .. })
+    ));
+    assert_eq!(ledger.total(&rk(4)), 96);
 }
 
 #[test]
@@ -455,7 +519,7 @@ fn concurrent_refunds_of_one_outcome_sign_its_value_once() {
         block_on(c.blind_sign(&ks(), &outputs(2, &[1]))),
         Err(SignerError::OverCap { sum: 151, cap: 150 })
     );
-    assert_eq!(inner.ledger.total(&rk(9), Status::Failed), 150);
+    assert_eq!(inner.ledger.total(&rk(9)), 150);
 }
 
 #[test]
@@ -682,17 +746,34 @@ fn mpp() -> Arc<dyn CredentialScheme> {
 }
 
 /// A notes scheme: the body is notes of 105 bytes each (amount, the
-/// 64-character secret, `C`), each checked through the verify-only view. It reports `claim` as its
-/// value, which may be more than the notes are worth. Its `settle` returns
-/// the cap it was given; a greedy one also tries to sign the whole cap
-/// twice and keeps a clone of its signer for later. `id` is `bnap:notes`,
+/// 64-character secret, `C`), each checked through the verify-only view.
+/// It reports `claim` as its value, which may be more than the notes are
+/// worth. What its `settle` does is its [`Settles`]. `id` is `bnap:notes`,
 /// or another value scheme over the same operator notes, such as a Cashu
 /// NUT-24 adapter.
 struct Notes {
     id: &'static str,
     claim: u64,
-    greedy: bool,
+    settles: Settles,
     kept: Mutex<Option<CappedSigner>>,
+    stash: Mutex<Vec<BlindSignature>>,
+}
+
+/// How a test notes scheme settles.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Settles {
+    /// Signs nothing and returns the cap it was given.
+    Report,
+    /// Tries to sign the whole cap twice and keeps a clone of its signer.
+    Greedy,
+    /// Hostile: signs the whole cap with fresh outputs in every settlement,
+    /// keeps every signature it got, and returns them all, so a late OK
+    /// settle's change reaches the client inside the refund.
+    Hoard,
+    /// As `bnap:notes` does: the change outputs (worth value - price) on
+    /// OK; the change outputs again and the refund outputs (worth the
+    /// price) on FAILED, so the refund is a superset of the change.
+    Honest,
 }
 
 impl Notes {
@@ -700,10 +781,27 @@ impl Notes {
         Self {
             id: "bnap:notes",
             claim,
-            greedy: false,
+            settles: Settles::Report,
             kept: Mutex::new(None),
+            stash: Mutex::new(Vec::new()),
         }
     }
+
+    fn settling(claim: u64, settles: Settles) -> Self {
+        Self {
+            settles,
+            ..Self::claiming(claim)
+        }
+    }
+}
+
+/// The powers of two that add up to `n`, largest first.
+fn powers(n: u64) -> Vec<u64> {
+    (0..64)
+        .rev()
+        .map(|b| 1u64 << b)
+        .filter(|p| n & p != 0)
+        .collect()
 }
 
 /// A notes body: per note its amount, the secret `secret(tag)` and the
@@ -770,20 +868,47 @@ impl CredentialScheme for Notes {
     async fn settle(
         &self,
         _part: &SchemePart,
-        _verified: &Verified,
-        _cx: &SettleCtx<'_>,
+        verified: &Verified,
+        cx: &SettleCtx<'_>,
         signer: &CappedSigner,
     ) -> Result<Option<Vec<u8>>, SchemeError> {
         let cap = signer.cap().unwrap();
-        if !self.greedy {
-            return Ok(Some(format!("cap {cap}").into_bytes()));
+        match self.settles {
+            Settles::Report => Ok(Some(format!("cap {cap}").into_bytes())),
+            Settles::Greedy => {
+                let first = signer.blind_sign(&ks(), &outputs(1, &[cap])).await;
+                let second = signer.blind_sign(&ks(), &outputs(2, &[cap])).await;
+                *self.kept.lock().unwrap() = Some(signer.clone());
+                Ok(Some(
+                    format!("first {} second {}", first.is_ok(), second.is_ok()).into_bytes(),
+                ))
+            }
+            Settles::Hoard => {
+                let tag = if cx.status == Status::Ok { 10 } else { 11 };
+                if let Ok(sigs) = signer.blind_sign(&ks(), &outputs(tag, &[cap])).await {
+                    self.stash.lock().unwrap().extend(sigs);
+                }
+                let all: u64 = self.stash.lock().unwrap().iter().map(|s| s.amount).sum();
+                Ok(Some(format!("hoard {all}").into_bytes()))
+            }
+            Settles::Honest => {
+                let price = cx.entry.amount;
+                let mut out = outputs(1, &powers(verified.value - price));
+                if cx.status == Status::Failed {
+                    out.extend(outputs(2, &powers(price)));
+                }
+                let sigs = if out.is_empty() {
+                    Vec::new()
+                } else {
+                    signer
+                        .blind_sign(&ks(), &out)
+                        .await
+                        .map_err(|e| SchemeError::rejected(self.id, "SIGNER", e.to_string()))?
+                };
+                let sum: u64 = sigs.iter().map(|s| s.amount).sum();
+                Ok(Some(format!("signed {sum}").into_bytes()))
+            }
         }
-        let first = signer.blind_sign(&ks(), &outputs(1, &[cap])).await;
-        let second = signer.blind_sign(&ks(), &outputs(2, &[cap])).await;
-        *self.kept.lock().unwrap() = Some(signer.clone());
-        Ok(Some(
-            format!("first {} second {}", first.is_ok(), second.is_ok()).into_bytes(),
-        ))
     }
 }
 
@@ -1306,10 +1431,7 @@ fn a_scheme_cannot_sign_past_its_cap_or_after_settle() {
     // cap twice and keeps its signer. Notes of 64 and 32 sat for a 50 sat
     // entry: the cap is 46.
     let gate = Gate::new([0; 32]);
-    let greedy = Notes {
-        greedy: true,
-        ..Notes::claiming(96)
-    };
+    let greedy = Notes::settling(96, Settles::Greedy);
     let mut cred = Credential::new(OfferRef::Id(gate.offer.offer_id()));
     cred.pay = Some(SchemePart::new(
         "bnap:notes",
@@ -1382,6 +1504,68 @@ fn an_action_that_settles_after_the_timeout_loses_to_it_without_a_sweep() {
         (Status::Failed, 0, false)
     );
     assert_eq!(f.scheme_result.as_deref(), Some(&b"cap 96"[..]));
+}
+
+#[test]
+fn a_hostile_atomic_scheme_never_gets_more_than_the_value_signed() {
+    // The checker's finding: an atomic scheme whose outcome opens an OK
+    // change budget and then ends FAILED (its own OK settle, or the action,
+    // outlived pending_timeout) signed both budgets in full, the change
+    // (value - charged = 46) and the refund (value = 96), kept the change
+    // signatures and returned them inside the refund's scheme_result: 142
+    // sat of notes for 96 sat paid. The signer's total is now one per
+    // ReplayKey across both settlements, bounded by the larger cap.
+    for late in [true, false] {
+        let gate = Gate::new([0; 32]);
+        let hoarder = Notes::settling(96, Settles::Hoard);
+        let mut cred = Credential::new(OfferRef::Id(gate.offer.offer_id()));
+        cred.pay = Some(SchemePart::new(
+            "bnap:notes",
+            notes_body(&[(64, 3), (32, 4)]),
+        ));
+        if late {
+            gate.late_settle.set(true);
+        } else {
+            gate.slow_action.set(true);
+        }
+        let r = gate.handle(&hoarder, &cred, NOW).unwrap();
+        let f = r.fields();
+        assert_eq!((f.status, f.charged), (Status::Failed, 0));
+        assert!(
+            gate.signer.minted() <= 96,
+            "minted {}",
+            gate.signer.minted()
+        );
+        assert_eq!(f.scheme_result.as_deref(), Some(&b"hoard 46"[..]));
+    }
+}
+
+#[test]
+fn an_honest_refund_that_re_signs_its_change_is_paid_in_full() {
+    // An honest atomic scheme makes its refund a superset of its change, as
+    // bnap:notes does (FAILED signs outputs and refund_outputs). After a
+    // late OK settle signed the 46 sat of change, the refund re-signs those
+    // outputs for nothing and adds the 50 sat of refund outputs: the client
+    // gets the whole 96 sat, and 96 sat of notes exist in all.
+    let gate = Gate::new([0; 32]);
+    let honest = Notes::settling(96, Settles::Honest);
+    let mut cred = Credential::new(OfferRef::Id(gate.offer.offer_id()));
+    cred.pay = Some(SchemePart::new(
+        "bnap:notes",
+        notes_body(&[(64, 3), (32, 4)]),
+    ));
+    gate.late_settle.set(true);
+    let r = gate.handle(&honest, &cred, NOW).unwrap();
+    let f = r.fields();
+    assert_eq!((f.status, f.charged), (Status::Failed, 0));
+    assert_eq!(f.scheme_result.as_deref(), Some(&b"signed 96"[..]));
+    assert_eq!(gate.signer.minted(), 96);
+    // On time, the same scheme signs its 46 sat of change and no more.
+    let gate = Gate::new([0; 32]);
+    let r = gate.handle(&honest, &cred, NOW).unwrap();
+    assert_eq!((r.fields().status, r.fields().charged), (Status::Ok, 50));
+    assert_eq!(r.fields().scheme_result.as_deref(), Some(&b"signed 46"[..]));
+    assert_eq!(gate.signer.minted(), 46);
 }
 
 #[test]
