@@ -222,7 +222,7 @@ fn verification_refuses_what_this_gate_did_not_issue() {
                 amount: 1,
                 ..ChargeRequest::decode(&c.challenge.request).unwrap()
             }
-            .encode()
+            .encode();
         },
         |c| c.challenge.opaque = Some(json::encode(&json!({OFFER_MEMBER: "00".repeat(32)}))),
         |c| c.challenge.expires = Some("2099-01-01T00:00:00Z".into()),
