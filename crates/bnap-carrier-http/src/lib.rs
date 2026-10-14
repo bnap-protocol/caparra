@@ -35,5 +35,5 @@ pub use carrier::{HttpCarrier, HttpRequest, NativeAuth};
 pub use codec::{b64u, b64u_decode};
 pub use layer::{
     Admit, BnapLayer, BnapService, BodyLimits, BoxBody, ClientAddr, Done, GateRequest, Gatekeeper,
-    Run, Ticket,
+    Kept, Run, Ticket, strip_fields,
 };

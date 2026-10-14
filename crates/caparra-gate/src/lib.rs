@@ -6,4 +6,8 @@
 
 pub mod config;
 pub mod issuer;
+pub mod limiter;
+pub mod manifest;
+pub mod meter;
+pub mod plugs;
 pub mod registry;

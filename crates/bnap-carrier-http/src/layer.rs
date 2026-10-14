@@ -123,8 +123,62 @@ pub trait Ticket: Send {
     /// Settles the outcome and returns the fields to add to the answer
     /// (`BNAP-Receipt`, and a scheme's own receipt such as
     /// `Payment-Receipt`), or the whole answer to send instead when the
-    /// settlement or the receipt failed.
-    async fn settle(self: Box<Self>, done: Done) -> Result<HeaderMap, Response<Bytes>>;
+    /// settlement or the receipt failed. `answer` is the application's
+    /// answer as the client will get it (after [`strip_fields`]), when there
+    /// is one, so the ticket can keep it for replays (6.4).
+    async fn settle(
+        self: Box<Self>,
+        done: Done,
+        answer: Option<Kept>,
+    ) -> Result<HeaderMap, Response<Bytes>>;
+}
+
+/// The application's answer to a committed action, as the client gets it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Kept {
+    /// The status.
+    pub status: StatusCode,
+    /// The `Content-Type`, if any.
+    pub content_type: Option<HeaderValue>,
+    /// The content.
+    pub body: Bytes,
+}
+
+/// Removes every field the gate alone may write from an application's
+/// answer: `BNAP-*` fields, `Payment-Receipt`, `Authentication-Info` and
+/// `BNAP` challenges in `WWW-Authenticate`. The application can then never
+/// pass off a receipt, an error or an offer as the gate's.
+pub fn strip_fields(headers: &mut HeaderMap) {
+    let names: Vec<_> = headers
+        .keys()
+        .filter(|n| {
+            let n = n.as_str();
+            n.starts_with("bnap-") || n == "payment-receipt" || n == "authentication-info"
+        })
+        .cloned()
+        .collect();
+    for n in names {
+        headers.remove(n);
+    }
+    let challenges: Vec<HeaderValue> = headers
+        .get_all(http::header::WWW_AUTHENTICATE)
+        .iter()
+        .filter(|v| !is_bnap_challenge(v.as_bytes()))
+        .cloned()
+        .collect();
+    if headers.contains_key(http::header::WWW_AUTHENTICATE) {
+        headers.remove(http::header::WWW_AUTHENTICATE);
+        for v in challenges {
+            headers.append(http::header::WWW_AUTHENTICATE, v);
+        }
+    }
+}
+
+fn is_bnap_challenge(v: &[u8]) -> bool {
+    let v = v.trim_ascii_start();
+    v.len() >= 4
+        && v[..4].eq_ignore_ascii_case(b"bnap")
+        && v.get(4).is_none_or(|b| !b.is_ascii_alphanumeric())
 }
 
 /// Decides, for every request, whether it is a BNAP action and what to do.
@@ -300,7 +354,10 @@ where
     match gate.admit(GateRequest { parts, body }).await {
         Admit::Answer(r) => full(r),
         Admit::Forward(r) => match call(inner, r).await {
-            Ok(resp) => resp.map(|b| b.map_err(Into::into).boxed_unsync()),
+            Ok(mut resp) => {
+                strip_fields(resp.headers_mut());
+                resp.map(|b| b.map_err(Into::into).boxed_unsync())
+            }
             Err(e) => {
                 tracing::warn!("upstream failed: {e}");
                 plain(
@@ -335,7 +392,8 @@ where
     let deadline = ticket.timeout();
     let action = async {
         let resp = call(inner, request).await.map_err(|e| e.to_string())?;
-        let (head, body) = resp.into_parts();
+        let (mut head, body) = resp.into_parts();
+        strip_fields(&mut head.headers);
         let body = Limited::new(body, limits.response)
             .collect()
             .await
@@ -383,7 +441,12 @@ where
     if let Done::Failed { reason } = &outcome {
         tracing::info!("action failed: {reason}");
     }
-    let fields = match ticket.settle(outcome).await {
+    let kept = answer.as_ref().ok().map(|(head, body)| Kept {
+        status: head.status,
+        content_type: head.headers.get(CONTENT_TYPE).cloned(),
+        body: body.clone(),
+    });
+    let fields = match ticket.settle(outcome, kept).await {
         Ok(f) => f,
         Err(resp) => return full(resp),
     };
@@ -457,7 +520,11 @@ mod tests {
                 .and_then(|s| s.parse().ok())
                 .ok_or_else(|| "no count".into())
         }
-        async fn settle(self: Box<Self>, done: Done) -> Result<HeaderMap, Response<Bytes>> {
+        async fn settle(
+            self: Box<Self>,
+            done: Done,
+            _answer: Option<Kept>,
+        ) -> Result<HeaderMap, Response<Bytes>> {
             self.log.lock().unwrap().push(done);
             let mut h = HeaderMap::new();
             h.insert("bnap-receipt", HeaderValue::from_static("AAEB"));
@@ -474,7 +541,9 @@ mod tests {
     impl Gatekeeper for TestGate {
         async fn admit(&self, req: GateRequest) -> Admit {
             match req.parts.uri.path() {
-                "/free" => Admit::Forward(Request::from_parts(req.parts, req.body)),
+                "/free" | "/free-inject" => {
+                    Admit::Forward(Request::from_parts(req.parts, req.body))
+                }
                 "/answer" => Admit::Answer(Response::new(Bytes::from_static(b"402"))),
                 _ => Admit::Run(Run {
                     request: Request::from_parts(req.parts, req.body),
@@ -498,6 +567,12 @@ mod tests {
         })));
         if path == "/fail" {
             *r.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+        }
+        if path.ends_with("inject") {
+            r.headers_mut()
+                .insert("bnap-receipt", HeaderValue::from_static("Zm9yZ2Vk"));
+            r.headers_mut()
+                .insert("bnap-error", HeaderValue::from_static("AAEB"));
         }
         Ok(r)
     }
@@ -549,6 +624,56 @@ mod tests {
         let (r, log) = send(false, "/slow").await;
         assert_eq!(r.status(), StatusCode::GATEWAY_TIMEOUT);
         assert!(matches!(log[0], Done::Failed { .. }));
+    }
+
+    #[test]
+    fn the_application_cannot_write_bnap_fields() {
+        let mut h = HeaderMap::new();
+        h.insert("bnap-receipt", HeaderValue::from_static("AAEB"));
+        h.insert("BNAP-Error", HeaderValue::from_static("AAEB"));
+        h.insert("payment-receipt", HeaderValue::from_static("x"));
+        h.insert("authentication-info", HeaderValue::from_static("bnap=x"));
+        h.append(
+            "www-authenticate",
+            HeaderValue::from_static("BNAP offer=\"AAEB\""),
+        );
+        h.append(
+            "www-authenticate",
+            HeaderValue::from_static("bnap offer=\"AAEB\""),
+        );
+        h.append(
+            "www-authenticate",
+            HeaderValue::from_static("Bearer realm=\"api\""),
+        );
+        h.append("www-authenticate", HeaderValue::from_static("BNAPX x=1"));
+        h.insert("x-other", HeaderValue::from_static("kept"));
+        strip_fields(&mut h);
+        let mut left: Vec<_> = h
+            .iter()
+            .map(|(n, v)| format!("{n}: {}", v.to_str().unwrap()))
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            vec![
+                "www-authenticate: BNAPX x=1",
+                "www-authenticate: Bearer realm=\"api\"",
+                "x-other: kept"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn upstream_bnap_fields_never_reach_the_client() {
+        let (r, _) = send(false, "/inject").await;
+        assert_eq!(
+            r.headers()["bnap-receipt"],
+            "AAEB",
+            "the gate's own receipt"
+        );
+        assert!(r.headers().get("bnap-error").is_none());
+        let (r, _) = send(false, "/free-inject").await;
+        assert!(r.headers().get("bnap-receipt").is_none());
     }
 
     #[tokio::test]
