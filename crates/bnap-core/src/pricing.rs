@@ -55,7 +55,7 @@ use std::collections::BTreeSet;
 
 use crate::class::BindingClass;
 use crate::error::ErrorCode;
-use crate::hash::{CounterKey, RailId, UseId};
+use crate::hash::{CounterKey, RailId, ReplayKey, UseId};
 use crate::ids::quota_key;
 use crate::offer::{AttestEntry, Effect, MAX_DISCOUNT_BP, OfferFields};
 use crate::response::Status;
@@ -497,10 +497,10 @@ impl AdmittedPay {
 
 /// The result of admission: the decision, the price and the pay entry.
 ///
-/// Its fields are private and only [`admit`] makes one, so
-/// [`Admission::settle`] is the only way to a [`ChangeCap`], and the cap is
-/// always computed from a value and a decision that admission checked. No
-/// crate can write one out:
+/// Its fields are private and only [`admit`] makes one, so every
+/// [`Charge`], and the [`ChangeCap`] `outcome::Pending::charge` binds it
+/// to, is always computed from a value and a decision that admission
+/// checked. No crate can write one out:
 ///
 /// ```compile_fail,E0451
 /// use bnap_core::pricing::{Admission, PriceDecision};
@@ -687,31 +687,42 @@ pub fn backed_value(
     Ok((narrow(total / scale), seen.into_iter().collect()))
 }
 
-/// The most change a scheme may sign at settlement, in the pay entry's
-/// unit, for an OK or a FAILED settlement: `value - charged` for a scheme
-/// whose registered refund is `atomic`, and 0 for every other scheme
-/// ([`Refund`], ERRATA N3b-20).
+/// The most change a scheme may sign at the settlement of one committed
+/// outcome, in the pay entry's unit, for an OK or a FAILED settlement:
+/// `value - charged` for a scheme whose registered refund is `atomic`, and
+/// 0 for every other scheme ([`Refund`], ERRATA N3b-20), bound to the
+/// outcome's `ReplayKey`.
 ///
-/// Only [`Admission::settle`] makes one, and an [`Admission`] comes only
-/// from [`admit`], so the cap a signer enforces is always the one this
-/// module computed from an admitted value. The signer side keeps a running
-/// total per settlement against it (`bnap_plug::CappedSigner::for_change`).
+/// Only bnap-core makes one, and only for an outcome it committed:
+/// `outcome::Pending::charge` from the admission the commit was priced
+/// with, and `outcome::Recorded::refund_cap` from the cap the commit
+/// recorded. So the cap a signer enforces, and the `ReplayKey` it is
+/// enforced for, always come from the same outcome
+/// (`bnap_plug::CappedSigner::for_change` takes both from here). The
+/// signer side keeps a running total per outcome against it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeCap {
+    replay_key: ReplayKey,
     amount: u64,
     unit: String,
     status: Status,
 }
 
 impl ChangeCap {
-    /// A cap bnap-core computed: from [`Admission::settle`], or the refund
-    /// cap an outcome record kept from its commit.
-    pub(crate) fn new(amount: u64, unit: String, status: Status) -> Self {
+    /// A cap bnap-core computed for the outcome under `replay_key`.
+    pub(crate) fn new(replay_key: ReplayKey, amount: u64, unit: String, status: Status) -> Self {
         Self {
+            replay_key,
             amount,
             unit,
             status,
         }
+    }
+
+    /// The outcome the cap is for: the change budget's settlement.
+    #[must_use]
+    pub fn replay_key(&self) -> &ReplayKey {
+        &self.replay_key
     }
 
     /// The cap in the pay entry's unit.
@@ -733,18 +744,57 @@ impl ChangeCap {
     }
 }
 
-/// The charge settlement writes and the Response reports.
+/// The charge of an admission for one outcome status: what settlement
+/// writes and the Response reports, and the change the scheme may return.
+///
+/// Pure pricing: it names no outcome, so it grants nothing. The gate gets
+/// the charge it settles with from `outcome::Pending::charge`, which binds
+/// this to the committed outcome and carries the [`ChangeCap`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Charge {
+    status: Status,
+    charged: u64,
+    metered_units: Option<u64>,
+    change: u64,
+    unit: String,
+}
+
+impl Charge {
     /// OK or FAILED.
-    pub status: Status,
+    #[must_use]
+    pub fn status(&self) -> Status {
+        self.status
+    }
+
     /// The Response's `charged`; 0 on FAILED.
-    pub charged: u64,
+    #[must_use]
+    pub fn charged(&self) -> u64 {
+        self.charged
+    }
+
     /// The Response's `metered_units`, in metered offers.
-    pub metered_units: Option<u64>,
-    /// The change the scheme may return: `value - charged` for an
-    /// `atomic` scheme, 0 otherwise.
-    pub cap: ChangeCap,
+    #[must_use]
+    pub fn metered_units(&self) -> Option<u64> {
+        self.metered_units
+    }
+
+    /// The change the scheme may return: `value - charged` for an `atomic`
+    /// scheme, 0 otherwise.
+    #[must_use]
+    pub fn change(&self) -> u64 {
+        self.change
+    }
+
+    /// The pay entry's unit; empty without pay.
+    #[must_use]
+    pub fn unit(&self) -> &str {
+        &self.unit
+    }
+
+    /// The change cap of this charge for the outcome under `replay_key`.
+    pub(crate) fn cap_for(&self, replay_key: ReplayKey) -> ChangeCap {
+        ChangeCap::new(replay_key, self.change, self.unit.clone(), self.status)
+    }
 }
 
 impl Admission {
@@ -782,14 +832,11 @@ impl Admission {
             status,
             charged,
             metered_units,
-            cap: ChangeCap {
-                amount: change,
-                unit: self
-                    .pay
-                    .as_ref()
-                    .map_or_else(String::new, |p| p.unit.clone()),
-                status,
-            },
+            change,
+            unit: self
+                .pay
+                .as_ref()
+                .map_or_else(String::new, |p| p.unit.clone()),
         }
     }
 

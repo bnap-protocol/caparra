@@ -49,13 +49,14 @@ pub use signer::{
 /// The use store plug, defined in `bnap-core` so the outcome state machine
 /// can be generic over it.
 pub use bnap_core::store::{
-    Commit, CommitPlan, OutcomeRecord, Settle, Settlement, StoreError, UseStore,
+    Commit, CommitPlan, OutcomeRecord, RefundRequest, Settle, SettleRequest, Settlement,
+    StoreError, SweepWindow, UseStore,
 };
 
 /// The sealed message type [`Signer::schnorr`] takes.
 pub use bnap_core::sign::CoreMessage;
 
-/// The change cap a [`CappedSigner`] enforces.
+/// The change cap a [`CappedSigner`] enforces, bound to its outcome.
 pub use bnap_core::pricing::ChangeCap;
 
 /// A pay entry's effective property vector, as a [`Judge`] sees it.

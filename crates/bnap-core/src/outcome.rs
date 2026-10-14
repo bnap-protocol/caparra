@@ -64,7 +64,17 @@
 //! admitted value, never priced again), stores the result with
 //! [`record_refund`] (the first write wins), and answers from the
 //! [`Recorded`] it returns. [`Recorded::receipt`] makes no receipt for an
-//! outcome that still needs its refund, so the refund cannot be skipped.
+//! outcome that still needs its refund, so no answer can be made before a
+//! refund is recorded. Whether the scheme's FAILED `settle` actually ran
+//! before [`record_refund`] is the gate's to keep: core cannot see a plug
+//! call, so the gate MUST NOT record a refund it did not compute.
+//!
+//! **What core seals.** Every write the store takes is built here
+//! ([`crate::store`]); a [`Settlement`] carries the `ReplayKey` of the
+//! [`Pending`] whose [`OutcomeCharge`] made it, and [`settle`] refuses one
+//! made for another outcome; a [`ChangeCap`] carries the `ReplayKey` it was
+//! computed for, so a change budget's cap and its settlement always come
+//! from one outcome.
 
 use crate::error::{ErrorCode, ErrorObject, Stale};
 use crate::hash::{Context, CounterKey, Digest, OfferId, RailId, ReplayKey};
@@ -76,8 +86,8 @@ use crate::pricing::{
 use crate::response::{ResponseFields, Status};
 use crate::schnorr::Key;
 use crate::store::{
-    Commit, CommitPlan, OutcomeRecord, OutcomeStatus, PlanError, SchemeUses, Settle, Settlement,
-    StoreError, UseStore, Uses,
+    Commit, CommitPlan, OutcomeRecord, OutcomeStatus, PlanError, RefundRequest, SchemeUses, Settle,
+    SettleRequest, Settlement, StoreError, SweepWindow, UseStore, Uses,
 };
 
 /// Everything the gate verified about one request, for [`process`].
@@ -225,11 +235,58 @@ impl Pending {
         &self.admission
     }
 
-    /// The charge for this outcome ([`Admission::settle`]): build the
-    /// [`Settlement`] from it and give its cap to the scheme's `settle`.
+    /// The charge for this outcome ([`Admission::settle`]), bound to it:
+    /// give its [`OutcomeCharge::cap`] to the scheme's `settle` and build
+    /// the [`Settlement`] from it.
     #[must_use]
-    pub fn charge(&self, status: Status, units: u64) -> Charge {
-        self.admission.settle(status, units)
+    pub fn charge(&self, status: Status, units: u64) -> OutcomeCharge {
+        let charge = self.admission.settle(status, units);
+        let cap = charge.cap_for(self.replay_key);
+        OutcomeCharge { charge, cap }
+    }
+}
+
+/// The charge of one committed outcome, as [`Pending::charge`] computed it:
+/// the [`Charge`] of the admission the commit was priced with, and the
+/// change cap for the outcome's `ReplayKey`. Only [`Pending::charge`] makes
+/// one, so the [`Settlement`] built from it and the change budget given its
+/// cap always belong to that outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutcomeCharge {
+    charge: Charge,
+    cap: ChangeCap,
+}
+
+impl OutcomeCharge {
+    /// The outcome it is for.
+    #[must_use]
+    pub fn replay_key(&self) -> &ReplayKey {
+        self.cap.replay_key()
+    }
+
+    /// OK or FAILED.
+    #[must_use]
+    pub fn status(&self) -> Status {
+        self.charge.status()
+    }
+
+    /// The Response's `charged`; 0 on FAILED.
+    #[must_use]
+    pub fn charged(&self) -> u64 {
+        self.charge.charged()
+    }
+
+    /// The Response's `metered_units`, in metered offers.
+    #[must_use]
+    pub fn metered_units(&self) -> Option<u64> {
+        self.charge.metered_units()
+    }
+
+    /// The change budget of the scheme's `settle`: `value - charged` for
+    /// an `atomic` scheme, 0 otherwise, for this outcome's `ReplayKey`.
+    #[must_use]
+    pub fn cap(&self) -> &ChangeCap {
+        &self.cap
     }
 }
 
@@ -277,14 +334,15 @@ impl Recorded {
 
     /// The change budget of the refund, while [`Self::needs_refund`]: the
     /// cap the commit recorded (the admitted value for an `atomic` scheme,
-    /// 0 otherwise), in the pay entry's unit, for a FAILED settlement. The
-    /// replay is never priced, so the refund can only return what the
-    /// commit consumed. `None` once the refund is recorded, and for an
-    /// outcome that did not time out.
+    /// 0 otherwise), in the pay entry's unit, for a FAILED settlement of
+    /// this outcome's `ReplayKey`. The replay is never priced, so the
+    /// refund can only return what the commit consumed. `None` once the
+    /// refund is recorded, and for an outcome that did not time out.
     #[must_use]
     pub fn refund_cap(&self) -> Option<ChangeCap> {
         self.needs_refund().then(|| {
             ChangeCap::new(
+                self.replay_key,
                 self.record.refund_cap,
                 self.record.unit.clone(),
                 Status::Failed,
@@ -473,9 +531,7 @@ async fn classify<S: UseStore + ?Sized>(
         }
         // Past pending_timeout: the outcome is FAILED (6.4); time it out
         // now rather than wait for the sweep.
-        store
-            .expire_pending(now.saturating_sub(limits.pending_timeout), now)
-            .await?;
+        store.expire_pending(&SweepWindow::new(now, limits)).await?;
         rec = store.outcome(&rk).await?.ok_or(ProcessError::Spent)?;
         if rec.status == OutcomeStatus::Pending {
             return Err(ProcessError::Pending { retry_after: 1 });
@@ -525,6 +581,10 @@ pub enum SettleError {
     /// No outcome under that `ReplayKey`.
     #[error("no outcome under that ReplayKey")]
     Unknown,
+    /// The [`Settlement`] was made from another outcome's charge. Nothing
+    /// was written; a gate bug, answered UNAVAILABLE.
+    #[error("the settlement was charged for another outcome")]
+    WrongOutcome,
     /// The store failed.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -533,7 +593,9 @@ pub enum SettleError {
 /// Settles the outcome [`process`] committed, exactly once (6.4).
 ///
 /// Compute the charge first ([`Pending::charge`]), call the scheme's
-/// deterministic `settle` under its cap, then call this. The Response, and
+/// deterministic `settle` under its cap, then call this with the
+/// [`Settlement`] built from that charge; one built from another outcome's
+/// charge is refused with [`SettleError::WrongOutcome`]. The Response, and
 /// any change in it, may be sent only after this returns `Ok`.
 ///
 /// A settle at `s.settled_at` later than the outcome's `created +
@@ -554,13 +616,16 @@ pub async fn settle<S: UseStore + ?Sized>(
     s: &Settlement,
     limits: &Limits,
 ) -> Result<Recorded, SettleError> {
+    if s.replay_key() != &pending.replay_key {
+        return Err(SettleError::WrongOutcome);
+    }
     let recorded = |record| Recorded {
         replay_key: pending.replay_key,
         record,
         replayed: false,
     };
     match store
-        .settle(&pending.replay_key, s, limits.pending_timeout)
+        .settle(&SettleRequest::new(s, limits.pending_timeout))
         .await?
     {
         Settle::Settled(r) => Ok(recorded(r)),
@@ -574,13 +639,18 @@ pub async fn settle<S: UseStore + ?Sized>(
 /// returned under [`Recorded::refund_cap`], `None` when it had nothing to
 /// refund. A concurrent request that recorded first wins; its result is
 /// returned and the scheme MUST NOT pay out anything beyond it.
+///
+/// The gate MUST run the scheme's FAILED `settle` first and pass what it
+/// returned: a refund recorded without it makes the receipt available with
+/// nothing refunded. Core cannot check that the plug call happened; it
+/// checks only that the outcome still needs its refund.
 pub async fn record_refund<S: UseStore + ?Sized>(
     store: &S,
     recorded: &Recorded,
     scheme_result: Option<&[u8]>,
 ) -> Result<Recorded, SettleError> {
     let record = store
-        .record_refund(&recorded.replay_key, scheme_result)
+        .record_refund(&RefundRequest::new(recorded.replay_key, scheme_result))
         .await?
         .ok_or(SettleError::Unknown)?;
     Ok(Recorded {
@@ -609,12 +679,9 @@ pub async fn sweep<S: UseStore + ?Sized>(
     now: u64,
     limits: &Limits,
 ) -> Result<Sweep, StoreError> {
-    let timed_out = store
-        .expire_pending(now.saturating_sub(limits.pending_timeout), now)
-        .await?;
-    let purged = store
-        .purge(now.saturating_sub(limits.record_window()), now)
-        .await?;
+    let window = SweepWindow::new(now, limits);
+    let timed_out = store.expire_pending(&window).await?;
+    let purged = store.purge(&window).await?;
     Ok(Sweep { timed_out, purged })
 }
 

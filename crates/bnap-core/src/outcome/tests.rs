@@ -137,36 +137,34 @@ fn replay(r: Result<Admitted, ProcessError>) -> Recorded {
     }
 }
 
-fn settlement(status: Status, charged: u64, at: u64) -> Settlement {
-    Settlement {
-        status,
-        charged,
-        metered_units: Some(850),
-        scheme_result: Some(b"change signatures".to_vec()),
-        response: Some(b"stored response".to_vec()),
-        settled_at: at,
-    }
+/// A settlement of `p` with any charge: only this crate's tests can build
+/// one from its parts, to test the store's rules on their own. A gate
+/// builds it from `p.charge(..)`.
+fn settlement(p: &Pending, status: Status, charged: u64, at: u64) -> Settlement {
+    Settlement::from_parts(*p.replay_key(), status, charged, Some(850), at)
+        .with_scheme_result(Some(b"change signatures".to_vec()))
+        .with_response(Some(b"stored response".to_vec()))
 }
 
 fn settle_ok(store: &MemoryStore, p: &Pending, charged: u64, at: u64) -> Recorded {
     block_on(settle(
         store,
         p,
-        &settlement(Status::Ok, charged, at),
+        &settlement(p, Status::Ok, charged, at),
         &limits(),
     ))
     .unwrap()
 }
 
-fn failed(at: u64, result: Option<&[u8]>) -> Settlement {
-    Settlement {
-        status: Status::Failed,
-        charged: 0,
-        metered_units: None,
-        scheme_result: result.map(<[u8]>::to_vec),
-        response: None,
-        settled_at: at,
-    }
+/// An OK settlement of `p` charging `charged`, with `result`, at `at`.
+fn ok_at(p: &Pending, charged: u64, result: &[u8], at: u64) -> Settlement {
+    Settlement::from_parts(*p.replay_key(), Status::Ok, charged, None, at)
+        .with_scheme_result(Some(result.to_vec()))
+}
+
+fn failed(p: &Pending, at: u64, result: Option<&[u8]>) -> Settlement {
+    Settlement::from_parts(*p.replay_key(), Status::Failed, 0, None, at)
+        .with_scheme_result(result.map(<[u8]>::to_vec))
 }
 
 fn receipt_input(digest: Digest) -> ReceiptInput {
@@ -198,33 +196,23 @@ impl UseStore for StaleReads {
         self.0.outcome(rk).await
     }
 
-    async fn settle(
-        &self,
-        rk: &ReplayKey,
-        s: &Settlement,
-        pending_timeout: u64,
-    ) -> Result<Settle, StoreError> {
-        self.0.settle(rk, s, pending_timeout).await
+    async fn settle(&self, req: &SettleRequest<'_>) -> Result<Settle, StoreError> {
+        self.0.settle(req).await
     }
 
-    async fn expire_pending(
-        &self,
-        created_before: u64,
-        now: u64,
-    ) -> Result<Vec<ReplayKey>, StoreError> {
-        self.0.expire_pending(created_before, now).await
+    async fn expire_pending(&self, window: &SweepWindow) -> Result<Vec<ReplayKey>, StoreError> {
+        self.0.expire_pending(window).await
     }
 
     async fn record_refund(
         &self,
-        rk: &ReplayKey,
-        scheme_result: Option<&[u8]>,
+        req: &RefundRequest<'_>,
     ) -> Result<Option<OutcomeRecord>, StoreError> {
-        self.0.record_refund(rk, scheme_result).await
+        self.0.record_refund(req).await
     }
 
-    async fn purge(&self, created_before: u64, now: u64) -> Result<u64, StoreError> {
-        self.0.purge(created_before, now).await
+    async fn purge(&self, window: &SweepWindow) -> Result<u64, StoreError> {
+        self.0.purge(window).await
     }
 }
 
@@ -255,7 +243,7 @@ fn process_and_settle_futures_are_send() {
     let l = limits();
     send(&process(store, &req, &l));
     let p = new(r.process(&MemoryStore::new()));
-    let s = settlement(Status::Ok, 0, T0);
+    let s = settlement(&p, Status::Ok, 0, T0);
     send(&settle(store, &p, &s, &l));
     send(&sweep(store, T0, &l));
 }
@@ -327,18 +315,14 @@ fn status_flip_on_replay_is_impossible() {
     let p = new(r.process(&store));
     let ok = settle_ok(&store, &p, 340, T0 + 5);
 
-    let flip = failed(T0 + 6, Some(b"refund"));
+    let flip = failed(&p, T0 + 6, Some(b"refund"));
     let err = block_on(settle(&store, &p, &flip, &limits())).unwrap_err();
     let SettleError::AlreadySettled(rec) = err else {
         panic!("expected AlreadySettled");
     };
     assert_eq!(rec.record(), ok.record());
     // A second OK settle with another charge is refused as well.
-    let again = Settlement {
-        status: Status::Ok,
-        charged: 1,
-        ..flip
-    };
+    let again = ok_at(&p, 1, b"refund", T0 + 6);
     assert!(matches!(
         block_on(settle(&store, &p, &again, &limits())),
         Err(SettleError::AlreadySettled(_))
@@ -616,7 +600,7 @@ fn rate_counters_limit_and_failed_gives_them_back() {
         Err(ProcessError::RateLimited { retry_after: 45 })
     );
     // FAILED gives the counter back, so the second credential now fits.
-    block_on(settle(&store, &p, &failed(now + 1, None), &limits())).unwrap();
+    block_on(settle(&store, &p, &failed(&p, now + 1, None), &limits())).unwrap();
     new(second.process(&store));
 }
 
@@ -628,7 +612,7 @@ fn failed_keeps_single_uses_spent() {
     let rec = block_on(settle(
         &store,
         &p,
-        &failed(T0 + 1, Some(b"refund outputs")),
+        &failed(&p, T0 + 1, Some(b"refund outputs")),
         &limits(),
     ))
     .unwrap();
@@ -674,14 +658,7 @@ fn pending_timeout_moves_to_failed_and_the_replay_collects_the_refund() {
     assert_eq!(block_on(store.counter(&key)).unwrap(), 0);
 
     // The action finished late: its settle is refused, no double payout.
-    let late = Settlement {
-        status: Status::Ok,
-        charged: 21,
-        metered_units: None,
-        scheme_result: Some(b"change".to_vec()),
-        response: None,
-        settled_at: T0 + 400,
-    };
+    let late = ok_at(&p, 21, b"change", T0 + 400);
     assert!(matches!(
         block_on(settle(&store, &p, &late, &l)),
         Err(SettleError::AlreadySettled(_))
@@ -860,7 +837,7 @@ fn settle_of_an_unknown_outcome_is_refused() {
         block_on(settle(
             &MemoryStore::new(),
             &p,
-            &settlement(Status::Ok, 0, T0),
+            &settlement(&p, Status::Ok, 0, T0),
             &limits()
         )),
         Err(SettleError::Unknown)
@@ -988,7 +965,7 @@ fn a_quota_priced_attestation_replays_after_its_commit_filled_the_quota() {
     let p = new(r.process(&store));
     assert_eq!(p.admission().price(), 0);
     let charge = p.charge(Status::Ok, 0);
-    assert_eq!((charge.charged, charge.cap.get()), (0, 0));
+    assert_eq!((charge.charged(), charge.cap().get()), (0, 0));
     let s = Settlement::new(&charge, T0 + 1).with_response(Some(b"the answer".to_vec()));
     block_on(settle(&store, &p, &s, &limits())).unwrap();
     // Another client of the same identity is refused: the quota is full.
@@ -1021,7 +998,7 @@ fn a_quota_priced_payment_replays_its_recorded_change() {
     let r = quota_req(1, 1, Some(10), T0);
     let p = new(r.process(&store));
     let charge = p.charge(Status::Ok, 0);
-    assert_eq!((charge.charged, charge.cap.get()), (0, 10));
+    assert_eq!((charge.charged(), charge.cap().get()), (0, 10));
     let s = Settlement::new(&charge, T0 + 1).with_scheme_result(Some(b"change 10".to_vec()));
     block_on(settle(&store, &p, &s, &limits())).unwrap();
     let again = replay(r.at(T0 + 10).process(&store));
@@ -1181,37 +1158,27 @@ impl UseStore for Racing {
         self.inner.outcome(rk).await
     }
 
-    async fn settle(
-        &self,
-        rk: &ReplayKey,
-        s: &Settlement,
-        pending_timeout: u64,
-    ) -> Result<Settle, StoreError> {
+    async fn settle(&self, req: &SettleRequest<'_>) -> Result<Settle, StoreError> {
         self.wait();
-        self.inner.settle(rk, s, pending_timeout).await
+        self.inner.settle(req).await
     }
 
-    async fn expire_pending(
-        &self,
-        created_before: u64,
-        now: u64,
-    ) -> Result<Vec<ReplayKey>, StoreError> {
+    async fn expire_pending(&self, window: &SweepWindow) -> Result<Vec<ReplayKey>, StoreError> {
         self.wait();
-        self.inner.expire_pending(created_before, now).await
+        self.inner.expire_pending(window).await
     }
 
     async fn record_refund(
         &self,
-        rk: &ReplayKey,
-        scheme_result: Option<&[u8]>,
+        req: &RefundRequest<'_>,
     ) -> Result<Option<OutcomeRecord>, StoreError> {
         self.wait();
-        self.inner.record_refund(rk, scheme_result).await
+        self.inner.record_refund(req).await
     }
 
-    async fn purge(&self, created_before: u64, now: u64) -> Result<u64, StoreError> {
+    async fn purge(&self, window: &SweepWindow) -> Result<u64, StoreError> {
         self.wait();
-        self.inner.purge(created_before, now).await
+        self.inner.purge(window).await
     }
 }
 
@@ -1289,6 +1256,31 @@ fn concurrent_copies_of_one_quota_priced_credential_are_never_underpaid() {
 }
 
 #[test]
+fn a_settlement_settles_only_the_outcome_it_was_charged_for() {
+    // The checker's sealing probe: settle accepted any Settlement, so the
+    // charge of one outcome (here 21 sat, OK) could settle another, priced
+    // differently, with nothing to tie the two together. A Settlement now
+    // carries the ReplayKey of the Pending whose charge made it.
+    let store = MemoryStore::new();
+    let a = new(quota_req(1, 5, Some(30), T0).process(&store));
+    let b = new(Req::note(2, b"Yb", T0).process(&store));
+    let from_a = Settlement::new(&a.charge(Status::Ok, 0), T0 + 1);
+    assert!(matches!(
+        block_on(settle(&store, &b, &from_a, &limits())),
+        Err(SettleError::WrongOutcome)
+    ));
+    let rec = store.inspect(|t| crate::store::UseTable::outcome(t, b.replay_key()).cloned());
+    assert_eq!(
+        rec.unwrap().status,
+        OutcomeStatus::Pending,
+        "b is untouched"
+    );
+    // Its own charge settles it.
+    let own = Settlement::new(&b.charge(Status::Ok, 0), T0 + 1);
+    block_on(settle(&store, &b, &own, &limits())).unwrap();
+}
+
+#[test]
 fn concurrent_replays_after_a_crash_refund_once() {
     // Security review, outcome lead (b): a crash leaves a quota-priced
     // payment PENDING; 12 replays arrive together past pending_timeout.
@@ -1362,7 +1354,7 @@ fn settle_and_the_timeout_race_to_one_transition() {
                     s.spawn(move || {
                         barrier.wait();
                         if i % 2 == 0 {
-                            let s = settlement(Status::Ok, 21, T0 + 5);
+                            let s = settlement(p, Status::Ok, 21, T0 + 5);
                             block_on(settle(store, p, &s, l)).is_ok()
                         } else {
                             block_on(sweep(store, T0 + l.pending_timeout + 1, l)).unwrap();
@@ -1416,7 +1408,7 @@ fn a_record_is_kept_while_its_offer_can_be_presented() {
     block_on(settle(
         &store,
         &p,
-        &settlement(Status::Ok, 0, T0 + 1),
+        &settlement(&p, Status::Ok, 0, T0 + 1),
         &long,
     ))
     .unwrap();
@@ -1465,7 +1457,13 @@ fn a_lagging_clock_never_readmits_a_purged_credential() {
         r.offer.expires = T0 + l.replay_window - 60;
         let keep = r.offer.expires + 60;
         let p = new(r.process(&store));
-        block_on(settle(&store, &p, &settlement(Status::Ok, 0, T0 + 1), &l)).unwrap();
+        block_on(settle(
+            &store,
+            &p,
+            &settlement(&p, Status::Ok, 0, T0 + 1),
+            &l,
+        ))
+        .unwrap();
         // The checker's sweep, at keep_until + 1, deletes nothing now, and
         // the lagging request is answered from the record.
         assert_eq!(block_on(sweep(&store, keep + 1, &l)).unwrap().purged, 0);
@@ -1553,7 +1551,7 @@ fn every_payment_and_note_counted_as_value_is_consumed() {
         assert_eq!(t.used_by(&crate::pricing::note_id(b"Y1")), Some(first.rk()));
         assert_eq!(t.used_by(&[4; 32]), Some(first.rk()));
     });
-    assert_eq!(p.charge(Status::Ok, 0).cap.get(), 24);
+    assert_eq!(p.charge(Status::Ok, 0).cap().get(), 24);
     // The same note, or the same payment, counted again: SPENT.
     assert_eq!(
         with(2, vec![note(b"Y1", 64)]).process(&store),
@@ -1639,14 +1637,7 @@ fn a_late_settle_answers_from_the_recorded_failed_outcome() {
     let r = Req::note(1, b"Y", T0);
     let p = new(r.process(&store));
     block_on(sweep(&store, T0 + l.pending_timeout + 1, &l)).unwrap();
-    let ok = Settlement {
-        status: Status::Ok,
-        charged: 21,
-        metered_units: None,
-        scheme_result: Some(b"change for OK".to_vec()),
-        response: None,
-        settled_at: T0 + 400,
-    };
+    let ok = ok_at(&p, 21, b"change for OK", T0 + 400);
     let Err(SettleError::AlreadySettled(rec)) = block_on(settle(&store, &p, &ok, &l)) else {
         panic!("expected AlreadySettled");
     };
@@ -1672,14 +1663,7 @@ fn a_settle_after_the_pending_timeout_times_the_outcome_out() {
         .push(("bnap:notes", UseModel::Single, vec![b"n".to_vec()]));
     let p = new(r.process(&store));
     let key = rate_counter(b"client", 5, 60, T0);
-    let late = Settlement {
-        status: Status::Ok,
-        charged: 21,
-        metered_units: None,
-        scheme_result: Some(b"change for OK".to_vec()),
-        response: None,
-        settled_at: T0 + l.pending_timeout + 100,
-    };
+    let late = ok_at(&p, 21, b"change for OK", T0 + l.pending_timeout + 100);
     let Err(SettleError::AlreadySettled(rec)) = block_on(settle(&store, &p, &late, &l)) else {
         panic!("a settle past pending_timeout must lose to the timeout");
     };
@@ -1702,10 +1686,7 @@ fn a_settle_after_the_pending_timeout_times_the_outcome_out() {
     // At the deadline itself the settle still wins.
     let store = MemoryStore::new();
     let p = new(r.process(&store));
-    let on_time = Settlement {
-        settled_at: T0 + l.pending_timeout,
-        ..late
-    };
+    let on_time = ok_at(&p, 21, b"change for OK", T0 + l.pending_timeout);
     let rec = block_on(settle(&store, &p, &on_time, &l)).unwrap();
     assert_eq!(rec.record().status, OutcomeStatus::Ok);
 }

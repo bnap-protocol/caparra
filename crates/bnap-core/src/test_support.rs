@@ -13,7 +13,8 @@ use std::task::{Poll, Waker};
 
 use crate::hash::{CounterKey, ReplayKey};
 use crate::store::{
-    Commit, CommitPlan, OutcomeRecord, Settle, Settlement, StoreError, UseStore, UseTable, logic,
+    Commit, CommitPlan, OutcomeRecord, RefundRequest, Settle, SettleRequest, StoreError,
+    SweepWindow, UseStore, UseTable, logic,
 };
 
 /// The three tables of a use store, in memory.
@@ -142,33 +143,23 @@ impl UseStore for MemoryStore {
         Ok(UseTable::outcome(&*self.tx()?, rk).cloned())
     }
 
-    async fn settle(
-        &self,
-        rk: &ReplayKey,
-        s: &Settlement,
-        pending_timeout: u64,
-    ) -> Result<Settle, StoreError> {
-        Ok(logic::settle(&mut *self.tx()?, rk, s, pending_timeout))
+    async fn settle(&self, req: &SettleRequest<'_>) -> Result<Settle, StoreError> {
+        Ok(logic::settle(&mut *self.tx()?, req))
     }
 
-    async fn expire_pending(
-        &self,
-        created_before: u64,
-        now: u64,
-    ) -> Result<Vec<ReplayKey>, StoreError> {
-        Ok(logic::expire_pending(&mut *self.tx()?, created_before, now))
+    async fn expire_pending(&self, window: &SweepWindow) -> Result<Vec<ReplayKey>, StoreError> {
+        Ok(logic::expire_pending(&mut *self.tx()?, window))
     }
 
     async fn record_refund(
         &self,
-        rk: &ReplayKey,
-        scheme_result: Option<&[u8]>,
+        req: &RefundRequest<'_>,
     ) -> Result<Option<OutcomeRecord>, StoreError> {
-        Ok(logic::record_refund(&mut *self.tx()?, rk, scheme_result))
+        Ok(logic::record_refund(&mut *self.tx()?, req))
     }
 
-    async fn purge(&self, created_before: u64, now: u64) -> Result<u64, StoreError> {
-        Ok(logic::purge(&mut *self.tx()?, created_before, now))
+    async fn purge(&self, window: &SweepWindow) -> Result<u64, StoreError> {
+        Ok(logic::purge(&mut *self.tx()?, window))
     }
 }
 
@@ -205,13 +196,15 @@ pub mod conformance {
     use std::future::Future;
     use std::sync::Barrier;
 
+    use crate::hash::ReplayKey;
     use crate::hash::{Context, Scope};
     use crate::offer::{OfferFields, PayEntry};
     use crate::pricing::{self, AdmitInput, PayValue, Refund};
     use crate::response::Status;
     use crate::schnorr::Key;
     use crate::store::{
-        Commit, CommitPlan, OutcomeStatus, SchemeUses, Settle, Settlement, UseModel, UseStore, Uses,
+        Commit, CommitPlan, OutcomeStatus, RefundRequest, SchemeUses, Settle, SettleRequest,
+        Settlement, SweepWindow, UseModel, UseStore, Uses,
     };
 
     const T0: u64 = 1_791_700_000;
@@ -273,15 +266,27 @@ pub mod conformance {
         CommitPlan::build(uses, &admission, o.expires, now, 86_400).expect("the plan builds")
     }
 
-    fn settlement(status: Status, at: u64) -> Settlement {
-        Settlement {
-            status,
-            charged: 0,
-            metered_units: None,
-            scheme_result: Some(b"result".to_vec()),
-            response: None,
-            settled_at: at,
-        }
+    fn settlement(plan: &CommitPlan, status: Status, at: u64) -> Settlement {
+        Settlement::from_parts(*plan.replay_key(), status, 0, None, at)
+            .with_scheme_result(Some(b"result".to_vec()))
+    }
+
+    /// The store's settle of `s`, under [`TIMEOUT`].
+    fn settle<S: UseStore + ?Sized>(store: &S, exec: &impl Executor, s: &Settlement) -> Settle {
+        exec.block_on(store.settle(&SettleRequest::new(s, TIMEOUT)))
+            .unwrap()
+    }
+
+    /// The store's `record_refund`.
+    fn refund<S: UseStore + ?Sized>(
+        store: &S,
+        exec: &impl Executor,
+        rk: &ReplayKey,
+        result: &[u8],
+    ) -> crate::store::OutcomeRecord {
+        exec.block_on(store.record_refund(&RefundRequest::new(*rk, Some(result))))
+            .unwrap()
+            .unwrap()
     }
 
     /// Runs every scenario, each on a store from `make`. Panics on the
@@ -359,15 +364,12 @@ pub mod conformance {
         let a = plan(1, &[b"a"], Some(5), T0);
         let key = a.counters()[0].key;
         exec.block_on(store.commit(&a)).unwrap();
-        let ok = settlement(Status::Ok, T0 + 1);
         assert!(matches!(
-            exec.block_on(store.settle(a.replay_key(), &ok, TIMEOUT))
-                .unwrap(),
+            settle(store, exec, &settlement(&a, Status::Ok, T0 + 1)),
             Settle::Settled(_)
         ));
-        let Settle::AlreadySettled(rec) = exec
-            .block_on(store.settle(a.replay_key(), &settlement(Status::Failed, T0 + 2), TIMEOUT))
-            .unwrap()
+        let Settle::AlreadySettled(rec) =
+            settle(store, exec, &settlement(&a, Status::Failed, T0 + 2))
         else {
             panic!("a second settle must be refused");
         };
@@ -376,17 +378,13 @@ pub mod conformance {
         // FAILED gives the counter back.
         let b = plan(2, &[b"b"], Some(5), T0);
         exec.block_on(store.commit(&b)).unwrap();
-        exec.block_on(store.settle(b.replay_key(), &settlement(Status::Failed, T0 + 1), TIMEOUT))
-            .unwrap();
+        settle(store, exec, &settlement(&b, Status::Failed, T0 + 1));
         assert_eq!(exec.block_on(store.counter(&key)).unwrap(), 1);
         // Past the deadline: timed out in the same call, counter back.
         let c = plan(3, &[b"c"], Some(5), T0);
         exec.block_on(store.commit(&c)).unwrap();
-        let late = settlement(Status::Ok, T0 + TIMEOUT + 1);
-        let Settle::AlreadySettled(rec) = exec
-            .block_on(store.settle(c.replay_key(), &late, TIMEOUT))
-            .unwrap()
-        else {
+        let late = settlement(&c, Status::Ok, T0 + TIMEOUT + 1);
+        let Settle::AlreadySettled(rec) = settle(store, exec, &late) else {
             panic!("a late settle must lose to the timeout");
         };
         assert!(rec.timed_out && rec.needs_refund());
@@ -394,8 +392,7 @@ pub mod conformance {
         assert_eq!(exec.block_on(store.counter(&key)).unwrap(), 1);
         let unknown = plan(4, &[b"d"], None, T0);
         assert_eq!(
-            exec.block_on(store.settle(unknown.replay_key(), &ok, TIMEOUT))
-                .unwrap(),
+            settle(store, exec, &settlement(&unknown, Status::Ok, T0 + 1)),
             Settle::Unknown
         );
     }
@@ -408,12 +405,13 @@ pub mod conformance {
         let key = old.counters()[0].key;
         exec.block_on(store.commit(&old)).unwrap();
         exec.block_on(store.commit(&young)).unwrap();
+        let window = |now| SweepWindow::from_parts(now, T0 + 50, 0);
         let expired = exec
-            .block_on(store.expire_pending(T0 + 50, T0 + TIMEOUT + 1))
+            .block_on(store.expire_pending(&window(T0 + TIMEOUT + 1)))
             .unwrap();
         assert_eq!(expired, vec![*old.replay_key()]);
         let again = exec
-            .block_on(store.expire_pending(T0 + 50, T0 + TIMEOUT + 2))
+            .block_on(store.expire_pending(&window(T0 + TIMEOUT + 2)))
             .unwrap();
         assert!(again.is_empty(), "a timed-out record times out once");
         let rec = exec
@@ -430,21 +428,12 @@ pub mod conformance {
             u64::from(key == young_key)
         );
         assert_eq!(exec.block_on(store.counter(&young_key)).unwrap(), 1);
-        let first = exec
-            .block_on(store.record_refund(old.replay_key(), Some(b"one")))
-            .unwrap()
-            .unwrap();
-        let second = exec
-            .block_on(store.record_refund(old.replay_key(), Some(b"two")))
-            .unwrap()
-            .unwrap();
+        let first = refund(store, exec, old.replay_key(), b"one");
+        let second = refund(store, exec, old.replay_key(), b"two");
         assert_eq!(first.scheme_result.as_deref(), Some(&b"one"[..]));
         assert_eq!(second, first, "the first refund wins");
         // A record that did not time out takes no refund.
-        let young_rec = exec
-            .block_on(store.record_refund(young.replay_key(), Some(b"x")))
-            .unwrap()
-            .unwrap();
+        let young_rec = refund(store, exec, young.replay_key(), b"x");
         assert_eq!(young_rec.scheme_result, None);
     }
 
@@ -456,18 +445,17 @@ pub mod conformance {
         let pending = plan(2, &[b"p"], None, T0);
         exec.block_on(store.commit(&settled)).unwrap();
         exec.block_on(store.commit(&pending)).unwrap();
-        exec.block_on(store.settle(
-            settled.replay_key(),
-            &settlement(Status::Ok, T0 + 1),
-            TIMEOUT,
-        ))
-        .unwrap();
+        settle(store, exec, &settlement(&settled, Status::Ok, T0 + 1));
         // The window has passed but the offer is still valid, to this
         // clock or to one a skew behind it: kept.
         let keep = settled.keep_until();
-        assert_eq!(exec.block_on(store.purge(T0 + 1, keep)).unwrap(), 0);
-        assert_eq!(exec.block_on(store.purge(T0 + 1, keep + 60)).unwrap(), 0);
-        assert_eq!(exec.block_on(store.purge(T0 + 1, keep + 61)).unwrap(), 1);
+        let purge = |now| {
+            exec.block_on(store.purge(&SweepWindow::from_parts(now, 0, T0 + 1)))
+                .unwrap()
+        };
+        assert_eq!(purge(keep), 0);
+        assert_eq!(purge(keep + 60), 0);
+        assert_eq!(purge(keep + 61), 1);
         assert!(
             exec.block_on(store.outcome(settled.replay_key()))
                 .unwrap()
@@ -532,33 +520,23 @@ mod tests {
             self.0.outcome(rk).await
         }
 
-        async fn settle(
-            &self,
-            rk: &ReplayKey,
-            s: &Settlement,
-            pending_timeout: u64,
-        ) -> Result<Settle, StoreError> {
-            self.0.settle(rk, s, pending_timeout).await
+        async fn settle(&self, req: &SettleRequest<'_>) -> Result<Settle, StoreError> {
+            self.0.settle(req).await
         }
 
-        async fn expire_pending(
-            &self,
-            created_before: u64,
-            now: u64,
-        ) -> Result<Vec<ReplayKey>, StoreError> {
-            self.0.expire_pending(created_before, now).await
+        async fn expire_pending(&self, window: &SweepWindow) -> Result<Vec<ReplayKey>, StoreError> {
+            self.0.expire_pending(window).await
         }
 
         async fn record_refund(
             &self,
-            rk: &ReplayKey,
-            scheme_result: Option<&[u8]>,
+            req: &RefundRequest<'_>,
         ) -> Result<Option<OutcomeRecord>, StoreError> {
-            self.0.record_refund(rk, scheme_result).await
+            self.0.record_refund(req).await
         }
 
-        async fn purge(&self, created_before: u64, now: u64) -> Result<u64, StoreError> {
-            self.0.purge(created_before, now).await
+        async fn purge(&self, window: &SweepWindow) -> Result<u64, StoreError> {
+            self.0.purge(window).await
         }
     }
 

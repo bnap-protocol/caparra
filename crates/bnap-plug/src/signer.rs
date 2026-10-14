@@ -458,21 +458,26 @@ impl CappedSigner {
         }
     }
 
-    /// The view a scheme's `settle` gets, for the outcome under
-    /// `replay_key`: blind signatures worth at most `cap` in all, which
-    /// only [`bnap_core::pricing::Admission::settle`] makes, and only until
-    /// the returned [`SettleGuard`] is dropped.
+    /// The view a scheme's `settle` gets: blind signatures worth at most
+    /// `cap` in all, for the outcome the cap was computed for, and only
+    /// until the returned [`SettleGuard`] is dropped.
+    ///
+    /// Only bnap-core makes a [`ChangeCap`], from one committed outcome
+    /// (`Pending::charge` for its own settle, `Recorded::refund_cap` for the
+    /// refund of a timed-out one), and the cap carries that outcome's
+    /// `ReplayKey`, so the budget and the settlement the signer counts it
+    /// against always belong together.
     ///
     /// Hold the guard while `settle` runs and drop it when `settle`
-    /// returns.
-    pub fn for_change(
-        inner: Arc<dyn Signer>,
-        cap: &ChangeCap,
-        replay_key: ReplayKey,
-    ) -> (Self, SettleGuard) {
+    /// returns. No plug or gate can make a cap of its own:
+    ///
+    /// ```compile_fail,E0624
+    /// let _ = bnap_plug::ChangeCap::new;
+    /// ```
+    pub fn for_change(inner: Arc<dyn Signer>, cap: &ChangeCap) -> (Self, SettleGuard) {
         let budget = Arc::new(Budget {
             limit: ChangeLimit {
-                replay_key,
+                replay_key: *cap.replay_key(),
                 status: cap.status(),
                 unit: cap.unit().to_owned(),
                 cap: cap.get(),

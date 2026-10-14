@@ -279,8 +279,8 @@ fn the_value_is_what_the_rails_and_the_signer_confirmed() {
     let p = a.pay().unwrap();
     assert_eq!((p.claimed(), p.backed(), p.value()), (1_000_000, 150, 150));
     assert_eq!(p.backing(), &[BackingSource::Rail(RailId([1; 32]))]);
-    assert_eq!(a.settle(Status::Ok, 0).cap.get(), 50);
-    assert_eq!(a.settle(Status::Failed, 0).cap.get(), 150);
+    assert_eq!(a.settle(Status::Ok, 0).change(), 50);
+    assert_eq!(a.settle(Status::Failed, 0).change(), 150);
     // A claim below the backing is the value: the scheme gives up the rest.
     let a = admit(&pay(120, vec![paid(1, 150, "sat")]), empty).unwrap();
     assert_eq!(a.pay().unwrap().value(), 120);
@@ -343,7 +343,7 @@ fn a_value_larger_than_the_verified_notes_is_cut_to_them() {
             BackingSource::Note(b"Y2".to_vec())
         ]
     );
-    assert_eq!(a.settle(Status::Ok, 0).cap.get(), 46);
+    assert_eq!(a.settle(Status::Ok, 0).change(), 46);
     // A price above the notes: UNDERPAID at the notes' value.
     let o = offer(100, vec![]);
     let mut i = i;
@@ -395,7 +395,7 @@ fn attestation_only_waive_needs_no_pay() {
     let a = admit(&input(&o, None, &v), empty).unwrap();
     assert_eq!(a.price(), 0);
     assert!(a.pay().is_none());
-    assert_eq!(a.settle(Status::Ok, 0).charged, 0);
+    assert_eq!(a.settle(Status::Ok, 0).charged(), 0);
     // The waive did not verify: UNDERPAID, never a free admission
     // (ERRATA N3b-1; the literal base of 0 would admit it).
     assert!(matches!(
@@ -537,28 +537,28 @@ fn metered_charge_matches_the_10_3_example() {
     assert_eq!(adm.price(), 1_680, "the client sends price(ceiling)");
     // 850 tokens: ⌈850 × 500 / 1000⌉ = 425 before the discount, 340 after.
     let charge = adm.settle(Status::Ok, 850);
-    assert_eq!(charge.charged, 340);
-    assert_eq!(charge.metered_units, Some(850));
+    assert_eq!(charge.charged(), 340);
+    assert_eq!(charge.metered_units(), Some(850));
     assert_eq!(
-        charge.cap.get(),
+        charge.change(),
         1_340,
         "the notes scheme signs 1,340 sat of change"
     );
     // Rounding up the metered amount: 1 token at 500/1000 is 1 sat, and a
     // 20% discount takes off ⌊1 × 0.2⌋ = 0.
-    assert_eq!(adm.settle(Status::Ok, 1).charged, 1);
-    assert_eq!(adm.settle(Status::Ok, 0).charged, 0);
+    assert_eq!(adm.settle(Status::Ok, 1).charged(), 1);
+    assert_eq!(adm.settle(Status::Ok, 0).charged(), 0);
     // Beyond the ceiling: price(amount).
-    assert_eq!(adm.settle(Status::Ok, 10_000).charged, 1_680);
+    assert_eq!(adm.settle(Status::Ok, 10_000).charged(), 1_680);
     // A product beyond 2^64 yields the ceiling.
     let mut huge = route.clone();
     huge.pay[0].rate = Some(u64::MAX);
     let adm = admit(&input(&huge, Some(1_680), &verified), empty).unwrap();
-    assert_eq!(adm.settle(Status::Ok, u64::MAX).charged, 1_680);
+    assert_eq!(adm.settle(Status::Ok, u64::MAX).charged(), 1_680);
     // Metered FAILED: nothing charged, the count still reported.
     let failed = adm.settle(Status::Failed, 850);
     assert_eq!(
-        (failed.charged, failed.metered_units, failed.cap.get()),
+        (failed.charged(), failed.metered_units(), failed.change()),
         (0, Some(850), 1_680)
     );
 }
@@ -572,7 +572,7 @@ fn settlement_reuses_the_quota_decision() {
     let v = [att("q", BindingClass::S).with_quota_id(id)];
     let a = admit(&input(&o, Some(0), &v), empty).unwrap();
     assert!(a.decision().quota.is_some());
-    assert_eq!(a.settle(Status::Ok, 500).charged, 0);
+    assert_eq!(a.settle(Status::Ok, 500).charged(), 0);
 }
 
 #[test]
@@ -581,11 +581,11 @@ fn overpayment_and_failure() {
     let a = admit(&input(&o, Some(150), &[]), empty).unwrap();
     let ok = a.settle(Status::Ok, 0);
     assert_eq!(
-        (ok.charged, ok.cap.get(), ok.metered_units),
+        (ok.charged(), ok.change(), ok.metered_units()),
         (100, 50, None)
     );
     let failed = a.settle(Status::Failed, 0);
-    assert_eq!((failed.charged, failed.cap.get()), (0, 150));
+    assert_eq!((failed.charged(), failed.change()), (0, 150));
 }
 
 /// Admission of a pay part worth `value` through one rail payment, for a
@@ -617,13 +617,13 @@ fn only_an_atomic_refund_gets_a_change_cap() {
         assert_eq!(a.pay().unwrap().refund(), refund);
         let ok = a.settle(Status::Ok, 0);
         assert_eq!(
-            (ok.charged, ok.cap.get()),
+            (ok.charged(), ok.change()),
             (21, 0),
             "{refund:?}: excess kept"
         );
         let failed = a.settle(Status::Failed, 0);
         assert_eq!(
-            (failed.charged, failed.cap.get(), failed.cap.status()),
+            (failed.charged(), failed.change(), failed.status()),
             (0, 0, Status::Failed),
             "{refund:?}: no refund in operator notes"
         );
@@ -631,8 +631,8 @@ fn only_an_atomic_refund_gets_a_change_cap() {
     // The same overpayment through an atomic scheme: change and a full
     // refund, as before.
     let a = admit_with_refund(&o, 1_000, Refund::Atomic);
-    assert_eq!(a.settle(Status::Ok, 0).cap.get(), 979);
-    assert_eq!(a.settle(Status::Failed, 0).cap.get(), 1_000);
+    assert_eq!(a.settle(Status::Ok, 0).change(), 979);
+    assert_eq!(a.settle(Status::Failed, 0).change(), 1_000);
 }
 
 #[test]
@@ -644,10 +644,10 @@ fn a_metered_upto_scheme_without_atomic_refund_signs_no_change() {
     o.pay[0].rate = Some(1_000);
     let a = admit_with_refund(&o, 1_000, Refund::None);
     let ok = a.settle(Status::Ok, 400);
-    assert_eq!((ok.charged, ok.cap.get()), (400, 0));
-    assert_eq!(a.settle(Status::Failed, 400).cap.get(), 0);
+    assert_eq!((ok.charged(), ok.change()), (400, 0));
+    assert_eq!(a.settle(Status::Failed, 400).change(), 0);
     let a = admit_with_refund(&o, 1_000, Refund::Atomic);
-    assert_eq!(a.settle(Status::Ok, 400).cap.get(), 600);
+    assert_eq!(a.settle(Status::Ok, 400).change(), 600);
 }
 
 #[test]
@@ -720,7 +720,7 @@ proptest! {
         let v = [att("d", BindingClass::S)];
         let a = admit(&input(&o, Some(u64::MAX), &v), empty).unwrap();
         let c = a.settle(Status::Ok, units);
-        prop_assert!(c.charged <= a.price());
-        prop_assert_eq!(c.cap.get(), u64::MAX - c.charged);
+        prop_assert!(c.charged() <= a.price());
+        prop_assert_eq!(c.change(), u64::MAX - c.charged());
     }
 }

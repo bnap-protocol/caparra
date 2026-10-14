@@ -20,13 +20,48 @@
 //! statements; either way, every method of [`UseStore`] behaves exactly as
 //! the matching function of [`logic`] run atomically, and is durable before
 //! it returns.
+//!
+//! **Every write takes an argument only bnap-core builds.** [`CommitPlan`],
+//! [`SettleRequest`] (with the [`Settlement`] it carries), [`RefundRequest`]
+//! and [`SweepWindow`] have private fields, public getters for store
+//! implementers, and constructors private to this crate: [`crate::outcome`]
+//! makes them in `process`, `settle`, `record_refund`, `sweep` and the
+//! replay path, so a gate holding the store cannot write an outcome by any
+//! other path:
+//!
+//! ```compile_fail,E0451
+//! use bnap_core::store::Settlement;
+//! use bnap_core::{ReplayKey, Status};
+//! let forged = Settlement {
+//!     replay_key: ReplayKey([0; 32]),
+//!     status: Status::Ok,
+//!     charged: 0,
+//!     metered_units: None,
+//!     scheme_result: None,
+//!     response: None,
+//!     settled_at: 0,
+//! };
+//! ```
+//!
+//! ```compile_fail,E0624
+//! let _ = bnap_core::store::SettleRequest::new;
+//! ```
+//!
+//! ```compile_fail,E0624
+//! let _ = bnap_core::store::RefundRequest::new;
+//! ```
+//!
+//! ```compile_fail,E0624
+//! let _ = bnap_core::store::SweepWindow::new;
+//! ```
 
 use std::collections::BTreeSet;
 
 use crate::error::ErrorCode;
 use crate::hash::{Context, CounterKey, RailId, ReplayKey};
 use crate::ids::{rate_key, use_id};
-use crate::limits::CLOCK_SKEW;
+use crate::limits::{CLOCK_SKEW, Limits};
+use crate::outcome::OutcomeCharge;
 use crate::pricing::{Admission, BackingSource, epoch_end};
 use crate::response::Status;
 
@@ -344,7 +379,7 @@ impl CommitPlan {
         if singles.is_empty() && keep_until > now.saturating_add(replay_window) {
             return Err(PlanError::OutlivesRecord);
         }
-        let refund = admission.settle(Status::Failed, 0).cap;
+        let refund = admission.settle(Status::Failed, 0);
         Ok(Self {
             replay_key,
             ids,
@@ -352,7 +387,7 @@ impl CommitPlan {
             counters: counters.into_iter().collect(),
             now,
             keep_until,
-            refund_cap: refund.get(),
+            refund_cap: refund.change(),
             unit: refund.unit().to_owned(),
         })
     }
@@ -431,30 +466,51 @@ pub enum Commit {
 }
 
 /// What settlement writes to `outcome[rk]` (6.4).
+///
+/// Its outcome, status, charge and meter count come only from
+/// [`OutcomeCharge`], which only `outcome::Pending::charge` makes; the gate
+/// adds the settlement time, the scheme's result and the response it keeps.
+/// `outcome::settle` refuses a settlement made for another outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settlement {
-    /// OK or FAILED.
-    pub status: Status,
-    /// The charge from [`crate::pricing::Admission::settle`].
-    pub charged: u64,
-    /// The meter's count, in metered offers.
-    pub metered_units: Option<u64>,
-    /// What the scheme's `settle` returned.
-    pub scheme_result: Option<Vec<u8>>,
-    /// The response the carrier keeps for replays, if any.
-    pub response: Option<Vec<u8>>,
-    /// Settlement time.
-    pub settled_at: u64,
+    replay_key: ReplayKey,
+    status: Status,
+    charged: u64,
+    metered_units: Option<u64>,
+    scheme_result: Option<Vec<u8>>,
+    response: Option<Vec<u8>>,
+    settled_at: u64,
 }
 
 impl Settlement {
-    /// A settlement for a computed charge.
+    /// The settlement of a committed outcome's charge, at `settled_at`.
     #[must_use]
-    pub fn new(charge: &crate::pricing::Charge, settled_at: u64) -> Self {
+    pub fn new(charge: &OutcomeCharge, settled_at: u64) -> Self {
         Self {
-            status: charge.status,
-            charged: charge.charged,
-            metered_units: charge.metered_units,
+            replay_key: *charge.replay_key(),
+            status: charge.status(),
+            charged: charge.charged(),
+            metered_units: charge.metered_units(),
+            scheme_result: None,
+            response: None,
+            settled_at,
+        }
+    }
+
+    /// A settlement from its parts, for this crate's own store tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn from_parts(
+        replay_key: ReplayKey,
+        status: Status,
+        charged: u64,
+        metered_units: Option<u64>,
+        settled_at: u64,
+    ) -> Self {
+        Self {
+            replay_key,
+            status,
+            charged,
+            metered_units,
             scheme_result: None,
             response: None,
             settled_at,
@@ -473,6 +529,168 @@ impl Settlement {
     pub fn with_response(mut self, r: Option<Vec<u8>>) -> Self {
         self.response = r;
         self
+    }
+
+    /// The outcome it settles.
+    #[must_use]
+    pub fn replay_key(&self) -> &ReplayKey {
+        &self.replay_key
+    }
+
+    /// OK or FAILED.
+    #[must_use]
+    pub fn status(&self) -> Status {
+        self.status
+    }
+
+    /// The charge, from the admission the commit was priced with.
+    #[must_use]
+    pub fn charged(&self) -> u64 {
+        self.charged
+    }
+
+    /// The meter's count, in metered offers.
+    #[must_use]
+    pub fn metered_units(&self) -> Option<u64> {
+        self.metered_units
+    }
+
+    /// What the scheme's `settle` returned.
+    #[must_use]
+    pub fn scheme_result(&self) -> Option<&[u8]> {
+        self.scheme_result.as_deref()
+    }
+
+    /// The response the carrier keeps for replays, if any.
+    #[must_use]
+    pub fn response(&self) -> Option<&[u8]> {
+        self.response.as_deref()
+    }
+
+    /// Settlement time.
+    #[must_use]
+    pub fn settled_at(&self) -> u64 {
+        self.settled_at
+    }
+}
+
+/// The input of the store's settle (6.4): a [`Settlement`] and the
+/// `pending_timeout` its time is checked against. Only `outcome::settle`
+/// makes one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettleRequest<'a> {
+    settlement: &'a Settlement,
+    pending_timeout: u64,
+}
+
+impl<'a> SettleRequest<'a> {
+    pub(crate) fn new(settlement: &'a Settlement, pending_timeout: u64) -> Self {
+        Self {
+            settlement,
+            pending_timeout,
+        }
+    }
+
+    /// The outcome to settle.
+    #[must_use]
+    pub fn replay_key(&self) -> &ReplayKey {
+        self.settlement.replay_key()
+    }
+
+    /// What to write.
+    #[must_use]
+    pub fn settlement(&self) -> &'a Settlement {
+        self.settlement
+    }
+
+    /// The gate's `pending_timeout`: a settlement later than `created +
+    /// pending_timeout` loses to the timeout.
+    #[must_use]
+    pub fn pending_timeout(&self) -> u64 {
+        self.pending_timeout
+    }
+}
+
+/// The input of the store's `record_refund`: the timed-out outcome and what
+/// its scheme's FAILED settle returned. Only `outcome::record_refund` makes
+/// one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefundRequest<'a> {
+    replay_key: ReplayKey,
+    scheme_result: Option<&'a [u8]>,
+}
+
+impl<'a> RefundRequest<'a> {
+    pub(crate) fn new(replay_key: ReplayKey, scheme_result: Option<&'a [u8]>) -> Self {
+        Self {
+            replay_key,
+            scheme_result,
+        }
+    }
+
+    /// The outcome whose refund this is.
+    #[must_use]
+    pub fn replay_key(&self) -> &ReplayKey {
+        &self.replay_key
+    }
+
+    /// What the scheme's FAILED settle returned; `None` when it had nothing
+    /// to refund.
+    #[must_use]
+    pub fn scheme_result(&self) -> Option<&'a [u8]> {
+        self.scheme_result
+    }
+}
+
+/// The window of one timeout or purge pass (6.4, section 12 "Retention"),
+/// computed from the gate's clock and its [`Limits`]. Only bnap-core makes
+/// one: `outcome::sweep`, and the replay path when it times an outcome out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SweepWindow {
+    now: u64,
+    timeout_before: u64,
+    purge_before: u64,
+}
+
+impl SweepWindow {
+    /// The window at `now`: PENDING outcomes created more than
+    /// `pending_timeout` ago time out, and settled records created more
+    /// than [`Limits::record_window`] ago may be purged.
+    pub(crate) fn new(now: u64, limits: &Limits) -> Self {
+        Self {
+            now,
+            timeout_before: now.saturating_sub(limits.pending_timeout),
+            purge_before: now.saturating_sub(limits.record_window()),
+        }
+    }
+
+    /// A window from its parts, for this crate's own store tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn from_parts(now: u64, timeout_before: u64, purge_before: u64) -> Self {
+        Self {
+            now,
+            timeout_before,
+            purge_before,
+        }
+    }
+
+    /// The gate's clock: a timed-out outcome is settled at it, and a record
+    /// is kept until its `keep_until + 60` is before it.
+    #[must_use]
+    pub fn now(&self) -> u64 {
+        self.now
+    }
+
+    /// PENDING outcomes created before this time out.
+    #[must_use]
+    pub fn timeout_before(&self) -> u64 {
+        self.timeout_before
+    }
+
+    /// Settled records created before this are past their replay window.
+    #[must_use]
+    pub fn purge_before(&self) -> u64 {
+        self.purge_before
     }
 }
 
@@ -532,44 +750,37 @@ pub trait UseStore: Send + Sync {
     /// Reads `outcome[rk]`.
     async fn outcome(&self, rk: &ReplayKey) -> Result<Option<OutcomeRecord>, StoreError>;
 
-    /// 6.4 settle: one conditional update that succeeds only from PENDING
-    /// and only while `s.settled_at <= created + pending_timeout`; on FAILED
-    /// the outcome's counters are given back in the same write. A settle
-    /// that comes later times the outcome out instead, in the same
-    /// transaction, and returns it as [`Settle::AlreadySettled`], so the
-    /// answer never depends on when the sweep runs.
-    async fn settle(
-        &self,
-        rk: &ReplayKey,
-        s: &Settlement,
-        pending_timeout: u64,
-    ) -> Result<Settle, StoreError>;
+    /// 6.4 settle: one conditional update of `outcome[req.replay_key()]`
+    /// that succeeds only from PENDING and only while
+    /// `settled_at <= created + pending_timeout`; on FAILED the outcome's
+    /// counters are given back in the same write. A settle that comes later times the outcome out
+    /// instead, in the same transaction, and returns it as
+    /// [`Settle::AlreadySettled`], so the answer never depends on when the
+    /// sweep runs.
+    async fn settle(&self, req: &SettleRequest<'_>) -> Result<Settle, StoreError>;
 
     /// 6.4 timeout: every outcome still PENDING that was created before
-    /// `created_before` moves to FAILED with charge 0 and `timed_out`, its
-    /// counters given back, settled at `now`. Returns their `ReplayKey`s.
-    async fn expire_pending(
-        &self,
-        created_before: u64,
-        now: u64,
-    ) -> Result<Vec<ReplayKey>, StoreError>;
+    /// `window.timeout_before()` moves to FAILED with charge 0 and
+    /// `timed_out`, its counters given back, settled at `window.now()`.
+    /// Returns their `ReplayKey`s.
+    async fn expire_pending(&self, window: &SweepWindow) -> Result<Vec<ReplayKey>, StoreError>;
 
     /// Records the refund of a timed-out outcome once: only if the outcome
     /// still [needs it](OutcomeRecord::needs_refund), writes
-    /// `scheme_result` (which may be `None`) and sets `refund_recorded`.
-    /// Returns the record after the call, or `None` when there is none.
+    /// `req.scheme_result()` (which may be `None`) and sets
+    /// `refund_recorded`. Returns the record after the call, or `None` when
+    /// there is none.
     async fn record_refund(
         &self,
-        rk: &ReplayKey,
-        scheme_result: Option<&[u8]>,
+        req: &RefundRequest<'_>,
     ) -> Result<Option<OutcomeRecord>, StoreError>;
 
-    /// Deletes OK and FAILED outcome records created before `created_before`
-    /// (the replay window has passed) whose `keep_until + 60` is before
-    /// `now`: their offer can no longer be presented, even to a gate clock a
-    /// skew behind this one. PENDING records and every `used` entry stay.
-    /// Returns how many were deleted.
-    async fn purge(&self, created_before: u64, now: u64) -> Result<u64, StoreError>;
+    /// Deletes OK and FAILED outcome records created before
+    /// `window.purge_before()` (the replay window has passed) whose
+    /// `keep_until + 60` is before `window.now()`: their offer can no longer
+    /// be presented, even to a gate clock a skew behind this one. PENDING
+    /// records and every `used` entry stay. Returns how many were deleted.
+    async fn purge(&self, window: &SweepWindow) -> Result<u64, StoreError>;
 }
 
 /// The primitive reads and writes of one serializable transaction, for
@@ -601,8 +812,8 @@ pub trait UseTable {
 /// abort consumes nothing.
 pub mod logic {
     use super::{
-        CLOCK_SKEW, Commit, CommitPlan, OutcomeRecord, OutcomeStatus, ReplayKey, Settle,
-        Settlement, UseTable,
+        CLOCK_SKEW, Commit, CommitPlan, OutcomeRecord, OutcomeStatus, RefundRequest, ReplayKey,
+        Settle, SettleRequest, SweepWindow, UseTable,
     };
     use crate::response::Status;
 
@@ -671,51 +882,48 @@ pub mod logic {
     /// 6.4 settle: the status changes exactly once. On FAILED, single uses
     /// stay spent and the outcome's counters are given back.
     ///
-    /// A settle at `s.settled_at > created + pending_timeout` comes after
-    /// the outcome's timeout: the record moves to FAILED by the timeout
-    /// (as [`expire_pending`] would, settled at `s.settled_at`) and the
-    /// settle is refused with it, whether or not a sweep or a replay ran.
-    pub fn settle(
-        t: &mut impl UseTable,
-        rk: &ReplayKey,
-        s: &Settlement,
-        pending_timeout: u64,
-    ) -> Settle {
-        let Some(rec) = t.outcome(rk) else {
+    /// A settle at `settled_at > created + pending_timeout` comes after the
+    /// outcome's timeout: the record moves to FAILED by the timeout (as
+    /// [`expire_pending`] would, settled at `settled_at`) and the settle is
+    /// refused with it, whether or not a sweep or a replay ran.
+    pub fn settle(t: &mut impl UseTable, req: &SettleRequest<'_>) -> Settle {
+        let (rk, s) = (*req.replay_key(), req.settlement());
+        let Some(rec) = t.outcome(&rk) else {
             return Settle::Unknown;
         };
         if rec.status != OutcomeStatus::Pending {
             return Settle::AlreadySettled(rec.clone());
         }
-        if s.settled_at > rec.created.saturating_add(pending_timeout) {
+        if s.settled_at() > rec.created.saturating_add(req.pending_timeout()) {
             let rec = rec.clone();
-            return Settle::AlreadySettled(time_out(t, *rk, &rec, s.settled_at));
+            return Settle::AlreadySettled(time_out(t, rk, &rec, s.settled_at()));
         }
         let mut rec = rec.clone();
-        rec.status = s.status.into();
-        rec.charged = Some(s.charged);
-        rec.metered_units = s.metered_units;
-        rec.scheme_result.clone_from(&s.scheme_result);
-        rec.response.clone_from(&s.response);
-        rec.settled_at = Some(s.settled_at);
-        if s.status == Status::Failed {
+        rec.status = s.status().into();
+        rec.charged = Some(s.charged());
+        rec.metered_units = s.metered_units();
+        rec.scheme_result = s.scheme_result().map(<[u8]>::to_vec);
+        rec.response = s.response().map(<[u8]>::to_vec);
+        rec.settled_at = Some(s.settled_at());
+        if s.status() == Status::Failed {
             give_back(t, &rec);
         }
-        t.put_outcome(*rk, rec.clone());
+        t.put_outcome(rk, rec.clone());
         Settle::Settled(rec)
     }
 
-    /// 6.4 timeout: PENDING outcomes created before `created_before` move
-    /// to FAILED with charge 0, settled at `now`, their counters given back.
-    pub fn expire_pending(t: &mut impl UseTable, created_before: u64, now: u64) -> Vec<ReplayKey> {
+    /// 6.4 timeout: PENDING outcomes created before `w.timeout_before()`
+    /// move to FAILED with charge 0, settled at `w.now()`, their counters
+    /// given back.
+    pub fn expire_pending(t: &mut impl UseTable, w: &SweepWindow) -> Vec<ReplayKey> {
         let mut out = Vec::new();
         for rk in t.outcome_keys() {
             let Some(rec) = t.outcome(&rk) else { continue };
-            if rec.status != OutcomeStatus::Pending || rec.created >= created_before {
+            if rec.status != OutcomeStatus::Pending || rec.created >= w.timeout_before() {
                 continue;
             }
             let rec = rec.clone();
-            time_out(t, rk, &rec, now);
+            time_out(t, rk, &rec, w.now());
             out.push(rk);
         }
         out.sort_unstable();
@@ -724,35 +932,31 @@ pub mod logic {
 
     /// Records a timed-out outcome's refund once (see
     /// [`super::UseStore::record_refund`]).
-    pub fn record_refund(
-        t: &mut impl UseTable,
-        rk: &ReplayKey,
-        scheme_result: Option<&[u8]>,
-    ) -> Option<OutcomeRecord> {
-        let rec = t.outcome_mut(rk)?;
+    pub fn record_refund(t: &mut impl UseTable, req: &RefundRequest<'_>) -> Option<OutcomeRecord> {
+        let rec = t.outcome_mut(req.replay_key())?;
         if rec.needs_refund() {
-            rec.scheme_result = scheme_result.map(<[u8]>::to_vec);
+            rec.scheme_result = req.scheme_result().map(<[u8]>::to_vec);
             rec.refund_recorded = true;
         }
         Some(rec.clone())
     }
 
-    /// Deletes settled outcome records created before `created_before`,
+    /// Deletes settled outcome records created before `w.purge_before()`,
     /// but never one whose offer can still be presented:
-    /// `keep_until + CLOCK_SKEW` must be before `now`. This holds whatever
-    /// window the caller computed `created_before` from, so a sweep run with
-    /// a shorter `replay_window` than the commit saw cannot let a credential
+    /// `keep_until + CLOCK_SKEW` must be before `w.now()`. This holds
+    /// whatever limits the window was computed from, so a sweep run with a
+    /// shorter `replay_window` than the commit saw cannot let a credential
     /// without single uses be admitted again (6.1). The extra skew covers a
     /// request whose clock reads up to 60 s behind the sweep's: its fresh
     /// commit is STALE once its `now > keep_until`, and until then it still
     /// finds the record, as `REFUND_MARGIN` assumes of the gate's clocks.
-    pub fn purge(t: &mut impl UseTable, created_before: u64, now: u64) -> u64 {
+    pub fn purge(t: &mut impl UseTable, w: &SweepWindow) -> u64 {
         let mut n = 0;
         for rk in t.outcome_keys() {
             let old = t.outcome(&rk).is_some_and(|r| {
                 r.status != OutcomeStatus::Pending
-                    && r.created < created_before
-                    && r.keep_until.saturating_add(CLOCK_SKEW) < now
+                    && r.created < w.purge_before()
+                    && r.keep_until.saturating_add(CLOCK_SKEW) < w.now()
             });
             if old {
                 t.delete_outcome(&rk);
