@@ -3,13 +3,14 @@
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{Arc, Barrier, LazyLock, Mutex};
 
 use bnap_core::credential::{Credential, OfferRef, SchemePart};
 use bnap_core::hash::{Context, Digest, RailId, ReplayKey, Scope, sha256};
 use bnap_core::ids::{rail, rail_id};
 use bnap_core::limits::Limits;
 use bnap_core::manifest::KeyUse;
+use bnap_core::note::hash_to_curve;
 use bnap_core::offer::{OfferFields, PayEntry};
 use bnap_core::outcome::{
     self, Admitted, ProcessError, ReceiptInput, Recorded, Request, SettleError,
@@ -17,6 +18,7 @@ use bnap_core::outcome::{
 use bnap_core::pricing::{AdmitInput, Backing, BackingSource, PayValue, Refund};
 use bnap_core::response::{Response, Status};
 use bnap_core::schnorr::{Key, Signature, SigningKey};
+use bnap_core::secp256k1::{All, PublicKey, Scalar, Secp256k1};
 use bnap_core::sign::{UnsignedOffer, UnsignedResponse};
 use bnap_core::store::{Settlement, UseModel};
 use bnap_core::test_support::{MemoryStore, block_on};
@@ -34,8 +36,45 @@ const AUX0: [u8; 32] = [0; 32];
 
 // ---------------------------------------------------------------- signer
 
-/// A signer that holds keys by use, keeps the running change total per
-/// settlement in a [`ChangeLedger`], and records every blind-sign call.
+static SECP: LazyLock<Secp256k1<All>> = LazyLock::new(Secp256k1::new);
+
+/// The scalar `m`.
+fn scalar(m: u64) -> Scalar {
+    let mut b = [0u8; 32];
+    b[24..].copy_from_slice(&m.to_be_bytes());
+    Scalar::from_be_bytes(b).unwrap()
+}
+
+/// `s·P` for a compressed point; `None` for bytes that are not a point.
+fn times(p: &[u8; 33], s: &Scalar) -> Option<[u8; 33]> {
+    let p = PublicKey::from_slice(p).ok()?;
+    Some(p.mul_tweak(&SECP, s).ok()?.serialize())
+}
+
+/// `-P`.
+fn negated(p: &[u8; 33]) -> [u8; 33] {
+    PublicKey::from_slice(p).unwrap().negate(&SECP).serialize()
+}
+
+/// The test issuer's key `k`, for every amount of the test keyset.
+fn issuer_key() -> Scalar {
+    Scalar::from_be_bytes(sha256(b"test issuer key")).unwrap()
+}
+
+/// A note secret as `bnap:notes` writes one: 64 lowercase hex characters.
+fn secret(tag: u8) -> Vec<u8> {
+    hex::encode(sha256(&[b"note key ", &[tag][..]].concat())).into_bytes()
+}
+
+/// The unblinded signature of a note: `C = k·hash_to_curve(secret)`.
+fn mint(secret: &[u8]) -> Point {
+    Point(times(&hash_to_curve(secret).unwrap(), &issuer_key()).unwrap())
+}
+
+/// A signer that holds keys by use, checks notes with real BDHKE math
+/// (`C = k·Y` for the `Y` it derives from the secret), keeps the running
+/// change total per settlement in a [`ChangeLedger`], and records every
+/// blind-sign call.
 struct TestSigner {
     offer: SigningKey,
     receipt: SigningKey,
@@ -85,11 +124,15 @@ impl Signer for TestSigner {
         _keyset: &KeysetId,
         unit: &str,
         _amount: u64,
-        y: &Point,
+        secret: &[u8],
         c: &Point,
-    ) -> Result<bool, SignerError> {
-        // Stand-in for C == k·Y; the test keyset is in sat.
-        Ok(unit == "sat" && y == c)
+    ) -> Result<Option<Point>, SignerError> {
+        // Y from the secret, never from the caller; the keyset is in sat.
+        let Some(y) = hash_to_curve(secret) else {
+            return Ok(None);
+        };
+        let ok = unit == "sat" && times(&y, &issuer_key()) == Some(c.0);
+        Ok(ok.then_some(Point(y)))
     }
 
     async fn blind_sign(
@@ -420,7 +463,12 @@ fn the_verify_only_view_signs_nothing() {
     let inner = Arc::new(TestSigner::new());
     let view = CappedSigner::verify_only(inner.clone(), "sat");
     assert_eq!((view.cap(), view.remaining()), (None, None));
-    assert!(block_on(view.verify_unblinded(&ks(), 8, &Point([3; 33]), &Point([3; 33]))).unwrap());
+    let s = secret(3);
+    assert!(
+        block_on(view.verify_unblinded(&ks(), 8, &s, &mint(&s)))
+            .unwrap()
+            .is_some()
+    );
     assert!(matches!(
         block_on(view.blind_sign(&ks(), &[])),
         Err(SignerError::Refused(_))
@@ -464,31 +512,40 @@ fn the_signer_signs_core_messages_with_the_key_for_their_use() {
 #[test]
 fn the_verify_only_view_keeps_each_accepted_note_once() {
     let view = CappedSigner::verify_only(Arc::new(TestSigner::new()), "sat");
-    let (y1, y2, bad) = (Point([3; 33]), Point([4; 33]), Point([5; 33]));
-    for (amount, y, c) in [
-        (64, &y1, &y1),
-        (32, &y2, &y2),
-        (64, &y1, &y1),
-        (1_000, &bad, &y1),
+    let (s1, s2, s3) = (secret(3), secret(4), secret(5));
+    let (y1, y2) = (hash_to_curve(&s1).unwrap(), hash_to_curve(&s2).unwrap());
+    for (amount, s, c) in [
+        (64, &s1, mint(&s1)),
+        (32, &s2, mint(&s2)),
+        (64, &s1, mint(&s1)),
+        (1_000, &s3, mint(&s1)),
     ] {
-        let _ = block_on(view.verify_unblinded(&ks(), amount, y, c)).unwrap();
+        let _ = block_on(view.verify_unblinded(&ks(), amount, s, &c)).unwrap();
     }
-    // A clone adds to the same notes.
+    // A clone adds to the same notes, and gets the Y it derived back.
     let clone = view.clone();
-    assert!(block_on(clone.verify_unblinded(&ks(), 64, &y1, &y1)).unwrap());
-    let notes = view.notes();
     assert_eq!(
-        notes
-            .iter()
-            .map(|b| (b.amount, b.unit.as_str()))
-            .collect::<Vec<_>>(),
-        vec![(64, "sat"), (32, "sat")],
-        "Y1 counts once, the bad note not at all"
+        block_on(clone.verify_unblinded(&ks(), 64, &s1, &mint(&s1))).unwrap(),
+        Some(Point(y1))
     );
-    assert_eq!(notes[0].source, BackingSource::Note(y1.0.to_vec()));
+    let mut notes: Vec<_> = view
+        .notes()
+        .into_iter()
+        .map(|b| (b.source, b.amount, b.unit))
+        .collect();
+    notes.sort();
+    let mut want = vec![
+        (BackingSource::Note(y1.to_vec()), 64, "sat".to_owned()),
+        (BackingSource::Note(y2.to_vec()), 32, "sat".to_owned()),
+    ];
+    want.sort();
+    assert_eq!(notes, want, "Y1 counts once, the bad note not at all");
     // A view in another unit: the signer accepts no sat keyset for it.
     let msat = CappedSigner::verify_only(Arc::new(TestSigner::new()), "msat");
-    assert!(!block_on(msat.verify_unblinded(&ks(), 64, &y1, &y1)).unwrap());
+    assert_eq!(
+        block_on(msat.verify_unblinded(&ks(), 64, &s1, &mint(&s1))).unwrap(),
+        None
+    );
     assert_eq!(msat.notes(), Vec::<Backing>::new());
 }
 
@@ -624,8 +681,8 @@ fn mpp() -> Arc<dyn CredentialScheme> {
     })
 }
 
-/// A notes scheme: the body is notes of 74 bytes each (amount, `Y`, `C`),
-/// each checked through the verify-only view. It reports `claim` as its
+/// A notes scheme: the body is notes of 105 bytes each (amount, the
+/// 64-character secret, `C`), each checked through the verify-only view. It reports `claim` as its
 /// value, which may be more than the notes are worth. Its `settle` returns
 /// the cap it was given; a greedy one also tries to sign the whole cap
 /// twice and keeps a clone of its signer for later. `id` is `bnap:notes`,
@@ -649,12 +706,29 @@ impl Notes {
     }
 }
 
+/// A notes body: per note its amount, the secret `secret(tag)` and the
+/// issuer's `C` for it.
 fn notes_body(notes: &[(u64, u8)]) -> Vec<u8> {
+    let notes: Vec<_> = notes
+        .iter()
+        .map(|(amount, tag)| {
+            let s = secret(*tag);
+            let c = mint(&s);
+            (*amount, s, c)
+        })
+        .collect();
+    raw_notes_body(&notes)
+}
+
+/// A notes body of exactly these (amount, secret, `C`) triples; the
+/// secrets must be 64 bytes.
+fn raw_notes_body(notes: &[(u64, Vec<u8>, Point)]) -> Vec<u8> {
     let mut b = Vec::new();
-    for (amount, y) in notes {
+    for (amount, s, c) in notes {
+        assert_eq!(s.len(), 64);
         b.extend_from_slice(&amount.to_be_bytes());
-        b.extend_from_slice(&[*y; 33]);
-        b.extend_from_slice(&[*y; 33]);
+        b.extend_from_slice(s);
+        b.extend_from_slice(&c.0);
     }
     b
 }
@@ -671,18 +745,18 @@ impl CredentialScheme for Notes {
 
     async fn verify(&self, part: &SchemePart, cx: &VerifyCtx<'_>) -> Result<Verified, SchemeError> {
         let mut ys = Vec::new();
-        for n in part.body.chunks(74) {
+        for n in part.body.chunks(105) {
             let amount = u64::from_be_bytes(n[..8].try_into().unwrap());
-            let y = Point(n[8..41].try_into().unwrap());
-            let c = Point(n[41..74].try_into().unwrap());
-            if !cx
+            let secret = &n[8..72];
+            let c = Point(n[72..105].try_into().unwrap());
+            let Some(y) = cx
                 .signer
-                .verify_unblinded(&ks(), amount, &y, &c)
+                .verify_unblinded(&ks(), amount, secret, &c)
                 .await
                 .unwrap()
-            {
+            else {
                 return Err(SchemeError::rejected(self.id, "BAD_NOTE", "C != kY"));
-            }
+            };
             ys.push(y.0.to_vec());
         }
         Ok(Verified {
@@ -1080,6 +1154,109 @@ fn a_notes_value_larger_than_the_verified_notes_is_cut_to_them() {
     let mut cred = Credential::new(OfferRef::Id(gate.offer.offer_id()));
     cred.pay = Some(SchemePart::new("bnap:notes", notes_body(&[(32, 5)])));
     assert_eq!(gate.handle(&liar, &cred, NOW), Err(ErrorCode::Underpaid));
+}
+
+#[test]
+fn a_scaled_or_negated_note_never_counts_and_one_note_admits_one_action() {
+    // The checker's HIGH probe, with real BDHKE math. From one real 50 sat
+    // note (secret s, C = k·Y), the old trait let a scheme name (m·Y, m·C),
+    // which passes C == k·y; through process, one note admitted 5 actions,
+    // and 20 scaled copies backed a claim of 1,000 sat on a 21 sat entry,
+    // with 979 sat of change. Now the scheme names only the secret and the
+    // signer derives Y = hash_to_curve(s) itself.
+    let signer: Arc<dyn Signer> = Arc::new(TestSigner::new());
+    let s = secret(1);
+    let y = hash_to_curve(&s).unwrap();
+    let c = mint(&s);
+    let view = CappedSigner::verify_only(signer.clone(), "sat");
+    for m in 2..=20 {
+        let (ym, cm) = (
+            times(&y, &scalar(m)).unwrap(),
+            times(&c.0, &scalar(m)).unwrap(),
+        );
+        // A scaled point cannot be named: taken as a secret, its bytes map
+        // to another point.
+        assert_eq!(
+            block_on(view.verify_unblinded(&ks(), 50, &ym, &Point(cm))).unwrap(),
+            None
+        );
+        // The real secret with a scaled C is refused.
+        assert_eq!(
+            block_on(view.verify_unblinded(&ks(), 50, &s, &Point(cm))).unwrap(),
+            None
+        );
+    }
+    // So is the negated pair (-Y, -C), whose -C has the other prefix.
+    assert_eq!(
+        block_on(view.verify_unblinded(&ks(), 50, &s, &Point(negated(&c.0)))).unwrap(),
+        None
+    );
+    assert_eq!(view.notes(), Vec::<Backing>::new());
+
+    // Five credentials, each carrying the real note and twenty scaled
+    // copies, claiming 1,000 sat on a 21 sat entry.
+    let store = MemoryStore::new();
+    let mut o = OfferFields::new(Scope([1; 32]), NOW + 300, Key([9; 32]), [0; 16]);
+    o.pay.push(PayEntry::new("bnap:notes", 21, "sat"));
+    let mut answers = Vec::new();
+    for n in 1..=5u8 {
+        let view = CappedSigner::verify_only(signer.clone(), "sat");
+        let mut ys = Vec::new();
+        for m in 1..=20 {
+            let cm = Point(times(&c.0, &scalar(m)).unwrap());
+            if let Some(p) = block_on(view.verify_unblinded(&ks(), 50, &s, &cm)).unwrap() {
+                ys.push(p.0.to_vec());
+            }
+        }
+        assert_eq!(ys, vec![y.to_vec()], "only the real note verifies");
+        let notes = view.notes();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            (notes[0].source.clone(), notes[0].amount),
+            (BackingSource::Note(y.to_vec()), 50)
+        );
+        let schemes = [bnap_core::store::SchemeUses {
+            scheme: "bnap:notes",
+            model: UseModel::Single,
+            local_ids: &ys,
+        }];
+        answers.push(block_on(outcome::process(
+            &store,
+            &Request {
+                offer: &o,
+                context: &Context([n; 32]),
+                pay_body: &[n],
+                attest_bodies: &[],
+                schemes: &schemes,
+                rail_ids: &[],
+                pay: Some(PayValue {
+                    scheme: "bnap:notes",
+                    claimed: 1_000,
+                    backing: notes,
+                    refund: Refund::Atomic,
+                }),
+                attest: &[],
+                now: NOW,
+            },
+            &Limits::default(),
+        )));
+    }
+    let Ok(Admitted::New(pending)) = &answers[0] else {
+        panic!("the first credential commits: {:?}", answers[0]);
+    };
+    for a in &answers[1..] {
+        assert_eq!(a, &Err(ProcessError::Spent), "one note, one action");
+    }
+    store.inspect(|t| assert_eq!(t.outcomes_len(), 1));
+    // Admitted for the one 50 sat note: the change cap is 29, never 979.
+    let charge = pending.charge(Status::Ok, 0);
+    assert_eq!(charge.cap.get(), 29);
+    let (capped, guard) = CappedSigner::for_change(signer, &charge.cap, *pending.replay_key());
+    assert_eq!(
+        block_on(capped.blind_sign(&ks(), &outputs(1, &[512, 256, 128, 64, 16, 2, 1]))),
+        Err(SignerError::OverCap { sum: 979, cap: 29 })
+    );
+    guard.close();
 }
 
 #[test]

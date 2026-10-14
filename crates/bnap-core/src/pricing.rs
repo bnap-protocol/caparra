@@ -272,9 +272,12 @@ pub enum BackingSource {
     /// computed from the rail's own kind and canonical bytes.
     Rail(RailId),
     /// A note the signer verified, by its `Y` (the 33-byte compressed
-    /// point). The note is the operator's, not the scheme's: every value
-    /// scheme on a gate checks notes through the same signer, so the note
-    /// is consumed under [`note_id`], whichever scheme carried it.
+    /// point `hash_to_curve(secret)`, [`crate::note::hash_to_curve`], as
+    /// the verify-only view derived it from the note's secret; never a
+    /// point a scheme names). The note is the operator's, not the scheme's:
+    /// every value scheme on a gate checks notes through the same signer,
+    /// so the note is consumed under [`note_id`], whichever scheme carried
+    /// it.
     Note(Vec<u8>),
 }
 

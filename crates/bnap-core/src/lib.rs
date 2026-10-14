@@ -18,6 +18,7 @@
 //! | [`class`] | Binding classes S, A, O and none |
 //! | [`limits`] | Size limits, clock skew and timeout defaults |
 //! | [`pricing`] | Section 7: `price`, admission, metering, the change cap |
+//! | [`note`] | The operator's notes: NUT-00 `hash_to_curve` from a note's secret to its `Y` |
 //! | [`policy`] | Section 11: effective property vectors and route `require` |
 //! | [`store`] | Sections 6.2 to 6.4: use store records, the `UseStore` trait, commit and settle logic |
 //! | [`outcome`] | Section 6: the outcome state machine over any `UseStore` |
@@ -37,6 +38,7 @@ pub mod http;
 pub mod ids;
 pub mod limits;
 pub mod manifest;
+pub mod note;
 pub mod offer;
 pub mod outcome;
 pub mod policy;

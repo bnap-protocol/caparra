@@ -30,15 +30,21 @@
 //!   and the signer keeps a running total per settlement
 //!   ([`ChangeLedger`]), which bounds an out-of-process signer and every
 //!   budget made for the same settlement together.
+//! - A scheme names a note by its secret, never by its point: the signer
+//!   derives `Y = hash_to_curve(secret)` itself
+//!   ([`bnap_core::note::hash_to_curve`]) and checks `C = k·Y` against
+//!   that. From one note `(Y, C)`, every multiple `(m·Y, m·C)` also passes a
+//!   check of `C = k·y` for a `y` the caller picks, so a scheme that could
+//!   name `y` could make one note count as many.
 //! - The verify-only view a scheme's `verify` gets keeps the notes the
 //!   signer accepted, each once, in the view's unit
-//!   ([`CappedSigner::notes`]). The gate passes them to admission as
-//!   backing, so a notes scheme's value is never more than the notes the
-//!   signer checked. The commit consumes each one under
-//!   `H_"bnap/note"(Y)`, an ID that does not depend on the scheme
-//!   ([`bnap_core::pricing::note_id`]): the signer's keysets are shared by
-//!   every value scheme on the gate, so a note admitted under one scheme is
-//!   SPENT under any other.
+//!   ([`CappedSigner::notes`]), under the `Y` the view derived from the
+//!   secret itself. The gate passes them to admission as backing, so a
+//!   notes scheme's value is never more than the notes the signer checked.
+//!   The commit consumes each one under `H_"bnap/note"(Y)`, an ID that does
+//!   not depend on the scheme ([`bnap_core::pricing::note_id`]): the
+//!   signer's keysets are shared by every value scheme on the gate, so a
+//!   note admitted under one scheme is SPENT under any other.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -47,6 +53,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use bnap_core::ErrorCode;
 use bnap_core::hash::ReplayKey;
+use bnap_core::note::hash_to_curve;
 use bnap_core::pricing::{Backing, BackingSource, ChangeCap};
 use bnap_core::response::Status;
 use bnap_core::schnorr::Signature;
@@ -138,19 +145,25 @@ pub trait Signer: Send + Sync {
     /// `receipt` for an ack).
     async fn schnorr(&self, msg: &CoreMessage) -> Result<Signature, SignerError>;
 
-    /// Checks an unblinded note: `c` is the keyset's key for `amount` times
-    /// `y`, and the keyset is in `unit`.
+    /// Checks an unblinded note given its secret (the UTF-8 bytes of the
+    /// secret string, `schemes/bnap-notes.md`): computes `Y =
+    /// hash_to_curve(secret)` (NUT-00, [`bnap_core::note::hash_to_curve`])
+    /// and accepts the note when `c` is the keyset's key for `amount` times
+    /// that `Y` and the keyset is in `unit`. Returns the `Y` it checked, or
+    /// `None` for a note it does not accept.
     ///
-    /// MUST answer `false` for a keyset of another unit: admission counts
-    /// the accepted amount in `unit`.
+    /// MUST derive `Y` from `secret` itself and never check a point a
+    /// caller supplies: from one note `(Y, C)`, every multiple `(m·Y, m·C)`
+    /// satisfies `C = k·Y` too. MUST answer `None` for a keyset of another
+    /// unit: admission counts the accepted amount in `unit`.
     async fn verify_unblinded(
         &self,
         keyset: &KeysetId,
         unit: &str,
         amount: u64,
-        y: &Point,
+        secret: &[u8],
         c: &Point,
-    ) -> Result<bool, SignerError>;
+    ) -> Result<Option<Point>, SignerError>;
 
     /// Signs blinded outputs as change or a refund for the settlement
     /// `limit` names.
@@ -477,33 +490,50 @@ impl CappedSigner {
         &self.unit
     }
 
-    /// Checks an unblinded note in the view's unit (see
-    /// [`Signer::verify_unblinded`]). A verify-only view keeps a note the
-    /// signer accepted, once per `Y`.
+    /// Checks an unblinded note in the view's unit, given its secret (see
+    /// [`Signer::verify_unblinded`]), and returns its `Y` when the signer
+    /// accepted it.
+    ///
+    /// The view derives `Y = hash_to_curve(secret)` itself and refuses a
+    /// signer answer naming any other point, so the `Y` a scheme gets back,
+    /// and the one a verify-only view keeps, is always the secret's: a
+    /// scheme cannot make one note count twice by scaling its point. A
+    /// verify-only view keeps a note the signer accepted, once per `Y`.
     pub async fn verify_unblinded(
         &self,
         keyset: &KeysetId,
         amount: u64,
-        y: &Point,
+        secret: &[u8],
         c: &Point,
-    ) -> Result<bool, SignerError> {
-        let ok = self
+    ) -> Result<Option<Point>, SignerError> {
+        let Some(y) = hash_to_curve(secret) else {
+            return Ok(None);
+        };
+        let Some(checked) = self
             .inner
-            .verify_unblinded(keyset, &self.unit, amount, y, c)
-            .await?;
-        if ok && let Mode::Verify(tally) = &self.mode {
+            .verify_unblinded(keyset, &self.unit, amount, secret, c)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if checked.0 != y {
+            return Err(SignerError::Refused(
+                "the signer checked a point that is not hash_to_curve(secret)".into(),
+            ));
+        }
+        if let Mode::Verify(tally) = &self.mode {
             tally
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .entry(y.0)
+                .entry(y)
                 .or_insert(amount);
         }
-        Ok(ok)
+        Ok(Some(Point(y)))
     }
 
     /// The notes this verify-only view accepted, each once, as admission's
     /// backing ([`bnap_core::pricing::PayValue`]), named by their 33-byte
-    /// `Y`. The commit consumes each under `H_"bnap/note"(Y)`, whichever
+    /// `Y`, which the view derived from each note's secret. The commit consumes each under `H_"bnap/note"(Y)`, whichever
     /// scheme's view accepted it. Empty for a change view.
     #[must_use]
     pub fn notes(&self) -> Vec<Backing> {
