@@ -32,7 +32,7 @@ use bnap_core::hash::{Context, Scope, tagged_hash};
 use bnap_core::limits::Limits;
 use bnap_core::offer::{OfferFields, PayEntry};
 use bnap_core::outcome::{self, Admitted, ProcessError, Recorded, Request, SettleError};
-use bnap_core::pricing::{PayValue, Refund};
+use bnap_core::pricing::{PayValue, Refund, backed_value};
 use bnap_core::response::Status;
 use bnap_core::schnorr::Key;
 use bnap_core::store::{Settlement, UseStore};
@@ -209,7 +209,10 @@ impl NotesScheme {
             Err(bnap_plug::RailError::Unavailable(m)) => return Err(MintError::Unavailable(m)),
             Err(_) => return Err(MintError::Unpaid),
         };
-        if payment.unit != UNIT || payment.amount < q.amount {
+        // Rails report in their own unit (the Lightning rails in msat):
+        // compare the value in the quote's unit, rounded down.
+        let paid = backed_value(UNIT, &[payment.backing()]).map_or(0, |(v, _)| v);
+        if paid < q.amount {
             return Err(MintError::Unpaid);
         }
         let _ = self.issuer().mark_quote(&q.id, true, false).await;
