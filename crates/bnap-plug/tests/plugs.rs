@@ -19,7 +19,7 @@ use bnap_core::pricing::{Backing, BackingSource, PayValue, Refund};
 use bnap_core::response::{Response, Status};
 use bnap_core::schnorr::{Key, Signature, SigningKey};
 use bnap_core::secp256k1::{All, PublicKey, Scalar, Secp256k1};
-use bnap_core::sign::{UnsignedOffer, UnsignedResponse};
+use bnap_core::sign::UnsignedOffer;
 use bnap_core::store::{Settlement, UseModel};
 use bnap_core::test_support::{MemoryStore, block_on};
 use bnap_core::{ErrorCode, Offer};
@@ -1260,6 +1260,7 @@ impl Gate {
         // returns.
         let refund = |r: &Recorded| {
             assert_eq!(r.receipt(&receipt_input), None, "no refund, no receipt");
+            assert!(r.unsigned_receipt(&receipt_input).is_none());
             let cap = r.refund_cap().unwrap();
             let result = run_settle(&cap, 0)?;
             block_on(outcome::record_refund(store, r, result.as_deref()))
@@ -1296,8 +1297,8 @@ impl Gate {
                 }
             }
         };
-        let fields = answer.receipt(&receipt_input).unwrap();
-        let unsigned = UnsignedResponse::new(&fields).unwrap();
+        // The receipt is signed from the recorded outcome, the only way.
+        let unsigned = answer.unsigned_receipt(&receipt_input).unwrap().unwrap();
         let signer: &dyn Signer = &*self.signer;
         let ack = block_on(signer.schnorr(unsigned.message())).unwrap();
         Ok(unsigned.finish(&ack).unwrap())

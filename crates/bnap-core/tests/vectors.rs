@@ -16,6 +16,7 @@ use bnap_core::offer::{
     AttestEntry, Effect, GateOfferCheck, NativeEntry, Offer, OfferFields, PayEntry,
 };
 use bnap_core::response::{ResponseFields, Status};
+use bnap_core::test_support::sign_response;
 use bnap_core::tlv::{TlvStream, entry_list};
 use bnap_core::{BindingClass, Error, ErrorCode, Scope, SigningKey, encoding, http, ids};
 use serde_json::Value;
@@ -548,7 +549,7 @@ fn response_vector() {
         settled_at: 1_791_700_042,
         unknown: Vec::new(),
     };
-    let resp = fields.sign(&k.receipt, &AUX0).unwrap();
+    let resp = sign_response(&fields, &k.receipt, &AUX0).unwrap();
     assert_eq!(x(resp.bytes()), s(tv, &["bytes"]));
     assert_eq!(x(resp.ack().0), s(tv, &["ack"]));
 

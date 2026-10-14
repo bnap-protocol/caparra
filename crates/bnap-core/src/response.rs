@@ -9,7 +9,9 @@ use crate::error::{Error, MalformedKind, Object, VERSION};
 use crate::hash::{Digest, OfferId, tagged_hash, tags};
 use crate::limits::{CLOCK_SKEW, MAX_RESPONSE};
 use crate::manifest::{KeyUse, ManifestKey};
-use crate::schnorr::{Key, Signature, SigningKey};
+#[cfg(any(test, feature = "test-support"))]
+use crate::schnorr::SigningKey;
+use crate::schnorr::{Key, Signature};
 use crate::tlv::{Fields, StreamKind, TlvStream, is_signature_type};
 
 /// Record types of the Response (8.1).
@@ -61,6 +63,27 @@ impl Status {
 }
 
 /// Everything in a Response except `ack`.
+///
+/// Fields alone sign nothing. A gate gets a receipt signed only from a
+/// recorded outcome ([`crate::outcome::Recorded::unsigned_receipt`]), which
+/// gives none while the outcome is PENDING or its refund is due (6.4).
+/// Signing fields with a local key is private to bnap-core (tests and
+/// vectors reach it through `test_support`, feature `test-support`):
+///
+/// ```compile_fail
+/// use bnap_core::{Response, ResponseFields, SigningKey};
+/// fn forge(f: &ResponseFields, key: &SigningKey) -> Response {
+///     // No receipt for an outcome the store has not recorded.
+///     f.sign(key, &[0; 32]).unwrap()
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use bnap_core::{Response, ResponseFields, SigningKey};
+/// fn forge(f: &ResponseFields, key: &SigningKey) -> Response {
+///     f.sign_with_limit(key, &[0; 32], 8192).unwrap()
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResponseFields {
     /// OK or FAILED.
@@ -128,12 +151,17 @@ impl ResponseFields {
 
     /// Signs the Response with the receipt key and returns it parsed, with
     /// the default 8,192-byte limit. `key` must be the key in `receipt_key`.
-    pub fn sign(&self, key: &SigningKey, aux: &[u8; 32]) -> Result<Response, Error> {
+    ///
+    /// Outside any recorded outcome, so private to bnap-core and only in
+    /// test builds; `test_support::sign_response` re-exposes it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn sign(&self, key: &SigningKey, aux: &[u8; 32]) -> Result<Response, Error> {
         self.sign_with_limit(key, aux, MAX_RESPONSE)
     }
 
     /// [`ResponseFields::sign`] with a size limit raised by the manifest.
-    pub fn sign_with_limit(
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn sign_with_limit(
         &self,
         key: &SigningKey,
         aux: &[u8; 32],

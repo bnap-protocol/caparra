@@ -1880,3 +1880,53 @@ fn change_and_refund_reserve_one_total_through_the_outcome() {
         Reserve::Reserved { total: 96 }
     );
 }
+
+#[test]
+fn a_pending_or_refund_due_outcome_yields_no_unsigned_receipt() {
+    // The checker's probe (a_receipt_can_be_signed_for_a_pending_outcome):
+    // any ResponseFields could be signed, so a gate could sign an OK
+    // receipt with change for an outcome the store still held as PENDING,
+    // or for a timed-out one before its refund was recorded. Signing now
+    // starts only from a Recorded (UnsignedResponse::new and
+    // ResponseFields::sign are crate-private; see the compile_fail
+    // doctests), and a Recorded makes no UnsignedResponse until the store
+    // recorded the settlement or the refund.
+    let store = MemoryStore::new();
+    let l = limits();
+    let key = crate::schnorr::SigningKey::from_secret_bytes(&sha256(b"receipt key")).unwrap();
+    let input = ReceiptInput {
+        receipt_key: key.public_key(),
+        ..receipt_input(Digest([1; 32]))
+    };
+    let r = Req::note(1, b"Y", T0);
+    let p = new(r.process(&store));
+    let pending = Recorded {
+        replay_key: *p.replay_key(),
+        record: block_on(store.outcome(p.replay_key())).unwrap().unwrap(),
+        replayed: false,
+        keep_until: p.keep_until,
+    };
+    assert_eq!(pending.record().status, OutcomeStatus::Pending);
+    assert!(pending.unsigned_receipt(&input).is_none(), "PENDING");
+    let due = replay(r.at(T0 + l.pending_timeout + 1).process(&store));
+    assert!(due.needs_refund());
+    assert!(due.unsigned_receipt(&input).is_none(), "refund due");
+    // Recorded: the receipt is the recorded outcome's, signed afresh.
+    let done = block_on(record_refund(&store, &due, Some(b"refund"))).unwrap();
+    let unsigned = done.unsigned_receipt(&input).unwrap().unwrap();
+    let sig = unsigned.message().sign_with(&key, &[0; 32]).unwrap();
+    let resp = unsigned.finish(&sig).unwrap();
+    resp.verify_ack().unwrap();
+    let fields = resp.fields();
+    assert_eq!(
+        (fields.status, fields.charged, fields.replayed),
+        (Status::Failed, 0, true)
+    );
+    assert_eq!(fields.scheme_result.as_deref(), Some(&b"refund"[..]));
+    // A settled outcome signs too, from what its settle recorded.
+    let settled = new(Req::note(2, b"Z", T0).process(&store));
+    let ok = settle_ok(&store, &settled, 0, T0 + 1);
+    let fields = ok.receipt(&input).unwrap();
+    assert!(ok.unsigned_receipt(&input).unwrap().is_ok());
+    assert_eq!((fields.status, fields.replayed), (Status::Ok, false));
+}

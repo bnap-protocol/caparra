@@ -34,3 +34,22 @@ base64 = { workspace = true }
 
 [lints]
 workspace = true
+
+# These targets sign Response fields outside any recorded outcome, which
+# only `test_support` offers (a gate signs a receipt only through
+# `Recorded::unsigned_receipt`).
+[[test]]
+name = "negative"
+required-features = ["test-support"]
+
+[[test]]
+name = "props"
+required-features = ["test-support"]
+
+[[test]]
+name = "sign"
+required-features = ["test-support"]
+
+[[test]]
+name = "vectors"
+required-features = ["test-support"]

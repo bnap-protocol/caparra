@@ -4,6 +4,10 @@
 //! functions of [`crate::store::logic`] under one mutex, which makes every
 //! call serializable, but it keeps nothing on disk: it is the reference
 //! the durable stores are tested against, never a store for a gate.
+//!
+//! [`sign_response`] and [`unsigned_response`] sign Response fields outside
+//! any recorded outcome, for codec tests and test vectors; a gate never
+//! has them.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -11,7 +15,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::task::{Poll, Waker};
 
+use crate::error::Error;
 use crate::hash::{CounterKey, ReplayKey};
+use crate::response::{Response, ResponseFields};
+use crate::schnorr::SigningKey;
+use crate::sign::{SignError, UnsignedResponse};
 use crate::store::{
     ChangeRequest, Commit, CommitPlan, OutcomeRecord, RefundRequest, Reserve, Settle,
     SettleRequest, StoreError, SweepWindow, UseStore, UseTable, logic,
@@ -190,6 +198,35 @@ pub fn block_on<F: Future>(f: F) -> F::Output {
         }
         std::thread::yield_now();
     }
+}
+
+/// Signs `fields` as a Response with a local receipt key, outside any
+/// recorded outcome, with the default 8,192-byte limit. For codec tests and
+/// test vectors only: a gate gets a receipt signed only through
+/// [`crate::outcome::Recorded::unsigned_receipt`]. `key` must be the key in
+/// `receipt_key`.
+pub fn sign_response(
+    fields: &ResponseFields,
+    key: &SigningKey,
+    aux: &[u8; 32],
+) -> Result<Response, Error> {
+    fields.sign(key, aux)
+}
+
+/// [`sign_response`] with a size limit raised by the manifest.
+pub fn sign_response_with_limit(
+    fields: &ResponseFields,
+    key: &SigningKey,
+    aux: &[u8; 32],
+    max: usize,
+) -> Result<Response, Error> {
+    fields.sign_with_limit(key, aux, max)
+}
+
+/// An [`UnsignedResponse`] for any `fields`, outside any recorded outcome.
+/// For tests of the signing path only; see [`sign_response`].
+pub fn unsigned_response(fields: &ResponseFields) -> Result<UnsignedResponse, SignError> {
+    UnsignedResponse::new(fields)
 }
 
 /// Conformance scenarios for any [`UseStore`]: the rules of

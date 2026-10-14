@@ -21,6 +21,19 @@
 //! key before it assembles and re-parses the object, so a faulty signer
 //! cannot produce a bad offer or receipt.
 //!
+//! An [`UnsignedResponse`] comes only from a recorded outcome
+//! ([`crate::outcome::Recorded::unsigned_receipt`]), which makes none while
+//! the outcome is PENDING or its refund is due. The gate MUST NOT send the
+//! Response, or any change in it, before the settle write is durable
+//! (6.4), and no receipt can be signed before it:
+//!
+//! ```compile_fail,E0624
+//! fn forge(fields: &bnap_core::ResponseFields) {
+//!     // Fields the store never recorded cannot be signed.
+//!     let _ = bnap_core::sign::UnsignedResponse::new(fields);
+//! }
+//! ```
+//!
 //! The signer itself is a plug (`bnap_plug::Signer`); schemes never reach
 //! it, only a `CappedSigner` that cannot sign any [`CoreMessage`].
 
@@ -188,7 +201,9 @@ impl UnsignedOffer {
     }
 }
 
-/// A Response serialized for signing (8.1), waiting for its `ack`.
+/// A Response serialized for signing (8.1), waiting for its `ack`. Only a
+/// settled, recorded outcome makes one
+/// ([`crate::outcome::Recorded::unsigned_receipt`]).
 #[derive(Debug)]
 pub struct UnsignedResponse {
     stream: TlvStream,
@@ -196,8 +211,11 @@ pub struct UnsignedResponse {
 }
 
 impl UnsignedResponse {
-    /// Serializes `fields` and computes the ack message.
-    pub fn new(fields: &ResponseFields) -> Result<Self, SignError> {
+    /// Serializes `fields` and computes the ack message. Private to
+    /// bnap-core: `Recorded::unsigned_receipt` calls it with the fields of a
+    /// settled outcome (`test_support::unsigned_response` re-exposes it for
+    /// tests).
+    pub(crate) fn new(fields: &ResponseFields) -> Result<Self, SignError> {
         let stream = fields.to_stream()?;
         let message = CoreMessage::new(Purpose::Ack, fields.receipt_key, &stream.to_bytes());
         Ok(Self { stream, message })

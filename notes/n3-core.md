@@ -529,8 +529,13 @@ refuses a `replay_window` below `pending_timeout + 120`, and calls
   quota.
 - **No receipt before the refund.** `Recorded::receipt` returns `None`
   for a timed-out outcome whose refund is not recorded (`refund_recorded`),
-  on both refund paths (ERRATA N3b-17). The free `receipt` function is now
-  private: every answer is built from a `Recorded`.
+  on both refund paths (ERRATA N3b-17). The free `receipt` function is
+  private, and so is every way to sign Response fields:
+  `UnsignedResponse::new` and `ResponseFields::sign` / `sign_with_limit`
+  are `pub(crate)` (tests reach them through `test_support`), so
+  `Recorded::unsigned_receipt` is the only way a gate gets a receipt
+  signed, and it makes none while the outcome is PENDING or its refund is
+  due (6.4).
 - **No signer work without value** (N3b-27). `CappedSigner::blind_sign`
   and `ChangeLedger::reserve` refuse an empty batch and any output of
   amount 0 before the budget or the total is touched.

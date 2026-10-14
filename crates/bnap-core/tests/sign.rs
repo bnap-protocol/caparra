@@ -5,7 +5,8 @@ use bnap_core::hash::{Digest, OfferId, sha256};
 use bnap_core::manifest::KeyUse;
 use bnap_core::offer::{AttestEntry, OfferFields, PayEntry};
 use bnap_core::response::{ResponseFields, Status};
-use bnap_core::sign::{Purpose, SignError, UnsignedOffer, UnsignedResponse};
+use bnap_core::sign::{Purpose, SignError, UnsignedOffer};
+use bnap_core::test_support::{sign_response, unsigned_response};
 use bnap_core::{Scope, SigningKey, http};
 use serde_json::Value;
 
@@ -78,7 +79,7 @@ fn the_response_vector_through_a_core_message() {
         settled_at: 1_791_700_042,
         unknown: Vec::new(),
     };
-    let unsigned = UnsignedResponse::new(&fields).unwrap();
+    let unsigned = unsigned_response(&fields).unwrap();
     assert_eq!(unsigned.message().purpose(), Purpose::Ack);
     assert_eq!(unsigned.message().purpose().key_use(), KeyUse::Receipt);
     let sig = unsigned.message().sign_with(&key, &AUX0).unwrap();
@@ -92,7 +93,7 @@ fn the_response_vector_through_a_core_message() {
         v["response"]["ack"].as_str().unwrap()
     );
     // Same bytes as the local-key path of part A.
-    assert_eq!(resp, fields.sign(&key, &AUX0).unwrap());
+    assert_eq!(resp, sign_response(&fields, &key, &AUX0).unwrap());
 }
 
 #[test]

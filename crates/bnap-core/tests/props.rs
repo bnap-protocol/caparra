@@ -10,6 +10,7 @@ use bnap_core::hash::sha256;
 use bnap_core::manifest::{self, SignedManifest};
 use bnap_core::offer::{AttestEntry, Effect, NativeEntry, Offer, OfferFields, PayEntry};
 use bnap_core::response::{Response, ResponseFields, Status};
+use bnap_core::test_support::{sign_response, sign_response_with_limit};
 use bnap_core::tlv::{StreamKind, TlvStream, parse_entry_list};
 use bnap_core::{Digest, Key, OfferId, Scope, SigningKey, encoding};
 use proptest::prelude::*;
@@ -275,7 +276,7 @@ fn sample_credential() -> Vec<u8> {
 }
 
 fn sample_response() -> Vec<u8> {
-    ResponseFields {
+    let fields = ResponseFields {
         status: Status::Ok,
         replayed: true,
         charged: 340,
@@ -287,11 +288,11 @@ fn sample_response() -> Vec<u8> {
         receipt_key: offer_key().public_key(),
         settled_at: 5,
         unknown: vec![],
-    }
-    .sign(&offer_key(), &AUX0)
-    .unwrap()
-    .bytes()
-    .to_vec()
+    };
+    sign_response(&fields, &offer_key(), &AUX0)
+        .unwrap()
+        .bytes()
+        .to_vec()
 }
 
 /// Feeds bytes to every byte parser; none may panic.
@@ -473,7 +474,7 @@ proptest! {
 
     #[test]
     fn response_roundtrip(f in response_fields()) {
-        let r = f.sign_with_limit(&offer_key(), &AUX0, BIG).unwrap();
+        let r = sign_response_with_limit(&f, &offer_key(), &AUX0, BIG).unwrap();
         prop_assert_eq!(r.fields(), &f);
         let p = Response::parse_with_limit(r.bytes(), BIG).unwrap();
         prop_assert_eq!(&p, &r);

@@ -12,6 +12,7 @@ use bnap_core::offer::{
     AttestEntry, Effect, GateOfferCheck, NativeEntry, Offer, OfferFields, PayEntry,
 };
 use bnap_core::response::{ReceiptError, Response, ResponseFields, Status};
+use bnap_core::test_support::sign_response;
 use bnap_core::tlv::{TlvStream, entry_list, write_record};
 use bnap_core::{BindingClass, Error, ErrorCode, Object, Scope, SigningKey, encoding, http};
 
@@ -231,7 +232,7 @@ fn a_flipped_bit_anywhere_in_the_offer_is_caught() {
 #[test]
 fn a_flipped_bit_anywhere_in_the_response_is_caught() {
     let k = key(b"bnap test receipt key");
-    let r = ResponseFields {
+    let fields = ResponseFields {
         status: Status::Ok,
         replayed: false,
         charged: 340,
@@ -243,9 +244,8 @@ fn a_flipped_bit_anywhere_in_the_response_is_caught() {
         receipt_key: k.public_key(),
         settled_at: NOW,
         unknown: vec![(3_000_000_003, vec![1])],
-    }
-    .sign(&k, &AUX0)
-    .unwrap();
+    };
+    let r = sign_response(&fields, &k, &AUX0).unwrap();
     for byte in 0..r.bytes().len() {
         for bit in 0..8 {
             let mut b = r.bytes().to_vec();
@@ -910,7 +910,7 @@ fn receipt_client_rules() {
         settled_at: NOW,
         unknown: vec![],
     };
-    let r = fields.sign(&k, &AUX0).unwrap();
+    let r = sign_response(&fields, &k, &AUX0).unwrap();
     let id = bnap_core::OfferId([5; 32]);
     let dg = bnap_core::Digest([6; 32]);
     let pin = [ManifestKey {
@@ -949,9 +949,8 @@ fn receipt_client_rules() {
     let replay = ResponseFields {
         replayed: true,
         ..fields
-    }
-    .sign(&k, &AUX0)
-    .unwrap();
+    };
+    let replay = sign_response(&replay, &k, &AUX0).unwrap();
     replay.check_client(&pin, NOW + 100_000, &id, &dg).unwrap();
     // unit and metered_units presence.
     r.check_required(false, false).unwrap();

@@ -63,11 +63,16 @@
 //! with the cap of [`Recorded::refund_cap`] (fixed at commit from the
 //! admitted value, never priced again), stores the result with
 //! [`record_refund`] (the first write wins), and answers from the
-//! [`Recorded`] it returns. [`Recorded::receipt`] makes no receipt for an
-//! outcome that still needs its refund, so no answer can be made before a
-//! refund is recorded. Whether the scheme's FAILED `settle` actually ran
+//! [`Recorded`] it returns. Whether the scheme's FAILED `settle` actually ran
 //! before [`record_refund`] is the gate's to keep: core cannot see a plug
 //! call, so the gate MUST NOT record a refund it did not compute.
+//!
+//! **A receipt is signed only from a [`Recorded`].**
+//! [`Recorded::unsigned_receipt`] is the only public way to get a Response
+//! signed ([`crate::sign::UnsignedResponse`]), and it makes none for an
+//! outcome that is PENDING or still needs its refund. So no receipt, and no
+//! change inside one, can be signed before the settle write, or the refund,
+//! is recorded in the store (6.4).
 //!
 //! **What core seals.** Every write the store takes is built here
 //! ([`crate::store`]); a [`Settlement`] carries the `ReplayKey` of the
@@ -94,6 +99,7 @@ use crate::pricing::{
 };
 use crate::response::{ResponseFields, Status};
 use crate::schnorr::Key;
+use crate::sign::{SignError, UnsignedResponse};
 use crate::store::{
     ChangeOutput, ChangeRequest, Commit, CommitPlan, OutcomeRecord, OutcomeStatus, PlanError,
     RefundRequest, Reserve, SchemeUses, Settle, SettleRequest, Settlement, StoreError, SweepWindow,
@@ -379,10 +385,28 @@ impl Recorded {
     ///
     /// `None` while [`Self::needs_refund`]: a timed-out outcome is answered
     /// only once its refund is recorded. A timed-out outcome has no meter
-    /// count; a metered offer then reports 0.
+    /// count; a metered offer then reports 0. Fields alone sign nothing; see
+    /// [`Self::unsigned_receipt`].
     #[must_use]
     pub fn receipt(&self, r: &ReceiptInput) -> Option<ResponseFields> {
         receipt(&self.record, r, self.replayed)
+    }
+
+    /// The receipt of [`Self::receipt`], serialized for the receipt key to
+    /// sign: the only way a gate gets a Response signed. Give its
+    /// [`UnsignedResponse::message`] to the signer and
+    /// [`UnsignedResponse::finish`] the answer.
+    ///
+    /// `None` while the outcome is PENDING or [`Self::needs_refund`], so no
+    /// receipt, and no change inside one, is signed before its settlement
+    /// or its refund is recorded (6.4). `Some(Err(..))` when the fields
+    /// break a record rule, such as a `scheme_result` past the size limit.
+    #[must_use]
+    pub fn unsigned_receipt(
+        &self,
+        r: &ReceiptInput,
+    ) -> Option<Result<UnsignedResponse, SignError>> {
+        self.receipt(r).map(|f| UnsignedResponse::new(&f))
     }
 }
 
