@@ -7,7 +7,7 @@ use std::sync::Arc;
 use bnap_core::BindingClass;
 use bnap_core::limits::{Limits, LimitsError};
 use bnap_core::offer::AttestEntry;
-use bnap_core::policy::{EffectiveVector, Require};
+use bnap_core::policy::{EffectiveVector, Part, PartKind, Require};
 use bnap_core::pricing::Refund;
 use bnap_core::schnorr::Key;
 use bnap_core::store::{UseModel, UseStore};
@@ -43,8 +43,10 @@ impl std::fmt::Debug for SchemeConfig {
 }
 
 impl SchemeConfig {
-    /// A scheme with its registry facts and an empty property vector (no
-    /// property known, so a tool with a `require` never admits it).
+    /// A scheme with its registry facts and no known property: every
+    /// property counts as its weakest value (an entry the registry does not
+    /// list, draft-00 11), so a tool with a `require` does not admit it
+    /// until [`Self::with_properties`] sets the real vector.
     #[must_use]
     pub fn new(
         plug: Arc<dyn CredentialScheme>,
@@ -57,7 +59,10 @@ impl SchemeConfig {
             class,
             model,
             refund,
-            properties: EffectiveVector::default(),
+            properties: EffectiveVector::compute(&[
+                Part::unknown(PartKind::Credential),
+                Part::unknown(PartKind::Attestation),
+            ]),
         }
     }
 

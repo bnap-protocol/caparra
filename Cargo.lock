@@ -459,6 +459,7 @@ version = "0.0.0"
 name = "bnap-carrier-mcp"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "axum",
  "base64 0.23.1",
  "bnap-core",
