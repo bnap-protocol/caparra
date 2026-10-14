@@ -678,14 +678,34 @@ dependencies = [
 [[package]]
 name = "bnap-store-postgres"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bnap-core",
+ "sqlx",
+ "tokio",
+]
 
 [[package]]
 name = "bnap-store-sqlite"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bnap-core",
+ "sqlx",
+]
 
 [[package]]
 name = "bnap-store-tests"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bnap-core",
+ "bnap-store-postgres",
+ "bnap-store-sqlite",
+ "sqlx",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "borsh"
