@@ -9,5 +9,16 @@ repository.workspace = true
 authors.workspace = true
 publish = false
 
+[dependencies]
+bnap-core = { workspace = true, features = ["test-support"] }
+async-trait.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+bnap-store-sqlite.workspace = true
+bnap-store-postgres.workspace = true
+sqlx.workspace = true
+tempfile.workspace = true
+
 [lints]
 workspace = true

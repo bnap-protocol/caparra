@@ -1,0 +1,562 @@
+//! `bnap-store-postgres` against bnap-core's conformance suite, the
+//! concurrency scenarios and a pool dropped mid-transaction.
+//!
+//! Needs a Postgres server: set `DATABASE_URL` (for example
+//! `postgres://postgres:test@127.0.0.1:55432/postgres`). Without it every
+//! test here passes at once and says it skipped. Each store lives in a
+//! schema of its own, created for the test and dropped after it.
+
+use std::str::FromStr;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use bnap_core::outcome;
+use bnap_core::store::UseStore;
+use bnap_core::test_support::conformance::{self, Executor};
+use bnap_core::{CounterKey, ReplayKey, Status};
+use bnap_store_postgres::{PostgresConfig, PostgresStore};
+use bnap_store_tests::scenarios::Log;
+use bnap_store_tests::scenarios::{self, Req, T0, limits, note, settlement};
+use bnap_store_tests::{Dump, Held, Tokio, check_consistent};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::{AssertSqlSafe, Row};
+
+/// `DATABASE_URL`, or `None` (and a note on stderr) to skip.
+fn database_url() -> Option<String> {
+    let url = std::env::var("DATABASE_URL").ok().filter(|u| !u.is_empty());
+    if url.is_none() {
+        eprintln!(
+            "skipped: DATABASE_URL is not set, so the Postgres store is not tested here \
+             (see notes/n5-stores.md)"
+        );
+    }
+    url
+}
+
+/// Enough connections for every task of a scenario to hold its own.
+fn config() -> PostgresConfig {
+    PostgresConfig {
+        max_connections: 24,
+        acquire_timeout: Duration::from_secs(60),
+        ..PostgresConfig::default()
+    }
+}
+
+/// A schema name no other test uses.
+fn schema_name() -> String {
+    static N: AtomicU32 = AtomicU32::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
+    format!(
+        "bnap_n5_{}_{}_{}",
+        std::process::id(),
+        nanos,
+        N.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// Drops its schema when dropped.
+struct Schema {
+    url: String,
+    name: String,
+    handle: tokio::runtime::Handle,
+}
+
+impl Schema {
+    fn create(exec: &Tokio, url: &str) -> Self {
+        let name = schema_name();
+        exec.block_on(async {
+            let admin = PgPoolOptions::new()
+                .max_connections(1)
+                .connect(url)
+                .await
+                .expect("DATABASE_URL connects");
+            sqlx::query(AssertSqlSafe(format!("CREATE SCHEMA {name}")))
+                .execute(&admin)
+                .await
+                .unwrap();
+            admin.close().await;
+        });
+        Self {
+            url: url.to_owned(),
+            name,
+            handle: exec.runtime().handle().clone(),
+        }
+    }
+
+    /// Connection options whose `search_path` and application name are the
+    /// schema.
+    fn options(&self) -> PgConnectOptions {
+        PgConnectOptions::from_str(&self.url)
+            .unwrap()
+            .options([("search_path", &self.name)])
+            .application_name(&self.name)
+    }
+
+    fn open(&self, exec: &Tokio) -> PostgresStore {
+        exec.block_on(PostgresStore::connect_with(self.options(), &config()))
+            .expect("the store connects")
+    }
+
+    /// Runs `sql` with `$1` bound to the schema name, on a connection
+    /// outside the schema, and returns how many rows it returned.
+    fn admin(&self, exec: &Tokio, sql: &'static str) -> usize {
+        exec.block_on(async {
+            let admin = PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&self.url)
+                .await
+                .unwrap();
+            let n = sqlx::query(sql)
+                .bind(&self.name)
+                .fetch_all(&admin)
+                .await
+                .unwrap()
+                .len();
+            admin.close().await;
+            n
+        })
+    }
+}
+
+impl Drop for Schema {
+    fn drop(&mut self) {
+        let (url, name) = (self.url.clone(), self.name.clone());
+        let _ = self.handle.block_on(async move {
+            let admin = PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&url)
+                .await?;
+            sqlx::query(AssertSqlSafe(format!(
+                "DROP SCHEMA IF EXISTS {name} CASCADE"
+            )))
+            .execute(&admin)
+            .await?;
+            admin.close().await;
+            Ok::<_, sqlx::Error>(())
+        });
+    }
+}
+
+/// A store in a new, empty schema, dropped with it.
+fn fresh(exec: &Tokio, url: &str) -> Held<PostgresStore> {
+    let schema = Schema::create(exec, url);
+    let store = schema.open(exec);
+    Held::new(store, schema)
+}
+
+fn key32(v: &[u8]) -> [u8; 32] {
+    v.try_into().expect("32 bytes")
+}
+
+/// Every row, read through the raw tables and the store.
+fn dump(exec: &Tokio, store: &PostgresStore) -> Dump {
+    exec.block_on(async {
+        let pool = store.pool();
+        let used = sqlx::query("SELECT use_id, replay_key FROM used")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| {
+                let id: Vec<u8> = r.get(0);
+                let rk: Vec<u8> = r.get(1);
+                (key32(&id), ReplayKey(key32(&rk)))
+            })
+            .collect();
+        let counters = sqlx::query("SELECT counter_key, value FROM counter")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| {
+                let k: Vec<u8> = r.get(0);
+                let v: i64 = r.get(1);
+                (
+                    CounterKey(key32(&k)),
+                    u64::try_from(v).expect("small counts"),
+                )
+            })
+            .collect();
+        let keys: Vec<Vec<u8>> = sqlx::query_scalar("SELECT replay_key FROM outcome")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        let mut outcomes = Vec::new();
+        for k in keys {
+            let rk = ReplayKey(key32(&k));
+            let rec = store.outcome(&rk).await.unwrap().expect("listed");
+            outcomes.push((rk, rec));
+        }
+        let orphans: i64 = sqlx::query_scalar(
+            "SELECT (SELECT count(*) FROM outcome_counter \
+                     WHERE replay_key NOT IN (SELECT replay_key FROM outcome)) \
+                  + (SELECT count(*) FROM change_output \
+                     WHERE replay_key NOT IN (SELECT replay_key FROM outcome))",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        Dump {
+            used,
+            counters,
+            outcomes,
+            orphans: u64::try_from(orphans).unwrap(),
+        }
+    })
+}
+
+#[test]
+fn passes_the_conformance_suite() {
+    let Some(url) = database_url() else { return };
+    let exec = Tokio::new();
+    conformance::run(|| fresh(&exec, &url), &exec);
+}
+
+#[test]
+fn one_note_admits_one_action() {
+    let Some(url) = database_url() else { return };
+    let exec = Tokio::new();
+    scenarios::one_note_admits_one_action(&fresh(&exec, &url), &exec);
+}
+
+#[test]
+fn one_payment_under_two_schemes_admits_one_action() {
+    let Some(url) = database_url() else { return };
+    let exec = Tokio::new();
+    scenarios::one_payment_under_two_schemes_admits_one_action(&fresh(&exec, &url), &exec);
+}
+
+#[test]
+fn settle_and_sweep_race_to_one_transition() {
+    let Some(url) = database_url() else { return };
+    let exec = Tokio::new();
+    scenarios::settle_and_sweep_race_to_one_transition(&fresh(&exec, &url), &exec);
+}
+
+#[test]
+fn concurrent_replays_get_one_answer() {
+    let Some(url) = database_url() else { return };
+    let exec = Tokio::new();
+    scenarios::concurrent_replays_get_one_answer(&fresh(&exec, &url), &exec);
+}
+
+#[test]
+fn counters_never_pass_their_limit() {
+    let Some(url) = database_url() else { return };
+    let exec = Tokio::new();
+    scenarios::counters_never_pass_their_limit(&fresh(&exec, &url), &exec);
+}
+
+#[test]
+fn change_reservations_keep_one_total() {
+    let Some(url) = database_url() else { return };
+    let exec = Tokio::new();
+    scenarios::change_reservations_keep_one_total(&fresh(&exec, &url), &exec);
+}
+
+#[test]
+fn change_outputs_are_matched_whole() {
+    let Some(url) = database_url() else { return };
+    let exec = Tokio::new();
+    scenarios::change_outputs_are_matched_whole(&fresh(&exec, &url), &exec);
+}
+
+#[test]
+fn mixed_load_moves_each_outcome_once() {
+    let Some(url) = database_url() else { return };
+    let exec = Tokio::new();
+    scenarios::mixed_load_moves_each_outcome_once(&fresh(&exec, &url), &exec);
+}
+
+#[test]
+fn pruning_spares_live_counters() {
+    let Some(url) = database_url() else { return };
+    let exec = Tokio::new();
+    let held = fresh(&exec, &url);
+    let store = &held.store;
+    scenarios::pruning_spares_live_counters(
+        store,
+        &exec,
+        |now| exec.block_on(store.prune_counters(now)).unwrap(),
+        |key, resets_at| {
+            exec.block_on(
+                sqlx::query(
+                    "INSERT INTO counter (counter_key, value, resets_at) VALUES ($1, 1, $2)",
+                )
+                .bind(&key.0[..])
+                .bind(resets_at.map(u64::cast_signed))
+                .execute(store.pool()),
+            )
+            .unwrap();
+        },
+    );
+}
+
+#[test]
+fn the_schema_is_applied_once_and_a_store_reconnects() {
+    let Some(url) = database_url() else { return };
+    let exec = Tokio::new();
+    let schema = Schema::create(&exec, &url);
+    let r = Req::note(1, &note(1), 96, 50, Some((10, b"who")));
+    let store = schema.open(&exec);
+    let p = scenarios::new(exec.block_on(r.process(&store)));
+    let done = exec
+        .block_on(outcome::settle(
+            &store,
+            &p,
+            &settlement(&p, Status::Ok, T0 + 1, b"kept"),
+            &limits(),
+        ))
+        .unwrap();
+    exec.block_on(store.close());
+    let again = schema.open(&exec);
+    let rec = scenarios::replay(exec.block_on(r.at(T0 + 2).process(&again)));
+    assert_eq!(rec.record(), done.record());
+    let sync: String = exec
+        .block_on(sqlx::query_scalar("SHOW synchronous_commit").fetch_one(again.pool()))
+        .unwrap();
+    assert_eq!(sync, "on");
+    exec.block_on(again.close());
+}
+
+/// `SHOW synchronous_commit` on `n` connections of `pool` held at once, so
+/// the answer is not one connection's.
+fn synchronous_commit(exec: &Tokio, pool: &sqlx::PgPool, n: usize) -> Vec<String> {
+    exec.block_on(async {
+        let mut held = Vec::with_capacity(n);
+        for _ in 0..n {
+            held.push(pool.acquire().await.unwrap());
+        }
+        let mut seen = Vec::with_capacity(n);
+        for conn in &mut held {
+            seen.push(
+                sqlx::query_scalar::<_, String>("SHOW synchronous_commit")
+                    .fetch_one(&mut **conn)
+                    .await
+                    .unwrap(),
+            );
+        }
+        seen
+    })
+}
+
+/// Runs each of `sql` on a connection of its own to `url`.
+fn admin_run(exec: &Tokio, url: &str, sql: &[String]) -> Result<(), sqlx::Error> {
+    exec.block_on(async {
+        let admin = PgPoolOptions::new().max_connections(1).connect(url).await?;
+        for one in sql {
+            sqlx::query(AssertSqlSafe(one.clone()))
+                .execute(&admin)
+                .await?;
+        }
+        admin.close().await;
+        Ok(())
+    })
+}
+
+/// A login role of its own whose server-side default is
+/// `synchronous_commit = off` (`ALTER ROLE ... SET`), so other tests on the
+/// server keep the stock default. Dropped, with what it owns, when dropped.
+struct OffRole {
+    url: String,
+    name: String,
+    handle: tokio::runtime::Handle,
+}
+
+impl OffRole {
+    const PASSWORD: &'static str = "test";
+
+    /// Creates the role, allowed to create the store's tables in `schema`.
+    fn create(exec: &Tokio, schema: &Schema) -> Self {
+        let name = format!("{}_off", schema.name);
+        admin_run(
+            exec,
+            &schema.url,
+            &[
+                format!("CREATE ROLE {name} LOGIN PASSWORD '{}'", Self::PASSWORD),
+                format!("ALTER ROLE {name} SET synchronous_commit = off"),
+                format!("GRANT USAGE, CREATE ON SCHEMA {} TO {name}", schema.name),
+            ],
+        )
+        .unwrap();
+        Self {
+            url: schema.url.clone(),
+            name,
+            handle: exec.runtime().handle().clone(),
+        }
+    }
+}
+
+impl Drop for OffRole {
+    fn drop(&mut self) {
+        let (url, name) = (self.url.clone(), self.name.clone());
+        let _ = self.handle.block_on(async move {
+            let admin = PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&url)
+                .await?;
+            for sql in [
+                format!("DROP OWNED BY {name}"),
+                format!("DROP ROLE IF EXISTS {name}"),
+            ] {
+                sqlx::query(AssertSqlSafe(sql)).execute(&admin).await?;
+            }
+            admin.close().await;
+            Ok::<_, sqlx::Error>(())
+        });
+    }
+}
+
+/// Draft-00 section 12: a commit that is not durable lets a crash re-admit a
+/// spent credential, so the store forces `synchronous_commit` on. A client
+/// whose own connection options ask for `off` (a common performance
+/// setting) still gets durable commits. The stock server default is already
+/// `on`, so only an unsafe request can show the store overriding it.
+#[test]
+fn synchronous_commit_stays_on_when_the_client_asks_for_off() {
+    let Some(url) = database_url() else { return };
+    let exec = Tokio::new();
+    let schema = Schema::create(&exec, &url);
+    let unsafe_options = schema.options().options([("synchronous_commit", "off")]);
+    // Without the store the request takes effect, so the check can fail.
+    let plain = exec
+        .block_on(
+            PgPoolOptions::new()
+                .max_connections(1)
+                .connect_with(unsafe_options.clone()),
+        )
+        .unwrap();
+    assert_eq!(synchronous_commit(&exec, &plain, 1), ["off"]);
+    exec.block_on(plain.close());
+    let store = exec
+        .block_on(PostgresStore::connect_with(unsafe_options, &config()))
+        .expect("the store connects");
+    assert_eq!(synchronous_commit(&exec, store.pool(), 4), ["on"; 4]);
+    exec.block_on(store.close());
+}
+
+/// The same with `synchronous_commit = off` as the server-side default of
+/// the role the store logs in as (`ALTER DATABASE` defaults rank the same):
+/// the store's startup option outranks it.
+#[test]
+fn synchronous_commit_stays_on_when_the_role_default_is_off() {
+    let Some(url) = database_url() else { return };
+    let exec = Tokio::new();
+    let schema = Schema::create(&exec, &url);
+    let role = OffRole::create(&exec, &schema);
+    let options = schema
+        .options()
+        .username(&role.name)
+        .password(OffRole::PASSWORD);
+    let plain = exec
+        .block_on(
+            PgPoolOptions::new()
+                .max_connections(1)
+                .connect_with(options.clone()),
+        )
+        .unwrap();
+    assert_eq!(synchronous_commit(&exec, &plain, 1), ["off"]);
+    exec.block_on(plain.close());
+    let store = exec
+        .block_on(PostgresStore::connect_with(options, &config()))
+        .expect("the store connects as the role");
+    assert_eq!(synchronous_commit(&exec, store.pool(), 4), ["on"; 4]);
+    // The role can write: an admission and its settle commit.
+    let r = Req::note(1, &note(1), 96, 50, None);
+    let p = scenarios::new(exec.block_on(r.process(&store)));
+    exec.block_on(outcome::settle(
+        &store,
+        &p,
+        &settlement(&p, Status::Ok, T0 + 1, b"kept"),
+        &limits(),
+    ))
+    .unwrap();
+    exec.block_on(store.close());
+}
+
+#[test]
+fn a_pool_dropped_mid_transaction_leaves_a_consistent_store() {
+    let Some(url) = database_url() else { return };
+    let exec = Tokio::new();
+    let schema = Schema::create(&exec, &url);
+    for round in 0..3 {
+        let store = Arc::new(schema.open(&exec));
+        let pool = store.pool().clone();
+        let log = Arc::new(Mutex::new(Log::default()));
+        let gates: Vec<_> = (0..8)
+            .map(|w| {
+                let (store, log) = (Arc::clone(&store), Arc::clone(&log));
+                exec.runtime().spawn(async move {
+                    scenarios::gate(&*store, round * 8 + w, u32::MAX, &log).await;
+                })
+            })
+            .collect();
+        // Let the gates write, then cut them off while transactions are
+        // open, kill their server sessions and drop the pool.
+        let start = std::time::Instant::now();
+        while log.lock().unwrap().acked.len() < 24 && start.elapsed() < Duration::from_secs(60) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            gates.iter().all(|g| !g.is_finished()),
+            "no gate stopped on its own"
+        );
+        let mut seen = false;
+        for _ in 0..1_000 {
+            let open = schema.admin(
+                &exec,
+                "SELECT pid FROM pg_stat_activity WHERE application_name = $1 \
+                 AND xact_start IS NOT NULL AND state <> 'idle'",
+            );
+            if open > 0 {
+                seen = true;
+                break;
+            }
+        }
+        for g in &gates {
+            g.abort();
+        }
+        schema.admin(
+            &exec,
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1",
+        );
+        assert!(seen, "a transaction was open when the gates stopped");
+        for g in gates {
+            if let Err(e) = exec.block_on(g) {
+                assert!(e.is_cancelled(), "a gate failed: {e:?}");
+            }
+        }
+        drop(Arc::into_inner(store).expect("the gates let go of the store"));
+        // Connections the aborted calls dropped are still being closed in
+        // the background (their transactions rolled back, or a COMMIT that
+        // was already sent finishing); wait for that before reading, so the
+        // check sees one quiet state.
+        exec.block_on(pool.close());
+        drop(pool);
+
+        let store = schema.open(&exec);
+        let d = dump(&exec, &store);
+        let log = log.lock().unwrap().clone();
+        check_consistent(&d, &log.tried);
+        let committed: Vec<ReplayKey> = d.outcomes.iter().map(|(rk, _)| *rk).collect();
+        for rk in &log.acked {
+            assert!(committed.contains(rk), "an acknowledged commit survives");
+        }
+        assert!(log.acked.len() >= 24, "the gates got going");
+        // The reconnected store keeps working.
+        let r = Req::note(900_000 + round, &note(900_000 + round), 96, 50, None);
+        let p = scenarios::new(exec.block_on(r.process(&store)));
+        exec.block_on(outcome::settle(
+            &store,
+            &p,
+            &settlement(&p, Status::Ok, T0 + 1, b"after"),
+            &limits(),
+        ))
+        .unwrap();
+        exec.block_on(store.close());
+    }
+}
