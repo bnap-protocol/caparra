@@ -834,3 +834,45 @@ async fn without_the_strict_layer_a_priced_tool_never_runs() {
     w.call(params("echo", &a, None)).await.ok();
     assert_eq!(w.runs(), 1);
 }
+
+#[tokio::test]
+async fn a_priced_call_with_input_state_is_refused() {
+    // requestState and inputResponses reach the tool but are not in the
+    // scope, so a priced call that carries either is refused.
+    let w = world().await;
+    let a = json!({"city": "Bern"});
+    let (_, offer) = w.offer("weather", &a).await;
+    let cred = l402_credential(&offer, &pay_l402(&w, &offer));
+    let p = params("weather", &a, Some(bnap_meta(&cred))).with_request_state("attacker-chosen");
+    let (code, e) = w.call(p).await.err();
+    assert_eq!(code, wire::INVALID_PARAMS);
+    assert_eq!(e.error.unwrap().code, ErrorCode::Malformed.code());
+    assert!(e.receipt.is_none());
+    assert_eq!(w.runs(), 0);
+    // The credential still pays for the plain call.
+    w.call(params("weather", &a, Some(bnap_meta(&cred))))
+        .await
+        .ok();
+    assert_eq!(w.runs(), 1);
+}
+
+#[tokio::test]
+async fn the_tool_sees_the_canonical_arguments() {
+    let w = world().await;
+    let a = json!({"n": 2});
+    let (_, offer) = w.offer("weather", &a).await;
+    let cred = l402_credential(&offer, &pay_l402(&w, &offer));
+    let r = w
+        .call(params(
+            "weather",
+            &json!({"n": 2.0}),
+            Some(bnap_meta(&cred)),
+        ))
+        .await
+        .ok();
+    let text = serde_json::to_value(&r.content[0]).unwrap()["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(text.ends_with(r#"{"n":2}"#), "{text}");
+}

@@ -185,9 +185,19 @@ let app = router("/mcp", Arc::new(gate), rmcp_config_with_allowed_hosts,
   is one credential.
 - **The credential keys never reach the tool**: they are removed from
   `_meta` before the inner handler runs.
-- **The scope's arguments are rmcp's parsed `params.arguments`**, the value
-  the tool receives, after the strict layer guaranteed no member was
-  folded.
+- **The tool gets the canonical arguments.** The scope hashes
+  `JCS(params.arguments)`, and the tool receives the arguments re-read
+  from those JCS bytes, so two spellings that share a scope (`2` and
+  `2.0`, `0` and `-0.0`) reach the tool as one value.
+- **No multi-round input on priced calls.** `inputResponses` and
+  `requestState` reach the tool but are not in the scope, so a priced call
+  that carries either is MALFORMED (-32602) before anything else (repair
+  round 1). Candidate for the MCP carrier note: bind them, or forbid them.
+- **After the commit, no fresh offer.** A failure to settle or sign once
+  the credential is committed answers UNAVAILABLE (-32603, no offer), so a
+  client is never told to pay again for a call it already paid.
+- **The action's deadline is the outcome's**: the tool runs at most until
+  `pending_timeout` after the clock the commit used.
 
 ## ERRATA candidates (literal draft-00 reading taken)
 
@@ -198,11 +208,12 @@ let app = router("/mcp", Arc::new(gate), rmcp_config_with_allowed_hosts,
 | N9b-3 | draft-00 5.4 "more than one value credential" | A BNAP Credential with only attestations next to an MPP credential | MALFORMED |
 | N9b-4 | draft-00 6.4 "a carrier that did not keep the response" | What the receipt-alone answer looks like in MCP | An empty result (OK) or a -32603 error with the receipt (FAILED) |
 | N9b-5 | draft-00 8.1 status FAILED | Whether a tool's own error result (`isError`) is FAILED | Yes |
+| N9b-7 | MCP `inputResponses`, `requestState` | Multi-round tool input is not part of any scope | Refused on priced calls |
 | N9b-6 | draft-00 5.1 offer cache | DPoP-only exact offers have no natives, so they are not cached | The credential must carry the offer inline |
 
 ## Tests
 
-`cargo test -p bnap-carrier-mcp`: 30 tests.
+`cargo test -p bnap-carrier-mcp`: 32 tests.
 
 | Where | What |
 | --- | --- |
@@ -215,7 +226,7 @@ let app = router("/mcp", Arc::new(gate), rmcp_config_with_allowed_hosts,
 
 See "Checker" below for the final verdict.
 
-- `cargo test -p bnap-carrier-mcp --locked`: 30 passed.
+- `cargo test -p bnap-carrier-mcp --locked`: 32 passed.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: clean
   (protoc installed in the sandbox for `bnap-rail-lnd`).
 - `cargo fmt --all --check`: clean.
@@ -246,6 +257,15 @@ See "Checker" below for the final verdict.
   the `mpp` crate 0.15.1.
 - `mpp` and `tower-http` stay unused workspace dependencies (cargo-deny
   warns), as before this node.
+
+## Repair round 1
+
+| Finding | Severity | Fix | Test (failed before the fix) |
+| --- | --- | --- | --- |
+| `inputResponses` / `requestState` reach the tool outside the scope: a paid call with an attacker-chosen `requestState` ran | MEDIUM | Priced calls carrying either are MALFORMED | `a_priced_call_with_input_state_is_refused` |
+| The tool saw `2.0` where the payer sent `2` (same scope) | LOW | The tool gets the arguments re-read from the JCS bytes | `the_tool_sees_the_canonical_arguments` |
+| The action's timeout started at the tool, not at the commit's clock | LOW | The limit is `pending_timeout` minus the time since the commit's clock | none (needs a slow verifier) |
+| A settle failure after the tool ran could answer -32043 with a fresh offer | LOW | Post-commit failures answer UNAVAILABLE without an offer | none (the shipped schemes' settle does not fail) |
 
 ## Checker
 

@@ -30,7 +30,7 @@ use crate::config::{
     ConfigError, DEFAULT_MAX_KEPT, DEFAULT_OFFER_CACHE, DEFAULT_OFFER_LIFETIME, GateConfig,
     SchemeConfig, ToolPrice, system_clock,
 };
-use crate::scope::{ScopeError, action_scope};
+use crate::scope::{ScopeError, action_scope, arguments_jcs};
 use crate::wire::{self, ErrorData, b64u, from_b64u};
 use crate::{Clock, mpp};
 
@@ -393,12 +393,32 @@ impl Gate {
                 "the server does not read calls strictly",
             )));
         }
+        // The tool reads inputResponses and requestState, and neither is
+        // in the scope: a priced call must complete in one round.
+        if params.input_responses.is_some() || params.request_state.is_some() {
+            return Err(bare(&Refusal::detail(
+                ErrorCode::Malformed,
+                "a priced call carries no inputResponses or requestState",
+            )));
+        }
         let scope = match self.scope(&tool, params.arguments.as_ref()) {
             Ok(s) => s,
             Err(e) => {
                 return Err(bare(&Refusal::detail(ErrorCode::Malformed, &e.to_string())));
             }
         };
+        // The tool gets the arguments as the scope hashed them: re-read
+        // from their JCS bytes, so `2.0` reaches it as `2`.
+        let mut params = params;
+        if let Some(a) = params.arguments.as_ref() {
+            let canonical = arguments_jcs(Some(a))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Map<String, Value>>(&b).ok());
+            let Some(canonical) = canonical else {
+                return Err(bare(&Refusal::code(ErrorCode::Malformed)));
+            };
+            params.arguments = Some(canonical);
+        }
         let call = match presented {
             Presented {
                 bnap: None,
@@ -703,10 +723,23 @@ impl Gate {
         .await
         .map_err(|e| Refusal(e.to_error_object()))?;
         let verified = pay.as_ref().map(|p| &p.verified);
-        let (recorded, answer) = self.conclude(c, verified, admitted, params, action).await?;
+        // From here the credential is committed: a failure is never
+        // answered with a fresh offer, so no client pays twice for it.
+        let committed = |r: Refusal| {
+            tracing::warn!(error = ?r.0, "a committed call failed to settle or sign");
+            Refusal::detail(
+                ErrorCode::Unavailable,
+                "the committed call could not be answered",
+            )
+        };
+        let (recorded, answer) = self
+            .conclude(c, verified, admitted, params, action)
+            .await
+            .map_err(committed)?;
         let receipt = self
             .sign_receipt(c, pay.as_ref().map(|p| p.entry), &recorded)
-            .await?;
+            .await
+            .map_err(committed)?;
         Ok(Self::answer(c, &recorded, &receipt, answer))
     }
 
@@ -737,7 +770,7 @@ impl Gate {
             }
             Admitted::New(pending) => pending,
         };
-        let answer = self.act(params, action).await;
+        let answer = self.act(c, params, action).await;
         let status = match &answer {
             Answer::Result(r) if r.is_error != Some(true) => Status::Ok,
             _ => Status::Failed,
@@ -765,14 +798,15 @@ impl Gate {
         }
     }
 
-    /// Runs the tool, at most for `pending_timeout` (6.4: an action still
-    /// running then is discarded).
-    async fn act<F, Fut>(&self, params: CallToolRequestParams, action: F) -> Answer
+    /// Runs the tool, at most until `pending_timeout` after the commit's
+    /// clock (6.4: an action still running then is discarded).
+    async fn act<F, Fut>(&self, c: &Call<'_>, params: CallToolRequestParams, action: F) -> Answer
     where
         F: FnOnce(CallToolRequestParams) -> Fut,
         Fut: Future<Output = Result<CallToolResponse, McpError>>,
     {
-        let limit = Duration::from_secs(self.cfg.limits.pending_timeout);
+        let elapsed = (self.cfg.clock)().saturating_sub(c.now);
+        let limit = Duration::from_secs(self.cfg.limits.pending_timeout.saturating_sub(elapsed));
         match tokio::time::timeout(limit, action(params)).await {
             Ok(Ok(CallToolResponse::Complete(r))) => Answer::Result(r),
             Ok(Ok(_)) => Answer::Error(McpError::new(
