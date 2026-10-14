@@ -178,11 +178,11 @@ checks checksums); add `0002_...`.
    what it tried and what was acknowledged, SIGKILLs it after 60
    admissions, reopens and runs the same checks. Three rounds. (A process
    kill tests atomicity and recovery; power-loss durability rests on
-   `synchronous = FULL` and `fullfsync`, which
-   `the_schema_is_applied_once_and_a_store_reopens_its_file` asserts.)
+   `synchronous = FULL`, `fullfsync` and `checkpoint_fullfsync`, which
+   item 8 reads back on every pooled connection.)
 5. `the_schema_is_applied_once_...`: reopen or reconnect, replay a settled
-   outcome, assert WAL + `synchronous = FULL` (SQLite) and
-   `synchronous_commit = on` (Postgres). The Postgres half of that last
+   outcome, assert the item 8 settings on every pooled connection (SQLite)
+   and `synchronous_commit = on` (Postgres). The Postgres half of that last
    assertion cannot fail on a stock server, whose default is already `on`;
    item 7 is what pins the forced setting.
 6. `pruning_spares_live_counters` (repair round 1; the generic body is
@@ -210,6 +210,24 @@ checks checksums); add `0002_...`.
      connected as it migrates, reads `on` on 4 connections, and admits and
      settles.
 
+8. SQLite only, repair round 3 (the same draft-00 section 12 rule; on
+   macOS plain fsync does not flush the drive cache, so without
+   `F_FULLFSYNC` a power loss can drop an acknowledged commit):
+   `assert_every_connection_durable` holds all `max_connections`
+   connections of the store's pool at once and reads `PRAGMA
+   journal_mode`, `synchronous`, `fullfsync`, `checkpoint_fullfsync` and
+   `busy_timeout` on each: `wal`, 2 (FULL), 1, 1 and the configured timeout
+   in ms. It runs in `the_schema_is_applied_once_...` (reopened file, test
+   config, 32 connections) and in `every_connection_of_a_default_store_syncs_fully`
+   (`SqliteStore::open`, the default config, a new file, 8 connections).
+   The pragma values are flags in each connection's state, so the check
+   holds on Linux CI too. Deleting `.synchronous(SqliteSynchronous::Full)`
+   alone is not caught and cannot be: sqlx 0.9 sends no `synchronous`
+   pragma unless asked and the bundled SQLite defaults to FULL
+   (`SQLITE_DEFAULT_SYNCHRONOUS 2`), so the effective value is unchanged.
+   The assertion still fails if that default or the setting weakens
+   (`Full` to `Normal` reads 1).
+
 Unit tests in each store crate: `TxTable` (miss guard, diff, counter
 deletes at 0, refused updates) and `sql` (u64 round trip, `below`
 superset), plus `backoff` bounds for Postgres.
@@ -231,6 +249,13 @@ superset), plus `backoff` bounds for Postgres.
 | Same: no `resets_at >= 0` guard; NULL read as 0 (`coalesce`); `<` for `<=`; no clock skew subtracted from `now` | `pruning_spares_live_counters` (4 of 4 per backend) |
 | Repair round 1, both backends: `outputs_among` matches on `replay_key` and `blinded` only; without `amount`; without `keyset` | `change_outputs_are_matched_whole` (3 of 3 per backend). The conformance suite still passes under all three |
 | Repair round 2, Postgres: `connect_with` no longer forces `synchronous_commit` (`let options = options;`) | `synchronous_commit_stays_on_when_the_client_asks_for_off` and `..._when_the_role_default_is_off` (both: left `["off"; 4]`). Before them all 12 Postgres tests passed, `the_schema_is_applied_once_...` included, since the stock default is `on` |
+| Repair round 3, SQLite: delete `.pragma("fullfsync", "ON")` | `the_schema_is_applied_once_...` and `every_connection_of_a_default_store_syncs_fully` (`fullfsync: 0` on connection 0). Before them the review deleted both `fullfsync` lines and all 23 SQLite tests passed |
+| Same: delete `.pragma("checkpoint_fullfsync", "ON")` (keeping the `;`) | both (`checkpoint_fullfsync: 0`) |
+| Same: delete `.journal_mode(SqliteJournalMode::Wal)` | both (`journal_mode: "delete"`) |
+| Same: delete `.busy_timeout(config.busy_timeout)` | both (sqlx's default, `busy_timeout_ms: 5000`) |
+| Same: `fullfsync` set once on the pool after connect (`PRAGMA fullfsync = ON` through `&pool`) instead of in the connect options | both: the default-store test on connection 1 of 8 (connection 0 read 1, so a one-connection read would have passed) |
+| Same: `SqliteSynchronous::Full` to `Normal` | both (`synchronous: 1`) |
+| Same: delete `.synchronous(SqliteSynchronous::Full)` | **not caught**, by design: the effective value stays 2 (item 8) |
 
 ### Running
 
@@ -258,6 +283,14 @@ crates), all passing, in about 20 s, twice in a row after repair round 2
 use the default retry budget. Without `DATABASE_URL` the Postgres tests,
 the ones added in both repair rounds included, print the skip line and
 pass.
+
+Repair round 3 (after merging `develop`, SQLite only, no `DATABASE_URL`):
+`cargo-q nextest run -p bnap-store-sqlite -p bnap-store-tests --locked`
+ran 38 tests (29 in `bnap-store-tests`, 14 of them SQLite; 9 unit tests in
+`bnap-store-sqlite`), all passing, 1 skipped (the writer child), in about
+11 s. `cargo-q clippy -p bnap-store-sqlite -p bnap-store-tests
+--all-targets --locked -- -D warnings` and `cargo-q fmt --check` on both
+crates clean. The Postgres side was not touched this round.
 `cargo-q clippy --workspace --all-targets --locked -- -D warnings` clean,
 `cargo-q fmt --all --check` clean, `RUSTDOCFLAGS="-D warnings" cargo-q doc`
 clean for the three crates, doctests pass, `RUSTUP_TOOLCHAIN=1.94 cargo-q
