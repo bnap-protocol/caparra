@@ -250,7 +250,7 @@ impl fmt::Debug for Parsed {
 /// 1-based line and column of a byte offset.
 fn position(text: &str, offset: usize) -> (usize, usize) {
     let before = &text.as_bytes()[..offset.min(text.len())];
-    let line = before.iter().filter(|b| **b == b'\n').count() + 1;
+    let line = before.split(|b| *b == b'\n').count();
     let column = before.iter().rev().take_while(|b| **b != b'\n').count() + 1;
     (line, column)
 }

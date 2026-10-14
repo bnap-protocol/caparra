@@ -19,7 +19,7 @@
 //! operator reuses a seed of a Cashu mint, whose keysets live under `m/0'`:
 //!
 //! ```text
-//! keyset key for 2^i = m / 1651335536' / 0' / index' / i'     (1651335536 = 0x626e6170, "bnap")
+//! keyset key for 2^i = m / 1651401072' / 0' / index' / i'     (1651401072 = 0x626e6170, "bnap")
 //! ```
 //!
 //! The `0'` is the unit slot (Cashu's index for `sat`). Rotating a keyset
@@ -88,6 +88,10 @@ pub enum KeysetError {
     Cashu(String),
 }
 
+/// A blind signature as [`NotesKeyset::sign`] makes it: `C'` and the DLEQ
+/// proof's `e` and `s`.
+pub(crate) type Signed = ([u8; 33], [u8; 32], [u8; 32]);
+
 /// One amount's key: `a` and `A = a·G`.
 struct AmountKey {
     secret: SecretKey,
@@ -121,7 +125,7 @@ impl fmt::Debug for NotesKeyset {
 }
 
 impl NotesKeyset {
-    /// Derives a keyset from `seed` under `m/1651335536'/0'/index'`, with
+    /// Derives a keyset from `seed` under `m/1651401072'/0'/index'`, with
     /// one key per amount `2^0` to `2^(orders-1)` (see the module docs).
     pub fn derive(
         seed: &[u8],
@@ -302,11 +306,7 @@ impl NotesKeyset {
     /// `C' = a·B'` and its deterministic NUT-12 DLEQ proof `(e, s)`.
     /// Private to the crate: [`crate::FileSigner`] signs only after the
     /// settlement's ledger took the outputs.
-    pub(crate) fn sign(
-        &self,
-        amount: u64,
-        blinded: &[u8; 33],
-    ) -> Result<([u8; 33], [u8; 32], [u8; 32]), KeysetError> {
+    pub(crate) fn sign(&self, amount: u64, blinded: &[u8; 33]) -> Result<Signed, KeysetError> {
         let key = self.keys.get(&amount).ok_or(KeysetError::Amount(amount))?;
         let b = PublicKey::from_slice(blinded).map_err(|e| KeysetError::Cashu(e.to_string()))?;
         let c = sign_message(&key.secret, &b).map_err(|e| KeysetError::Cashu(e.to_string()))?;
