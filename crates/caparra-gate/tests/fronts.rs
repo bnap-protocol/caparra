@@ -104,5 +104,5 @@ async fn auth_request_maps_statuses_nginx_cannot_pass() {
     assert_eq!(a.status, 401, "nginx passes 2xx, 401 and 403 only");
     assert_eq!(a.headers["bnap-status"], "402");
     assert_eq!(a.error(), Some(ErrorCode::Required));
-    assert!(!a.offers().is_empty());
+    assert_ne!(a.offers().len(), 0);
 }
