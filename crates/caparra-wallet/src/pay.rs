@@ -1617,8 +1617,8 @@ impl Wallet {
             response: bytes.to_vec(),
             manifest: pin.manifest.clone(),
             action_scope: op.action_scope,
-            invoice: None,
-            preimage: None,
+            invoice: op.invoice.clone(),
+            preimage: op.preimage,
         };
         tx.put(kind::RECEIPT, &rec.id, &rec).await?;
         tx.delete(kind::OP, &op.id).await?;
