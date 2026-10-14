@@ -1,12 +1,41 @@
 [package]
 name = "bnap-signer-file"
-description = "Signer backed by a key file on local disk."
+description = "In-process BNAP signer whose keys are loaded from a key file on local disk."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+
+[dependencies]
+bnap-core.workspace = true
+bnap-plug.workspace = true
+async-trait.workspace = true
+# BIP-32 derivation of notes keyset keys (secp256k1 is the bitcoin re-export).
+bitcoin.workspace = true
+# NUT-00 BDHKE and NUT-12 DLEQ for notes keysets, NUT-02 keyset IDs.
+cashu.workspace = true
+hex.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+bnap-core = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
+
+[features]
+# The shared Signer behaviour suite (`testkit`), run against this crate's
+# signer and against bnap-signer-process. Pulls in bnap-core's in-memory
+# store; never enable it in a gate.
+test-support = ["bnap-core/test-support"]
+
+# The shared Signer behaviour suite needs the testkit.
+[[test]]
+name = "behaviour"
+required-features = ["test-support"]
 
 [lints]
 workspace = true

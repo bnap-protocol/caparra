@@ -65,6 +65,7 @@ hmac = "0.13.0"
 hex = "0.4.3"
 base64 = "0.23.1"
 rand = "0.10.3"
+zeroize = "1.9.1"
 
 # Async runtime, HTTP and MCP
 tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "net", "time", "sync", "signal"] }
