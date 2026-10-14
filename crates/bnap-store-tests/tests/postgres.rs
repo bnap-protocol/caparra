@@ -39,7 +39,7 @@ fn config() -> PostgresConfig {
     PostgresConfig {
         max_connections: 24,
         acquire_timeout: Duration::from_secs(60),
-        max_retries: 1_000,
+        ..PostgresConfig::default()
     }
 }
 
