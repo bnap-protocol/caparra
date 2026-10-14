@@ -146,7 +146,7 @@ mod tests {
 
     const URI: &str = "https://api.example/mcp";
 
-    fn obj(v: Value) -> Map<String, Value> {
+    fn obj(v: &Value) -> Map<String, Value> {
         v.as_object().unwrap().clone()
     }
 
@@ -154,7 +154,7 @@ mod tests {
     fn the_scope_is_pinned() {
         // Pinned so an accidental change of tag or layout shows up. The
         // preimage is lp(URI) ‖ lp("weather") ‖ lp(H(`{"city":"Bern"}`)).
-        let args = obj(json!({"city": "Bern"}));
+        let args = obj(&json!({"city": "Bern"}));
         let s = action_scope(URI, "weather", Some(&args)).unwrap();
         let mut buf = vec![23];
         buf.extend_from_slice(URI.as_bytes());
@@ -166,22 +166,32 @@ mod tests {
         assert_eq!(hex::encode(s.0), PINNED_SCOPE);
     }
 
-    const PINNED_SCOPE: &str = "to be pinned";
+    const PINNED_SCOPE: &str = "ebffb9f9c617829b51a553f6ec0a515569cc0a6ac5345d07826e06917e9266f3";
 
     #[test]
     fn member_order_and_spelling_do_not_change_the_scope() {
         let a = action_scope_json(URI, "t", Some(br#"{"b":1,"a":{"y":"A","x":2.0}}"#));
-        let b = action_scope_json(URI, "t", Some(br#"{ "a" : { "x" : 2, "y" : "A" }, "b" : 1 }"#));
+        let b = action_scope_json(
+            URI,
+            "t",
+            Some(br#"{ "a" : { "x" : 2, "y" : "A" }, "b" : 1 }"#),
+        );
         assert_eq!(a.unwrap(), b.unwrap());
     }
 
     #[test]
     fn every_input_changes_the_scope() {
-        let args = obj(json!({"q": "x"}));
+        let args = obj(&json!({"q": "x"}));
         let base = action_scope(URI, "t", Some(&args)).unwrap();
-        assert_ne!(base, action_scope("https://api.example/mcp2", "t", Some(&args)).unwrap());
+        assert_ne!(
+            base,
+            action_scope("https://api.example/mcp2", "t", Some(&args)).unwrap()
+        );
         assert_ne!(base, action_scope(URI, "u", Some(&args)).unwrap());
-        assert_ne!(base, action_scope(URI, "t", Some(&obj(json!({"q": "y"})))).unwrap());
+        assert_ne!(
+            base,
+            action_scope(URI, "t", Some(&obj(&json!({"q": "y"})))).unwrap()
+        );
         assert_ne!(base, action_scope(URI, "t", None).unwrap());
         // Length prefixes keep the URI and the tool name apart.
         assert_ne!(
@@ -189,7 +199,10 @@ mod tests {
             action_scope("a", "bc", None).unwrap()
         );
         // A route scope never equals an action scope.
-        assert_ne!(route_scope(URI, "t").0, action_scope(URI, "t", None).unwrap().0);
+        assert_ne!(
+            route_scope(URI, "t").0,
+            action_scope(URI, "t", None).unwrap().0
+        );
     }
 
     #[test]
@@ -236,9 +249,9 @@ mod tests {
     #[test]
     fn integers_jcs_would_round_are_refused() {
         // 2^53 + 1 rounds to 2^53 under JCS: two different calls, one scope.
-        let ok = obj(json!({ "n": MAX_EXACT_INTEGER }));
-        let big = obj(json!({ "n": MAX_EXACT_INTEGER + 1 }));
-        let neg = obj(json!({ "n": [-(i64::try_from(MAX_EXACT_INTEGER).unwrap()) - 1] }));
+        let ok = obj(&json!({ "n": MAX_EXACT_INTEGER }));
+        let big = obj(&json!({ "n": MAX_EXACT_INTEGER + 1 }));
+        let neg = obj(&json!({ "n": [-(i64::try_from(MAX_EXACT_INTEGER).unwrap()) - 1] }));
         assert!(action_scope(URI, "t", Some(&ok)).is_ok());
         assert_eq!(
             action_scope(URI, "t", Some(&big)),

@@ -3,9 +3,9 @@
 //!
 //! | Message | Place | Value |
 //! | --- | --- | --- |
-//! | Offer | `error.data["org.bnap/offers"]` of a `tools/call` error | array of `b64u(Offer)` |
+//! | Offer | an entry `{"org.bnap/offer": b64u(Offer)}` in `error.data.challenges` of a `tools/call` error | one entry per offer |
 //! | Error | `error.data["org.bnap/error"]` | `b64u(Error)` (draft-00 8.2) |
-//! | MPP challenges | `error.data.challenges` | the MPP MCP challenge objects |
+//! | MPP challenges | `error.data.challenges`, next to the BNAP entries | the MPP MCP challenge objects (`request` as JSON) |
 //! | HTTP status | `error.data.httpStatus` | the draft-00 8.2 status, 402 for payment required |
 //! | Credential | `params._meta["org.bnap/credential"]` | `b64u(Credential)` |
 //! | MPP credential | `params._meta["org.paymentauth/credential"]` | the MPP MCP credential object |
@@ -28,8 +28,12 @@ use serde_json::{Map, Value, json};
 pub const CREDENTIAL: &str = "org.bnap/credential";
 /// `_meta` key of a BNAP Response in a `tools/call` result.
 pub const RECEIPT: &str = "org.bnap/receipt";
-/// `error.data` key of the BNAP offers of a payment error.
-pub const OFFERS: &str = "org.bnap/offers";
+/// Member of a BNAP entry in `error.data.challenges`: `b64u(Offer)`.
+///
+/// An MPP client skips an entry that is not an MPP challenge (it has no
+/// `id`, `realm`, `method`, `intent` or `request`), so BNAP offers and MPP
+/// challenges share the one array the MPP MCP transport defines.
+pub const OFFER: &str = "org.bnap/offer";
 /// `error.data` key of the BNAP Error object.
 pub const ERROR: &str = "org.bnap/error";
 /// `_meta` key of an MPP credential (MPP MCP transport).
@@ -49,8 +53,6 @@ pub const VERIFICATION_FAILED: i32 = -32043;
 pub const INVALID_PARAMS: i32 = -32602;
 /// JSON-RPC code: internal error.
 pub const INTERNAL_ERROR: i32 = -32603;
-/// JSON-RPC code: invalid request (the strict JSON check).
-pub const INVALID_REQUEST: i32 = -32600;
 
 /// `b64u(bytes)`: base64url without padding.
 #[must_use]
@@ -157,9 +159,7 @@ pub fn message(code: ErrorCode) -> &'static str {
             "This credential is still in use by a call in flight. Retry the same call later."
         }
         ErrorCode::RateLimited => "Too many calls for now. Retry later.",
-        ErrorCode::Unavailable => {
-            "The payment service is unavailable. Retry the same call later."
-        }
+        ErrorCode::Unavailable => "The payment service is unavailable. Retry the same call later.",
     }
 }
 
@@ -170,7 +170,8 @@ pub struct ErrorData {
     pub http_status: u16,
     /// MPP MCP challenge objects, for clients that speak only MPP.
     pub challenges: Vec<Value>,
-    /// `b64u(Offer)` of each fresh BNAP offer.
+    /// `b64u(Offer)` of each fresh BNAP offer, sent as BNAP entries in
+    /// `challenges`.
     pub offers: Vec<String>,
     /// The BNAP Error object.
     pub error: Option<ErrorObject>,
@@ -185,11 +186,9 @@ impl ErrorData {
         let mut m = Map::new();
         m.insert(HTTP_STATUS.into(), json!(self.http_status));
         if !self.challenges.is_empty() || !self.offers.is_empty() {
-            m.insert(CHALLENGES.into(), Value::Array(self.challenges.clone()));
-            m.insert(
-                OFFERS.into(),
-                Value::Array(self.offers.iter().cloned().map(Value::String).collect()),
-            );
+            let mut all: Vec<Value> = self.offers.iter().map(|o| json!({ OFFER: o })).collect();
+            all.extend(self.challenges.iter().cloned());
+            m.insert(CHALLENGES.into(), Value::Array(all));
         }
         if let Some(bytes) = self.error.as_ref().and_then(|e| e.to_bytes().ok()) {
             m.insert(ERROR.into(), Value::String(b64u(&bytes)));
@@ -201,31 +200,32 @@ impl ErrorData {
     }
 
     /// Reads `error.data`. Members it does not know are ignored; members of
-    /// the wrong type are left out.
+    /// the wrong type are left out. A `challenges` entry with a string
+    /// [`OFFER`] member is a BNAP offer; every other entry is kept as an
+    /// MPP challenge.
     #[must_use]
     pub fn from_value(v: &Value) -> Self {
         let get_str = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+        let entries = v
+            .get(CHALLENGES)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let (bnap, mpp): (Vec<Value>, Vec<Value>) = entries
+            .into_iter()
+            .partition(|e| e.get(OFFER).is_some_and(Value::is_string));
         Self {
             http_status: v
                 .get(HTTP_STATUS)
                 .and_then(Value::as_u64)
                 .and_then(|s| u16::try_from(s).ok())
                 .unwrap_or(0),
-            challenges: v
-                .get(CHALLENGES)
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default(),
-            offers: v
-                .get(OFFERS)
-                .and_then(Value::as_array)
-                .map(|a| {
-                    a.iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default(),
+            challenges: mpp,
+            offers: bnap
+                .iter()
+                .filter_map(|e| e.get(OFFER).and_then(Value::as_str))
+                .map(str::to_owned)
+                .collect(),
             error: get_str(ERROR)
                 .and_then(|s| from_b64u(&s, 1024).ok())
                 .and_then(|b| ErrorObject::parse(&b).ok()),
@@ -244,7 +244,7 @@ mod tests {
         assert_eq!(from_b64u(&s, 3).unwrap(), [0xfb, 0xff, 0x01]);
         assert_eq!(from_b64u(&s, 2), Err(B64Error::TooLarge));
         assert_eq!(from_b64u("+/8B", 3), Err(B64Error::NotBase64url));
-        assert_eq!(from_b64u("-_8B=", 3), Err(B64Error::NotBase64url));
+        assert_eq!(from_b64u("-_8B=", 8), Err(B64Error::NotBase64url));
         // Trailing bits set: "AB" and "AA" both decode to one zero byte.
         assert_eq!(from_b64u("AB", 1), Err(B64Error::NotBase64url));
         assert_eq!(from_b64u("AA", 1).unwrap(), [0]);
@@ -257,7 +257,7 @@ mod tests {
         for code in ErrorCode::ALL {
             let j = jsonrpc_code(code);
             assert!([-32042, -32043, -32602, -32603].contains(&j), "{code:?}");
-            assert!(!message(code).is_empty());
+            assert_ne!(message(code), "");
             assert!(!message(code).contains('\u{2014}'));
         }
         assert_eq!(jsonrpc_code(ErrorCode::Required), PAYMENT_REQUIRED);
@@ -279,6 +279,9 @@ mod tests {
         };
         let v = d.to_value();
         assert_eq!(v["httpStatus"], 402);
+        // The BNAP offer is an entry of the one challenges array.
+        assert_eq!(v["challenges"][0]["org.bnap/offer"], b64u(b"offer"));
+        assert_eq!(v["challenges"][1]["method"], "lightning");
         assert_eq!(ErrorData::from_value(&v), d);
     }
 }
