@@ -1061,6 +1061,30 @@ impl Wallet {
         };
         // The fee the pay source reports counts in full, ceiling or not.
         let fee = paid.fee_sat;
+        // Proof first: the invoice and its preimage are kept before anything
+        // else can fail; the receipt of the answer replaces this record.
+        let proof = ReceiptRecord {
+            id: id.clone(),
+            kind: ReceiptKind::Native,
+            origin: cx.origin.clone(),
+            method: cx.base.method.clone(),
+            url: cx.base.url.clone(),
+            scheme: Some(plan.scheme.clone()),
+            at: self.now(),
+            cost_sat: amount + fee,
+            charged: 0,
+            unit: Some("sat".into()),
+            ok: false,
+            change_ok: true,
+            offer: plan.offer.bytes().to_vec(),
+            credential: Vec::new(),
+            response: Vec::new(),
+            manifest: Vec::new(),
+            action_scope: plan.scope.0,
+            invoice: Some(invoice_text.clone()),
+            preimage: Some(paid.preimage),
+        };
+        self.store.put(kind::RECEIPT, &id, &proof).await?;
         let body = lightning_body(&plan.scheme, challenge, paid.preimage)?;
         let (cred, _ctx, digest) = self
             .build_credential(
@@ -1201,6 +1225,7 @@ impl Wallet {
             offer: Some(offer.bytes().to_vec()),
             state: QuoteState::Unpaid,
             fee_sat: 0,
+            ledger: Some(reserve_id.clone()),
         };
         tx.put(kind::QUOTE, &q.quote, &rec).await?;
         tx.commit().await?;
@@ -1256,7 +1281,9 @@ impl Wallet {
         {
             // Nothing was sent: the paid quote is still mintable, and only
             // its routing fee was spent.
-            self.true_up(&reserve_id, Some(rec.fee_sat)).await?;
+            // The quote counts in full until the mint returns notes.
+            self.true_up(&reserve_id, Some(rec.amount + rec.fee_sat))
+                .await?;
             let _ = self.mint_quote(&q.quote).await;
         }
         step
@@ -1367,13 +1394,26 @@ impl Wallet {
             Some(code) => {
                 // Refused before the commit: nothing was consumed.
                 self.close_op(op, false).await?;
+                let mut refusal = refusal;
                 if let Some(q) = op.quote.clone() {
-                    let _ = self.mint_quote(&q).await;
+                    let minted = self.mint_quote(&q).await.unwrap_or(0);
+                    let _ = write!(
+                        refusal.message,
+                        " The fund quote was paid over Lightning; {}",
+                        if minted > 0 {
+                            "it was minted into notes."
+                        } else {
+                            "it could not be minted yet and counts against the caps; `bnap resume` retries."
+                        }
+                    );
                 }
+                // A fresh offer is tried again only when nothing went out
+                // over Lightning for this one.
                 let retry = matches!(
                     code,
                     ErrorCode::BadOffer | ErrorCode::Stale | ErrorCode::WrongScope
-                ) && op.lightning_sat == 0;
+                ) && op.lightning_sat == 0
+                    && op.quote.is_none();
                 if retry && resp.status == 402 {
                     return Ok(Step::Retry(resp.clone()));
                 }
@@ -1397,8 +1437,9 @@ impl Wallet {
                 tx.put(kind::NOTE, k, &n).await?;
             }
         }
-        // A redeemed quote is lost with the notes; an unused one is minted
-        // back, so only its routing fee counts.
+        // A paid quote counts in full until it is minted into notes
+        // (`mint_quote` takes its amount off this entry then): an issuer
+        // that refuses the mint keeps the payment.
         let (quote_value, quote_fee) = match &op.quote {
             Some(q) => tx
                 .get::<QuoteRecord>(kind::QUOTE, q)
@@ -1406,7 +1447,7 @@ impl Wallet {
                 .map_or((0, 0), |q| (q.amount, q.fee_sat)),
             None => (0, 0),
         };
-        let actual = op.lightning_sat + quote_fee + if spent { op.face + quote_value } else { 0 };
+        let actual = op.lightning_sat + quote_fee + quote_value + if spent { op.face } else { 0 };
         if let Some(mut e) = tx
             .get::<policy::LedgerEntry>(kind::LEDGER, &op.ledger)
             .await?

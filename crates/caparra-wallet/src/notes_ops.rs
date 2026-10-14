@@ -272,6 +272,7 @@ impl Wallet {
             offer: None,
             state: QuoteState::Unpaid,
             fee_sat: 0,
+            ledger: Some(id.clone()),
         };
         tx.put(kind::QUOTE, &q.quote, &rec).await?;
         tx.commit().await?;
@@ -293,7 +294,9 @@ impl Wallet {
         rec.state = QuoteState::Paid;
         rec.fee_sat = paid.fee_sat;
         self.store.put(kind::QUOTE, &q.quote, &rec).await?;
-        self.true_up(&id, Some(rec.fee_sat)).await?;
+        // The amount counts until the mint returns notes; `mint_quote`
+        // takes it off then.
+        self.true_up(&id, Some(rec.amount + rec.fee_sat)).await?;
         self.mint_quote(&q.quote).await?;
         let balance = self.balances().await?.get(&origin).copied().unwrap_or(0);
         Ok(FundReport {
@@ -354,6 +357,15 @@ impl Wallet {
         }
         q.state = QuoteState::Minted;
         tx.put(kind::QUOTE, &q.id, &q).await?;
+        // The quote's value is back as notes: the ledger keeps its fee.
+        if let Some(l) = &q.ledger
+            && let Some(mut e) = tx
+                .get::<crate::policy::LedgerEntry>(kind::LEDGER, l)
+                .await?
+        {
+            e.actual = Some(e.counted().saturating_sub(q.amount));
+            tx.put(kind::LEDGER, l, &e).await?;
+        }
         tx.commit().await?;
         Ok(got.iter().map(|n| n.amount).sum())
     }

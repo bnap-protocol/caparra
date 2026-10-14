@@ -166,3 +166,79 @@ async fn restore_scans_the_slots_a_person_names() {
     let rep = b.restore(&[ORIGIN.to_owned()], None, &[3]).await.unwrap();
     assert_eq!(rep[0].restored_sat, held);
 }
+
+/// Refuses every credential with `err` and every NUT-04 mint, as a hostile
+/// operator that takes funding payments and never issues would.
+struct RefusesAfterFunding {
+    inner: Arc<testkit::TestTransport>,
+    err: bnap_core::ErrorCode,
+}
+
+#[async_trait::async_trait]
+impl Transport for RefusesAfterFunding {
+    async fn send(&self, req: HttpRequest) -> Result<HttpResponse, String> {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        if req.url.ends_with("/cashu/v1/mint/bolt11") {
+            return Ok(HttpResponse {
+                status: 400,
+                headers: Vec::new(),
+                body: b"quote already issued".to_vec(),
+            });
+        }
+        if req
+            .headers
+            .iter()
+            .any(|(n, _)| n.eq_ignore_ascii_case("bnap-credential"))
+        {
+            let e = bnap_core::ErrorObject::new(self.err);
+            return Ok(HttpResponse {
+                status: 402,
+                headers: vec![("BNAP-Error".into(), b64.encode(e.to_bytes().unwrap()))],
+                body: Vec::new(),
+            });
+        }
+        self.inner.send(req).await
+    }
+}
+
+#[tokio::test]
+async fn a_paid_fund_quote_counts_until_it_is_minted() {
+    for err in [bnap_core::ErrorCode::Policy, bnap_core::ErrorCode::BadOffer] {
+        let kit = Kit::new();
+        let dir = tempfile::tempdir().unwrap();
+        let mut opts = kit.options("t");
+        opts.transport = Arc::new(RefusesAfterFunding {
+            inner: kit.transport.clone(),
+            err,
+        });
+        let (w, _) = Wallet::create(&dir.path().join("w.db"), "p", &opts)
+            .await
+            .unwrap();
+        w.set_policy(|p| {
+            p.allow_experimental = true;
+            p.caps.daily = 100;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        for _ in 0..20 {
+            let _ = w
+                .fetch(FetchRequest::post(url("/v1/chat"), b"x".to_vec()))
+                .await;
+        }
+        let _ = w.resume().await;
+        let out = kit.pay.total();
+        assert!(out <= 100, "{err:?}: {out} sat out under a 100 sat cap");
+        assert!(counted(&w.ledger().await.unwrap()) >= out, "{err:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_minted_quote_counts_only_its_fee() {
+    let kit = Kit::new();
+    let dir = tempfile::tempdir().unwrap();
+    let w = testkit::wallet(&kit, dir.path(), "t").await;
+    w.fund(ORIGIN, 200, None).await.unwrap();
+    assert_eq!(counted(&w.ledger().await.unwrap()), 1, "the routing fee");
+}

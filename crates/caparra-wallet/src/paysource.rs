@@ -93,7 +93,7 @@ impl PaySourceConfig {
 fn failed(m: impl fmt::Display) -> Refusal {
     Refusal::new(
         Code::PaymentFailed,
-        format!("The Lightning payment failed: {m}. Nothing was paid."),
+        format!("The Lightning payment failed: {m}."),
     )
 }
 

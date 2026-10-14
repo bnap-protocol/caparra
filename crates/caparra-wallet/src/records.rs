@@ -398,6 +398,10 @@ pub struct QuoteRecord {
     /// Routing fee paid, sat.
     #[serde(default)]
     pub fee_sat: u64,
+    /// The ledger entry that counts the quote's amount until it is minted
+    /// into notes.
+    #[serde(default)]
+    pub ledger: Option<String>,
 }
 
 impl Drop for QuoteRecord {
