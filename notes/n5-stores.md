@@ -207,16 +207,19 @@ server's `max_connections` (the stock default is 100). A 256 MB container
 with `max_connections=200` was OOM-killed under `-j 8`; 512 MB with 120
 connections and `-j 4` ran clean.
 
-Status at hand-off: `cargo-q nextest run -p bnap-store-tests` with
-`DATABASE_URL` set, 21 tests (and the 20 unit tests of the store crates),
-all passing, repeatedly; Postgres also with the default retry budget.
+Status at hand-off: `cargo-q nextest run -p bnap-store-tests -p
+bnap-store-sqlite -p bnap-store-postgres --locked -j 4` with `DATABASE_URL`
+set: 41 tests (22 in `bnap-store-tests`, 19 unit tests in the store
+crates), all passing, in about 40 s, repeatedly (the writer child is the
+one skipped, ignored, test). The Postgres tests use the default retry
+budget.
 `cargo-q clippy --workspace --all-targets --locked -- -D warnings` clean,
 `cargo-q fmt --all --check` clean, `RUSTDOCFLAGS="-D warnings" cargo-q doc`
 clean for the three crates, doctests pass, `RUSTUP_TOOLCHAIN=1.94 cargo-q
 check --locked --all-targets` clean for the three crates, `cargo-q deny
---all-features check bans licenses sources` ok (new duplicate-version
-warnings only, from sqlx's older `sha2`, `digest`, `rand`; one
-`secp256k1`), `ops/leak-guard.sh` clean.
+--all-features check bans licenses sources` ok and `check advisories` ok
+(new duplicate-version warnings only, from sqlx's older `sha2`, `digest`,
+`rand`; one `secp256k1`), `ops/leak-guard.sh` clean.
 
 ### Enabling Postgres in CI later
 
@@ -271,9 +274,9 @@ admin connections. The tests need `CREATE SCHEMA` rights on the database.
   accumulate forever. It deletes counters whose epoch ended more than a
   clock skew (60 s) before `now` (`resets_at + 60 < now`), which no gate
   within the skew can read or increment again; a FAILED give-back on a
-  pruned counter changes nothing. Counters written before `resets_at`
-  existed in a row (none: the column is in the first migration) would have
-  `NULL` and are never pruned.
+  pruned counter changes nothing. Only a commit creates a counter row, and
+  it always writes `resets_at`; a row with `NULL` there (written by other
+  means) is never pruned.
 - **Counter rows are deleted at 0**, as `MemoryTable` does.
 - **Schema per store on Postgres** comes from `search_path`; the store does
   not qualify table names.
@@ -295,7 +298,8 @@ admin connections. The tests need `CREATE SCHEMA` rights on the database.
 - Postgres under a hot key (one rate counter for many concurrent
   requests) aborts and retries often: correct, but latency grows with
   contention, and after `max_retries` the call fails closed. The mixed-load
-  test (8 gates on one counter) takes about 25 s on the test box.
+  test (8 gates on one counter) takes 25 to 35 s on the test box, against
+  about 5 s on SQLite.
 - SQLite: two processes opening a **new** database file at the same moment
   can race the first migration (one fails at open with a `StoreError`;
   restart it). Not a problem once the schema exists.
