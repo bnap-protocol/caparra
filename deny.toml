@@ -17,7 +17,9 @@ unmaintained = "workspace"
 unsound = "all"
 # Every ignored advisory needs a reason and, ideally, an expiry date:
 # ignore = [{ id = "RUSTSEC-0000-0000", reason = "why it does not apply" }]
-ignore = []
+ignore = [
+  { id = "RUSTSEC-2026-0253", reason = "lru 0.16 via nwc 0.44 (bnap-rail-nwc only); needs a panicking destructor during pop(); tracked in https://github.com/bnap-protocol/caparra/issues/1" },
+]
 
 # -------------------------------------------------------------------- licenses
 # Every dependency must be available under at least one license below.
