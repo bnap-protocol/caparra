@@ -1,0 +1,26 @@
+# Task brief: n9b (branch node/n9b)
+
+## How to work (cloud session, read fully)
+
+You run in a cloud sandbox with a fresh checkout and zero prior context. Everything you need is in this file and in the repos.
+
+- Repos: `bnap-protocol/caparra` (Rust workspace, this node's code) and `bnap-protocol/bnap` (spec). If only one is checked out, `git clone https://github.com/bnap-protocol/<other>.git` next to it (both are public). Normative spec: `bnap/spec/socket-draft-00.md` (wins over `spec/overview-v0.5.md`), plus `spec/schemes/bnap-notes-draft-00.md`, `spec/DECISIONS.md`, `spec/ERRATA.md`, `registry/generated/registry.json`.
+- Branch: `git fetch origin && git checkout <BRANCH>` (it exists on origin with earlier, unverified work; build on it, keep what is good). First `git merge origin/develop` and resolve conflicts (for Cargo.lock take develop's then let cargo update it; keep both sides of deny.toml/Cargo.toml additions).
+- Read the merged notes first: `notes/*.md` in caparra (n3-core = the bnap-core `process()` contract and sealed APIs; n4 signers; n5 stores; n6 notes scheme + client module; n7 Lightning schemes/rails; n8 DPoP/Web Bot Auth). Build on those APIs; do not change bnap-core/bnap-plug unless unavoidable (smallest additive change, justify it in your notes).
+- Toolchain: install Rust if missing (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y`; `rust-toolchain.toml` pins the version). Build only the crates you need (`-p`). CI runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` (pedantic + missing_docs), nextest, MSRV 1.94, cargo-deny, `--locked`: keep all of them green and commit Cargo.lock. Internal crates are workspace deps (`bnap-core.workspace = true`). One secp256k1 only; no OpenSSL. Docker may be unavailable here: then skip Docker-only checks and say so.
+- Commits: conventional commits, `git commit -s`, and end every message with the line `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Set `git config user.name "BNAP contributors"` and `git config user.email "bnap-protocol@users.noreply.github.com"` first.
+- DURABILITY: commit AND `git push origin <BRANCH>` after every logical unit. This session can end at any time; unpushed work is lost.
+- Before EVERY push run `sh ops/leak-guard.sh` and fix anything it reports. Never write the words of other projects or personal identifiers; no em dashes anywhere.
+- Never push to `develop` or `main`, never open PRs, never create tags or releases. The orchestrator merges your branch after reviewing it.
+- QUALITY GATE (mandatory): when the maker work is done, launch an INDEPENDENT checker with the Agent tool, giving it only the "Checker brief" below, the branch name and your short report (not your reasoning). It must not fix code. Fix every HIGH/MEDIUM it reports (with a test that fails before the fix), then re-run a fresh checker; at most 3 rounds. LOW findings go into your notes file.
+- Finish: update `notes/<node>.md` with the final API, config reference, decisions, gaps, the checker's final verdict and a list of LOW findings, commit, push. Your final message: branch, last commit SHA, test/clippy/fmt results, checker verdict.
+
+## Maker brief
+
+NODE N9b: the MCP carrier. You own crates/bnap-carrier-mcp.
+  Per the overview's Carriers table and the MCP section: scope = H(server URI, tool name, RFC 8785 JCS of the arguments) (define it with a bnap tag like the HTTP scopes, document it as provisional, and REJECT arguments JSON with duplicate member names before canonicalizing); offers travel in the JSON-RPC error data of a tools/call (error code and shape aligned with the MPP MCP transport: -32042 payment required with data.challenges and httpStatus 402, plus a BNAP offer entry), credentials in request params._meta (key "org.bnap/credential"; also accept the MPP key "org.paymentauth/credential" for payment:lightning/charge natives), receipts in result._meta ("org.bnap/receipt", plus "org.paymentauth/receipt" for natives). Build it on rmcp 3.5 (streamable HTTP server side) as a wrapper that prices any rmcp tool: a `PricedTools` layer the operator configures per tool (price, accept, attest, require), running every call through bnap-core process(). No TLS binding (MCP credentials rely on scope binding).
+  Tests: an rmcp test server with one free and one priced tool; a client using rmcp's client to call the priced tool, get the offer, pay via fake rail (L402/MPP) or DPoP attestation, retry with the credential in _meta, get the result + receipt; replay; altered arguments refused (WRONG_SCOPE); duplicate JSON keys refused.
+  Stop: tests/clippy/fmt green.
+## Checker brief
+
+You are a NON-AUTHOR CHECKER for node N9b (MCP carrier). Do not fix code, do not commit. Run tests, clippy -D warnings, fmt. FAIL only for HIGH/MEDIUM. Verify the scope covers server URI, tool name and canonical arguments (change any argument, key order, number formatting or unicode escape: JCS must make equivalent JSON equal and different JSON different), duplicate JSON member names refused, credential reuse across tools refused, error codes/shapes match the MPP MCP transport (-32042 with data.challenges and httpStatus 402), receipts present on success and absent on failure, replay behaviour per draft-00 section 6.
