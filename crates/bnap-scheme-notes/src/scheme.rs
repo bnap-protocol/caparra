@@ -393,16 +393,15 @@ impl NotesScheme {
                     .find(|r| {
                         r.blinded == o.blinded && r.keyset == o.keyset && r.amount == o.amount
                     })
-                    .and_then(|r| r.signature.map(|s| (*o, s)))
+                    .map(|r| (*o, r.signature))
             })
             .collect())
     }
 
-    /// Signs the selected outputs of `body` through `signer`, recording
-    /// each in the signed-output table under `source` before the signer is
-    /// asked and completing the record after (7.4). Every DLEQ proof the
-    /// signer returns is checked against the keyset's key before it goes
-    /// into a `scheme_result`.
+    /// Signs the selected outputs through `signer`, one batch per keyset,
+    /// checks every DLEQ proof the signer returns against the keyset's key,
+    /// and records each output in the signed-output table under `source`
+    /// before returning (7.4).
     pub(crate) async fn sign_outputs(
         &self,
         signer: &CappedSigner,
@@ -411,26 +410,12 @@ impl NotesScheme {
         source: [u8; 32],
     ) -> Result<Vec<SignatureEntry>, SchemeError> {
         let table = self.issuer.keysets().await.map_err(|e| unavailable(&e))?;
-        let reserve: Vec<SignedOutput> = selected
-            .iter()
-            .map(|&i| SignedOutput {
-                keyset: outputs[i].keyset,
-                amount: outputs[i].amount,
-                blinded: outputs[i].blinded,
-                source,
-                signature: None,
-            })
-            .collect();
-        self.issuer
-            .put_outputs(&reserve)
-            .await
-            .map_err(|e| unavailable(&e))?;
         let mut groups: BTreeMap<[u8; 33], Vec<usize>> = BTreeMap::new();
         for &i in selected {
             groups.entry(outputs[i].keyset).or_default().push(i);
         }
         let mut entries = Vec::new();
-        let mut done = Vec::new();
+        let mut records = Vec::new();
         for (ks, idx) in groups {
             let batch: Vec<BlindedOutput> = idx
                 .iter()
@@ -447,15 +432,16 @@ impl NotesScheme {
                 SchemeError::Unavailable("an output keyset left the table".into())
             })?;
             for (&i, sig) in idx.iter().zip(&sigs) {
+                let o = &outputs[i];
                 let blind = BlindSigned {
                     c: sig.signature.0,
                     e: sig.dleq.e,
                     s: sig.dleq.s,
                 };
-                let a = keyset.key(outputs[i].amount).ok_or_else(|| {
+                let a = keyset.key(o.amount).ok_or_else(|| {
                     SchemeError::Unavailable("no key for an output amount".into())
                 })?;
-                if !verify_dleq(a, &outputs[i].blinded, &blind) {
+                if !verify_dleq(a, &o.blinded, &blind) {
                     return Err(SchemeError::Unavailable(
                         "the signer returned a DLEQ proof that does not verify".into(),
                     ));
@@ -466,18 +452,17 @@ impl NotesScheme {
                     e: blind.e,
                     s: blind.s,
                 });
-                done.push(SignedOutput {
-                    signature: Some(blind),
-                    ..reserve
-                        .iter()
-                        .find(|r| r.blinded == outputs[i].blinded)
-                        .cloned()
-                        .ok_or_else(|| SchemeError::Unavailable("lost a reservation".into()))?
+                records.push(SignedOutput {
+                    keyset: o.keyset,
+                    amount: o.amount,
+                    blinded: o.blinded,
+                    source,
+                    signature: blind,
                 });
             }
         }
         self.issuer
-            .put_outputs(&done)
+            .put_outputs(&records)
             .await
             .map_err(|e| unavailable(&e))?;
         entries.sort_by_key(|e| e.index);
@@ -485,47 +470,48 @@ impl NotesScheme {
     }
 
     /// The outputs a FAILED settlement signs (7.2, 7.5): the 7.2 selection
-    /// for the whole refund, unless outputs of this body were already
-    /// signed for its outcome (a late OK settle that lost to the timeout,
-    /// or an OK settle the gate replaced with FAILED). The use store counts
-    /// those against the outcome's value (ERRATA N3b-16, N3b-29), so the
-    /// refund then re-signs them, at no cost, and adds the 7.2 greedy over
-    /// the other outputs for what is left. This returns the whole value
-    /// when the remaining outputs can form it, and as much of it as they
-    /// can otherwise (see the notes, ERRATA candidate N6-1).
+    /// for the whole refund, unless the use store already reserved outputs
+    /// of this outcome that it does not contain (a late OK settle that lost
+    /// to the timeout, or a settle whose signer failed after the
+    /// reservation). The store counts those against the outcome's value
+    /// (ERRATA N3b-16, N3b-29), so the refund then re-signs them, at no
+    /// cost, and adds the 7.2 greedy over the other outputs for what is
+    /// left. That is the whole value when the remaining outputs can form
+    /// it, and as much of it as they can otherwise (ERRATA candidate N6-1).
+    /// Either way the store never refuses the refund.
     async fn refund_selection(
-        &self,
+        signer: &CappedSigner,
         body: &Body,
         amounts: &[u64],
         target: u64,
-        source: &[u8; 32],
     ) -> Result<Vec<usize>, SchemeError> {
         let plain = select(amounts, target)
             .ok_or_else(|| SchemeError::Unavailable("the outputs cannot form the refund".into()))?;
-        let records = self
-            .issuer
-            .outputs_by_source(source)
+        let reserved = signer
+            .reserved()
             .await
-            .map_err(|e| unavailable(&e))?;
+            .map_err(|e| SchemeError::Unavailable(e.to_string()))?;
         let prior: BTreeSet<usize> = body
             .outputs
             .iter()
             .enumerate()
             .filter(|(_, o)| {
-                records
-                    .iter()
-                    .any(|r| r.blinded == o.blinded && r.keyset == o.keyset && r.amount == o.amount)
+                reserved.iter().any(|r| {
+                    r.blinded == o.blinded
+                        && r.keyset == o.keyset.as_slice()
+                        && r.amount == o.amount
+                })
             })
             .map(|(i, _)| i)
             .collect();
         if prior.iter().all(|i| plain.contains(i)) {
             return Ok(plain);
         }
-        let signed: u64 = prior.iter().map(|&i| amounts[i]).sum();
+        let already: u64 = prior.iter().map(|&i| amounts[i]).sum();
         let (rest, _) = select_among(
             amounts,
             |i| !prior.contains(&i),
-            target.saturating_sub(signed),
+            target.saturating_sub(already),
         );
         let mut all: Vec<usize> = prior.into_iter().chain(rest).collect();
         all.sort_unstable();
@@ -749,10 +735,7 @@ impl CredentialScheme for NotesScheme {
             Status::Ok => select(&amounts, target).ok_or_else(|| {
                 SchemeError::Unavailable("the outputs cannot form the change".into())
             })?,
-            Status::Failed => {
-                self.refund_selection(&body, &amounts, target, &source)
-                    .await?
-            }
+            Status::Failed => Self::refund_selection(signer, &body, &amounts, target).await?,
         };
         if let Some(id) = &body.fund {
             // After commit the quote counts as issued, whatever the outcome

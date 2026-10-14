@@ -418,7 +418,7 @@ impl Witness {
         }
         match (s.get(t::FUND_SIG), body.fund.is_some()) {
             (Some(v), true) => {
-                w.fund_sig = Some(Signature(fixed::<64>(v, t::FUND_SIG, "witness")?))
+                w.fund_sig = Some(Signature(fixed::<64>(v, t::FUND_SIG, "witness")?));
             }
             (None, false) => {}
             (Some(_), false) => return Err(err("fund_sig without fund")),

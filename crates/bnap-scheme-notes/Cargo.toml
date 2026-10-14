@@ -28,6 +28,9 @@ test-support = []
 bnap-core = { workspace = true, features = ["test-support"] }
 bnap-scheme-notes = { path = ".", features = ["test-support"] }
 serde_json.workspace = true
+# Only to build real regtest BOLT11 invoices in the fake Lightning rail of
+# the tests; already in the tree through bnap-core.
+bitcoin.workspace = true
 
 [lints]
 workspace = true

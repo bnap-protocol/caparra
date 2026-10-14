@@ -12,9 +12,8 @@
 //!   source)` and kept until 60 s after its keyset's final expiry (7.4,
 //!   NUT-09), where the source is `H(body)` of the credential whose
 //!   settlement signed it, or `rk_mint` for a NUT-04 mint. A settlement
-//!   records its outputs before it asks the signer (with no signature yet)
-//!   and completes them after, so a crash between the two still shows
-//!   which outputs an outcome may have had signed.
+//!   records its outputs before it returns, so before the outcome write of
+//!   draft-00 6.4.
 
 use std::collections::BTreeMap;
 #[cfg(feature = "test-support")]
@@ -58,7 +57,7 @@ pub struct QuoteRecord {
     pub created: u64,
 }
 
-/// One output the issuer signed, or is about to sign (7.4).
+/// One output the issuer signed (7.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedOutput {
     /// The keyset that signs it.
@@ -69,8 +68,8 @@ pub struct SignedOutput {
     pub blinded: PointBytes,
     /// `H(body)` of the credential whose settlement signs it, or `rk_mint`.
     pub source: [u8; 32],
-    /// `C'` and the DLEQ proof, once signed; `None` while only reserved.
-    pub signature: Option<BlindSigned>,
+    /// `C'` and the DLEQ proof.
+    pub signature: BlindSigned,
 }
 
 /// What [`IssuerStore::insert_quote`] did.
@@ -103,11 +102,11 @@ pub trait IssuerStore: Send + Sync {
     /// true; a flag is never cleared.
     async fn mark_quote(&self, id: &str, paid: bool, issued: bool) -> Result<(), IssuerError>;
 
-    /// Upserts output records by `(B', source)`. A record that has a
-    /// signature keeps it; one without gains the given one.
+    /// Stores output records by `(B', source)`; a record already there is
+    /// kept (signing is deterministic, so it holds the same signature).
     async fn put_outputs(&self, outputs: &[SignedOutput]) -> Result<(), IssuerError>;
 
-    /// Every record of one source, reserved or signed.
+    /// Every record of one source.
     async fn outputs_by_source(&self, source: &[u8; 32]) -> Result<Vec<SignedOutput>, IssuerError>;
 
     /// Every record of these `B'` values, under any source (NUT-09 restore,
@@ -228,13 +227,9 @@ impl IssuerStore for MemoryIssuerStore {
         self.up()?;
         let mut t = self.lock();
         for o in outputs {
-            let rec = t
-                .outputs
+            t.outputs
                 .entry((o.blinded, o.source))
                 .or_insert_with(|| o.clone());
-            if rec.signature.is_none() {
-                rec.signature = o.signature;
-            }
         }
         Ok(())
     }
