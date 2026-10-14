@@ -13,7 +13,7 @@ use bnap_core::{CounterKey, Status};
 use bnap_store_sqlite::{SqliteConfig, SqliteStore};
 use bnap_store_tests::scenarios::Log;
 use bnap_store_tests::scenarios::{self, Req, T0, limits, note, settlement};
-use bnap_store_tests::{Dump, Held, Tokio, check_consistent};
+use bnap_store_tests::{Dump, Held, Tokio, Tried, check_consistent};
 use sqlx::{Connection, Row};
 
 /// Enough connections for every task of a scenario to hold its own.
@@ -268,6 +268,127 @@ fn a_pool_dropped_mid_transaction_leaves_a_consistent_store() {
             &limits(),
         ))
         .unwrap();
+        exec.block_on(store.close());
+    }
+}
+
+fn hex(b: &[u8]) -> String {
+    use std::fmt::Write;
+    b.iter().fold(String::new(), |mut s, x| {
+        let _ = write!(s, "{x:02x}");
+        s
+    })
+}
+
+fn unhex32(s: &str) -> [u8; 32] {
+    let mut out = [0; 32];
+    for (i, o) in out.iter_mut().enumerate() {
+        *o = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).expect("hex");
+    }
+    out
+}
+
+/// The writer process of [`a_killed_writer_loses_nothing_it_acknowledged`]:
+/// four gate loops on the database `BNAP_N5_CHILD_DB` names, printing
+/// `tried <rk> <single>,<single>..` before each credential and `acked <rk>`
+/// once `process` admitted it, until it is killed. Without the variable it
+/// does nothing, so running ignored tests by hand is harmless.
+#[test]
+#[ignore = "the writer process a_killed_writer_loses_nothing_it_acknowledged starts"]
+fn killed_writer_child() {
+    use std::io::Write;
+    let Ok(path) = std::env::var("BNAP_N5_CHILD_DB") else {
+        return;
+    };
+    let base: u32 = std::env::var("BNAP_N5_CHILD_BASE")
+        .ok()
+        .and_then(|b| b.parse().ok())
+        .unwrap_or(0);
+    let exec = Tokio::new();
+    let store = Arc::new(open(&exec, Path::new(&path)));
+    let out = Arc::new(Mutex::new(std::io::stdout()));
+    let say = move |line: String| {
+        let mut o = out.lock().unwrap();
+        writeln!(o, "{line}").unwrap();
+        o.flush().unwrap();
+    };
+    let lim = limits();
+    bnap_store_tests::race(4, |w| {
+        for n in 0..u32::MAX {
+            let cred = base + u32::try_from(w).unwrap() * 1_000_000 + n;
+            let r = Req::note(cred, &note(cred), 96, 50, Some((u64::MAX, b"everyone")));
+            let t = r.tried();
+            let singles: Vec<String> = t.singles.iter().map(|s| hex(s)).collect();
+            say(format!(
+                "tried {} {}",
+                hex(&t.replay_key.0),
+                singles.join(",")
+            ));
+            let p = scenarios::new(exec.block_on(r.process(&*store)));
+            say(format!("acked {}", hex(&p.replay_key().0)));
+            let status = if n % 3 == 0 {
+                Status::Failed
+            } else {
+                Status::Ok
+            };
+            if n % 3 != 2 {
+                let s = settlement(&p, status, T0 + 1, b"settled");
+                exec.block_on(outcome::settle(&*store, &p, &s, &lim))
+                    .unwrap();
+            }
+        }
+    });
+}
+
+#[test]
+fn a_killed_writer_loses_nothing_it_acknowledged() {
+    use std::io::BufRead;
+    use std::process::{Command, Stdio};
+    let exec = Tokio::new();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("uses.sqlite");
+    for round in 0..3u32 {
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "killed_writer_child", "--ignored", "--nocapture"])
+            .env("BNAP_N5_CHILD_DB", &path)
+            .env("BNAP_N5_CHILD_BASE", (round * 10_000).to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("the writer starts");
+        let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        let (mut tried, mut acked) = (Vec::new(), Vec::new());
+        while acked.len() < 60 {
+            let Some(Ok(line)) = lines.next() else {
+                panic!(
+                    "the writer stopped on its own after {} admissions",
+                    acked.len()
+                );
+            };
+            if let Some(rest) = line.strip_prefix("tried ") {
+                let (rk, singles) = rest.split_once(' ').unwrap();
+                tried.push(Tried {
+                    replay_key: ReplayKey(unhex32(rk)),
+                    singles: singles.split(',').map(unhex32).collect(),
+                });
+            } else if let Some(rk) = line.strip_prefix("acked ") {
+                acked.push(ReplayKey(unhex32(rk)));
+            }
+        }
+        // SIGKILL: no destructor, no rollback, mid-write for some threads.
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        let store = open(&exec, &path);
+        let d = dump(&exec, &store);
+        check_consistent(&d, &tried);
+        let committed: Vec<ReplayKey> = d.outcomes.iter().map(|(rk, _)| *rk).collect();
+        for rk in &acked {
+            assert!(
+                committed.contains(rk),
+                "an acknowledged commit survives a kill"
+            );
+        }
         exec.block_on(store.close());
     }
 }
