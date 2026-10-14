@@ -356,6 +356,15 @@ impl SignedMessage for Message<'_> {
     }
 }
 
+/// Runs every key-free check of the scheme on raw body bytes: the body
+/// record rules, then the Signature-Input and Signature fields. A fuzzing
+/// entry point; not part of the stable API.
+#[doc(hidden)]
+#[must_use]
+pub fn fuzz_check_body(bytes: &[u8]) -> bool {
+    WbaBody::parse(bytes).is_ok_and(|b| parse(&b).is_ok())
+}
+
 /// `httpsig:web-bot-auth`: a Web Bot Auth signature (RFC 9421, profiled by
 /// draft-ietf-webbotauth-httpsig-protocol-00) whose covered components
 /// include `bnap-context`, the Context, which makes it class A.

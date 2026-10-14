@@ -1,0 +1,58 @@
+# Weekly fuzzing of every parser that takes untrusted bytes.
+#
+# The targets live in fuzz/ (a cargo-fuzz workspace outside the main one,
+# nightly only). Each target runs briefly here; a crash fails the job and
+# its reproducer is uploaded. Turn every crash into a regression test in
+# the owning crate (see SECURITY-REVIEW.md).
+
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - tlv_bigsize
+          - offer
+          - credential
+          - response
+          - manifest
+          - notes_wire
+          - l402_token
+          - mpp_credential
+          - dpop_jwt
+          - webbotauth_input
+          - mcp_meta
+          - signer_ipc
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install nightly and cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo +nightly install cargo-fuzz --locked
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Run ${{ matrix.target }} for 5 minutes
+        working-directory: fuzz
+        run: cargo +nightly fuzz run -O ${{ matrix.target }} -- -max_total_time=300 -rss_limit_mb=2048
+      - name: Upload the reproducer
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}

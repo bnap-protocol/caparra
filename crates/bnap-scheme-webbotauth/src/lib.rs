@@ -37,6 +37,8 @@ pub use directory::{
     AgentType, DirectoryError, KeyDirectory, KeyQuery, SignatureAgent, StaticDirectory, keyid,
     thumbprint,
 };
+#[doc(hidden)]
+pub use scheme::fuzz_check_body;
 pub use scheme::{CONTEXT_FIELD, DEFAULT_MAX_LIFETIME, ID, LABEL, TAG, WebBotAuthScheme};
 
 /// Scheme codes, the part after `httpsig:web-bot-auth/`.
