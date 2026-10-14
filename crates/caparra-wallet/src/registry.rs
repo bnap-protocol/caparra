@@ -60,9 +60,10 @@ struct RawExport {
 #[derive(Deserialize)]
 struct RawScheme {
     kind: String,
-    binding: String,
-    #[serde(rename = "use")]
-    use_model: String,
+    #[serde(default)]
+    binding: Option<String>,
+    #[serde(rename = "use", default)]
+    use_model: Option<String>,
     #[serde(default)]
     refund: Option<String>,
     #[serde(default)]
@@ -83,20 +84,25 @@ impl Registry {
         let raw: RawExport = serde_json::from_str(json).map_err(|e| e.to_string())?;
         let mut schemes = BTreeMap::new();
         for (id, s) in raw.schemes {
+            // Entries that do not fit the socket ("does-not-fit") carry no
+            // binding class or use model; the wallet never pays with them.
+            let (Some(binding), Some(use_model)) = (s.binding, s.use_model) else {
+                continue;
+            };
             let kind = match s.kind.as_str() {
                 "credential" => PartKind::Credential,
                 "attestation" => PartKind::Attestation,
                 other => return Err(format!("{id}: unknown kind {other}")),
             };
-            let binding = BindingClass::from_str(&s.binding)
-                .map_err(|_| format!("{id}: unknown binding {}", s.binding))?;
+            let binding = BindingClass::from_str(&binding)
+                .map_err(|_| format!("{id}: unknown binding {binding}"))?;
             schemes.insert(
                 id.clone(),
                 SchemeEntry {
                     id,
                     kind,
                     binding,
-                    use_model: s.use_model,
+                    use_model,
                     refund: s.refund,
                     vector: s.vector,
                     verifiers: s.verifiers,
