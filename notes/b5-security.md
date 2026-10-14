@@ -90,6 +90,7 @@ no access to the others: (a) money path, (b) cryptography and parsing,
 | C7 | bnap-signer-file | LOW | `crates/bnap-signer-file/src/keyfile.rs:120` | Symlink check and open are two lookups (no `O_NOFOLLOW`); the owner is not checked. Secrecy holds (mode read from the descriptor); integrity against a writable directory does not | Open with `O_NOFOLLOW`, require the owner to be the process uid |
 | C8 | bnap-rail-phoenixd | LOW | `crates/bnap-rail-phoenixd/src/lib.rs:310` | `PHOENIXD_URL` may be any `http://` URL, so basic auth can go in clear text off the host | Require https unless the host is loopback |
 | C9 | bnap-store-sqlite | LOW | `crates/bnap-store-sqlite` (open) | The gate's use-store file and WAL get the umask mode (receipts, kept answers; no key material) | Create 0600 as in C1 |
+| C10 | caparra-wallet | LOW | `crates/caparra-wallet/src/store.rs` (`Store::create`) | If create fails after the file is made (connect or KDF error), an empty `wallet.db` stays and a retry answers WalletExists (also true before the C1 fix, through `create_if_missing`). Found by the checker | Remove the file when create fails before the first commit |
 
 Already documented elsewhere and not repeated: the offer-minting flood
 that can evict cached MPP-native offers (`notes/n9b.md`), the NWC URI on
@@ -113,4 +114,22 @@ nonces).
 
 ## Quality gate
 
-CHECKER_PLACEHOLDER
+Round 1 (independent checker, no access to the maker's reasoning):
+**PASS**. No further round was needed.
+
+- A1, A2 and C1: each regression test fails with the fix reverted
+  (`flows.rs:666` Unpaid on an msat rail; `findings.rs:266` ledger 1 against
+  22; `store.rs:406` "db-wal is readable by others") and passes with it.
+- Fix diffs reviewed: A1 accepts neither an underpayment (99,999 msat
+  against 100 sat stays Unpaid) nor an unknown unit; A2 over-counts only
+  when change exceeds the held face (documented, conservative); C1 keeps
+  existing wallets opening and tightens their modes. Non-unix fallbacks
+  were read, not compiled (only the linux target was installed).
+- Fuzz: all twelve targets re-run 2 minutes each, no crash.
+- `cargo test --workspace --locked`: 626 passed, 0 failed, 1 ignored.
+  `cargo clippy --workspace --all-targets --locked -- -D warnings`: clean.
+  `cargo fmt --all --check`: clean.
+- New findings: none at HIGH or MEDIUM; one LOW (C10 above).
+
+Docker was not available: the postgres store and regtest rail tests that
+need it were not run here.

@@ -78,7 +78,7 @@ The corpora started empty. The Offer, Credential and Response targets mostly hit
 | --- | --- | --- |
 | HIGH | 0 | |
 | MEDIUM | 3 | fixed, with regression tests |
-| LOW | 14 | recorded for follow-up (`notes/b5-security.md`) |
+| LOW | 15 | recorded for follow-up (`notes/b5-security.md`) |
 
 ### MEDIUM
 
@@ -105,7 +105,7 @@ The corpora started empty. The Offer, Credential and Response targets mostly hit
 
 ### LOW
 
-Fourteen LOW findings are listed with file, line and suggested fix in
+Fifteen LOW findings are listed with file, line and suggested fix in
 `notes/b5-security.md`, ready to file as issues. In short:
 
 - **Carrier:** two MCP carrier conformance gaps. The FAILED settle is not
@@ -126,6 +126,8 @@ Fourteen LOW findings are listed with file, line and suggested fix in
 - **Transport:** phoenixd basic auth allowed over plain http.
 - **Store file mode:** the sqlite use store is created with the umask's
   mode.
+- **Wallet create:** a failed `Store::create` leaves an empty wallet file
+  behind.
 
 ## Areas found sound
 
