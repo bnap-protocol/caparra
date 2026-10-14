@@ -190,6 +190,12 @@ dependencies = [
 [[package]]
 name = "bnap-rail-fake"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bnap-core",
+ "bnap-plug",
+ "hex",
+]
 
 [[package]]
 name = "bnap-rail-lnd"
