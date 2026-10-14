@@ -179,9 +179,15 @@ pub fn block_on<F: Future>(f: F) -> F::Output {
 }
 
 /// Conformance scenarios for any [`UseStore`]: the rules of
-/// [`crate::store::logic`] as a gate observes them through the trait,
-/// including the counter limit under concurrent commits, which only a
-/// serializable commit transaction keeps.
+/// [`crate::store::logic`] as a gate observes them through the trait, one
+/// call at a time and concurrently. The concurrent scenarios release
+/// several threads together behind a barrier, round after round, on every
+/// write of the money path: commits of one plan, commits sharing a single,
+/// commits against one counter, settles racing the timeout on an outcome
+/// that shares its rate counter with another, and refunds of one timed-out
+/// outcome. Only a store whose every method decides and writes in one
+/// serializable step passes them; the tests of this module show a store
+/// that splits any one of those writes in two failing.
 ///
 /// A durable store's test suite runs [`conformance::run`] with a fresh,
 /// empty store per scenario and an [`conformance::Executor`] for its
@@ -203,12 +209,16 @@ pub mod conformance {
     use crate::response::Status;
     use crate::schnorr::Key;
     use crate::store::{
-        Commit, CommitPlan, OutcomeStatus, RefundRequest, SchemeUses, Settle, SettleRequest,
-        Settlement, SweepWindow, UseModel, UseStore, Uses,
+        Commit, CommitPlan, OutcomeRecord, OutcomeStatus, RefundRequest, SchemeUses, Settle,
+        SettleRequest, Settlement, SweepWindow, UseModel, UseStore, Uses,
     };
 
     const T0: u64 = 1_791_700_000;
     const TIMEOUT: u64 = 300;
+    /// Calls released together in each concurrent round.
+    const THREADS: usize = 8;
+    /// Rounds of each concurrent scenario, each on fresh outcomes.
+    const ROUNDS: u8 = 10;
 
     /// Runs a store's futures to completion on the calling thread. The
     /// concurrent scenario calls it from several threads at once.
@@ -230,6 +240,13 @@ pub mod conformance {
     /// A plan for credential `c` naming single IDs `singles` and, with
     /// `rate`, a rate counter of `k` per minute on the identity "client".
     fn plan(c: u8, singles: &[&[u8]], rate: Option<u64>, now: u64) -> CommitPlan {
+        plan_on(c, singles, rate.map(|k| (k, &b"client"[..])), now)
+    }
+
+    /// A plan for credential `c` naming single IDs `singles` and, with
+    /// `rate = (k, identity)`, a rate counter of `k` per minute on that
+    /// identity.
+    fn plan_on(c: u8, singles: &[&[u8]], rate: Option<(u64, &[u8])>, now: u64) -> CommitPlan {
         let mut o = OfferFields::new(Scope([1; 32]), now + 300, Key([9; 32]), [0; 16]);
         o.pay.push(PayEntry::new("bnap:notes", 0, "sat"));
         let admission = pricing::admit(
@@ -248,13 +265,13 @@ pub mod conformance {
         )
         .expect("a price of 0 admits");
         let notes: Vec<Vec<u8>> = singles.iter().map(|s| s.to_vec()).collect();
-        let client = [b"client".to_vec()];
+        let client = [rate.map_or_else(Vec::new, |(_, id)| id.to_vec())];
         let mut schemes = vec![SchemeUses {
             scheme: "bnap:notes",
             model: UseModel::Single,
             local_ids: &notes,
         }];
-        if let Some(k) = rate {
+        if let Some((k, _)) = rate {
             schemes.push(SchemeUses {
                 scheme: "vnd.example",
                 model: UseModel::Rate { k, epoch: 60 },
@@ -289,13 +306,51 @@ pub mod conformance {
             .unwrap()
     }
 
+    /// `outcome[rk]`, which must exist.
+    fn outcome<S: UseStore + ?Sized>(
+        store: &S,
+        exec: &impl Executor,
+        rk: &ReplayKey,
+    ) -> OutcomeRecord {
+        exec.block_on(store.outcome(rk))
+            .unwrap()
+            .expect("the outcome record exists")
+    }
+
+    /// Runs `f(0)` to `f(n - 1)` on `n` threads that a barrier releases
+    /// together, and returns what each returned, in order.
+    fn race<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+        let barrier = Barrier::new(n);
+        std::thread::scope(|s| {
+            let handles: Vec<_> = (0..n)
+                .map(|i| {
+                    let (barrier, f) = (&barrier, &f);
+                    s.spawn(move || {
+                        barrier.wait();
+                        f(i)
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        })
+    }
+
+    /// A sweep window past [`TIMEOUT`] for outcomes committed at `T0`.
+    fn past_the_deadline() -> SweepWindow {
+        SweepWindow::from_parts(T0 + TIMEOUT + 1, T0 + 1, 0)
+    }
+
     /// Runs every scenario, each on a store from `make`. Panics on the
     /// first rule a store breaks.
     pub fn run<S: UseStore>(make: impl Fn() -> S, exec: &impl Executor) {
         commit_is_all_or_nothing(&make(), exec);
         counters_hold_their_limit_under_concurrent_commits(&make(), exec);
+        concurrent_commits_of_one_plan_make_one_outcome(&make(), exec);
+        concurrent_commits_sharing_a_single_spend_it_once(&make(), exec);
         settle_changes_the_status_once(&make(), exec);
+        settle_and_timeout_race_to_one_transition(&make(), exec);
         timeout_and_refund(&make(), exec);
+        concurrent_refunds_record_once(&make(), exec);
         purge_keeps_what_must_stay(&make(), exec);
     }
 
@@ -358,6 +413,79 @@ pub mod conformance {
         assert_eq!(exec.block_on(store.counter(&key)).unwrap(), 3);
     }
 
+    /// 6.3, concurrently: [`THREADS`] copies of one plan, committed
+    /// together. One is New and the rest are replays of its PENDING record;
+    /// its rate counter is incremented once.
+    pub fn concurrent_commits_of_one_plan_make_one_outcome<S: UseStore + ?Sized>(
+        store: &S,
+        exec: &impl Executor,
+    ) {
+        for round in 0..ROUNDS {
+            let id = [&b"copies "[..], &[round]].concat();
+            let p = plan_on(round, &[&[b'c', round]], Some((100, &id)), T0);
+            let answers = race(THREADS, |_| exec.block_on(store.commit(&p)).unwrap());
+            let new = answers.iter().filter(|a| **a == Commit::New).count();
+            assert_eq!(new, 1, "one copy commits: {answers:?}");
+            for a in &answers {
+                if let Commit::Replay(rec) = a {
+                    assert_eq!(rec.status, OutcomeStatus::Pending);
+                } else {
+                    assert_eq!(*a, Commit::New, "the others are replays");
+                }
+            }
+            let key = p.counters()[0].key;
+            assert_eq!(exec.block_on(store.counter(&key)).unwrap(), 1);
+        }
+    }
+
+    /// 6.3, concurrently: [`THREADS`] credentials that share one single ID,
+    /// each with one of its own, committed together. One is New and the
+    /// rest are SPENT, with no record and nothing of theirs consumed.
+    pub fn concurrent_commits_sharing_a_single_spend_it_once<S: UseStore + ?Sized>(
+        store: &S,
+        exec: &impl Executor,
+    ) {
+        for round in 0..ROUNDS {
+            let plans: Vec<CommitPlan> = (0..THREADS)
+                .map(|i| {
+                    let (i, n) = (u8::try_from(i).unwrap(), u8::try_from(THREADS).unwrap());
+                    let c = round * n + i;
+                    plan(c, &[&[b's', round], &[b'o', round, i]], None, T0)
+                })
+                .collect();
+            let answers = race(THREADS, |i| exec.block_on(store.commit(&plans[i])).unwrap());
+            let winners: Vec<usize> = (0..THREADS)
+                .filter(|i| answers[*i] == Commit::New)
+                .collect();
+            assert_eq!(
+                winners.len(),
+                1,
+                "one credential spends the ID: {answers:?}"
+            );
+            for (i, (a, p)) in answers.iter().zip(&plans).enumerate() {
+                if i == winners[0] {
+                    continue;
+                }
+                assert!(
+                    matches!(a, Commit::Spent { .. }),
+                    "the others are SPENT: {a:?}"
+                );
+                assert!(
+                    exec.block_on(store.outcome(p.replay_key()))
+                        .unwrap()
+                        .is_none()
+                );
+                let own = u8::try_from(i).unwrap();
+                let reuse = plan(200 + own, &[&[b'o', round, own]], None, T0);
+                assert_eq!(
+                    exec.block_on(store.commit(&reuse)).unwrap(),
+                    Commit::New,
+                    "a SPENT commit consumed nothing of its own"
+                );
+            }
+        }
+    }
+
     /// 6.4: the status leaves PENDING once; FAILED gives the counters back;
     /// a settle past `pending_timeout` times the outcome out.
     pub fn settle_changes_the_status_once<S: UseStore + ?Sized>(store: &S, exec: &impl Executor) {
@@ -395,6 +523,108 @@ pub mod conformance {
             settle(store, exec, &settlement(&unknown, Status::Ok, T0 + 1)),
             Settle::Unknown
         );
+    }
+
+    /// What one call of [`settle_and_timeout_race_to_one_transition`] got.
+    #[derive(Debug)]
+    enum Raced {
+        /// A settle with this status, and the store's answer.
+        Settle(Status, Settle),
+        /// A sweep; true when it timed the outcome out.
+        Expire(bool),
+    }
+
+    /// 6.4, concurrently (security review, store leads b and d): one PENDING
+    /// outcome shares a rate counter with an OK one. Round after round,
+    /// [`THREADS`] calls race behind a barrier: half settle it, OK and
+    /// FAILED, at its deadline (`created + TIMEOUT`, still in time), half
+    /// sweep past the deadline, the roles rotating each round. Exactly one call moves the outcome, and the
+    /// record is what that call wrote; every refused settle sees that
+    /// record; the counter is given back exactly once when the outcome ends
+    /// FAILED and never when it ends OK, so the OK outcome keeps its count.
+    /// A store whose settle or timeout decides on a snapshot and writes in a
+    /// second step fails here.
+    pub fn settle_and_timeout_race_to_one_transition<S: UseStore + ?Sized>(
+        store: &S,
+        exec: &impl Executor,
+    ) {
+        for round in 0..ROUNDS {
+            let id = [&b"racer "[..], &[round]].concat();
+            let ok = plan_on(2 * round, &[&[b'k', round]], Some((5, &id)), T0);
+            let pending = plan_on(2 * round + 1, &[&[b'p', round]], Some((5, &id)), T0);
+            let key = pending.counters()[0].key;
+            assert_eq!(ok.counters()[0].key, key, "one shared counter");
+            exec.block_on(store.commit(&ok)).unwrap();
+            settle(store, exec, &settlement(&ok, Status::Ok, T0 + 1));
+            exec.block_on(store.commit(&pending)).unwrap();
+            assert_eq!(exec.block_on(store.counter(&key)).unwrap(), 2);
+            // The roles rotate each round, so the thread a barrier releases
+            // first is a settle in one round and a sweep in the next.
+            let raced = race(THREADS, |i| {
+                if (i + usize::from(round)) % 2 == 0 {
+                    let status = if (i / 2) % 2 == 0 {
+                        Status::Ok
+                    } else {
+                        Status::Failed
+                    };
+                    let s = settlement(&pending, status, T0 + TIMEOUT);
+                    Raced::Settle(status, settle(store, exec, &s))
+                } else {
+                    let expired = exec
+                        .block_on(store.expire_pending(&past_the_deadline()))
+                        .unwrap();
+                    Raced::Expire(expired.contains(pending.replay_key()))
+                }
+            });
+            let rec = outcome(store, exec, pending.replay_key());
+            one_transition(&raced, &rec);
+            let given_back = u64::from(rec.status == OutcomeStatus::Failed);
+            assert_eq!(
+                exec.block_on(store.counter(&key)).unwrap(),
+                2 - given_back,
+                "the counter is given back once on FAILED, never on OK: {rec:?}"
+            );
+            assert_eq!(
+                outcome(store, exec, ok.replay_key()).status,
+                OutcomeStatus::Ok
+            );
+        }
+    }
+
+    /// Exactly one of `raced` moved the outcome, and `rec` is what it wrote.
+    fn one_transition(raced: &[Raced], rec: &OutcomeRecord) {
+        let mut won = raced.iter().filter_map(|r| match r {
+            Raced::Settle(status, Settle::Settled(after)) => Some((*status, after)),
+            _ => None,
+        });
+        let settled = won.next();
+        let expired = raced
+            .iter()
+            .filter(|r| matches!(r, Raced::Expire(true)))
+            .count();
+        assert!(won.next().is_none(), "two settles won: {raced:?}");
+        assert_eq!(
+            usize::from(settled.is_some()) + expired,
+            1,
+            "exactly one transition: {raced:?}"
+        );
+        if let Some((status, after)) = settled {
+            assert_eq!(after, rec, "the record is the winning settle's");
+            assert_eq!(rec.status, OutcomeStatus::from(status));
+            assert!(!rec.timed_out);
+        } else {
+            assert_eq!(rec.status, OutcomeStatus::Failed);
+            assert!(rec.timed_out && rec.needs_refund(), "{rec:?}");
+        }
+        for r in raced {
+            match r {
+                Raced::Settle(_, Settle::AlreadySettled(seen)) => {
+                    assert_eq!(seen, rec, "a refused settle sees the record left");
+                }
+                Raced::Settle(_, Settle::Unknown) => panic!("the outcome exists"),
+                _ => {}
+            }
+        }
     }
 
     /// 6.4: the timeout moves only old PENDING records, gives counters back
@@ -435,6 +665,35 @@ pub mod conformance {
         // A record that did not time out takes no refund.
         let young_rec = refund(store, exec, young.replay_key(), b"x");
         assert_eq!(young_rec.scheme_result, None);
+    }
+
+    /// 6.4, concurrently (security review, store lead b): [`THREADS`]
+    /// replays that all found one timed-out outcome's refund missing record
+    /// theirs together, each with a different result. One is written, and
+    /// every call returns the record as stored: no caller is told that its
+    /// own refund was recorded when another one was.
+    pub fn concurrent_refunds_record_once<S: UseStore + ?Sized>(store: &S, exec: &impl Executor) {
+        for round in 0..ROUNDS {
+            let p = plan(round, &[&[b'r', round]], None, T0);
+            exec.block_on(store.commit(&p)).unwrap();
+            let expired = exec
+                .block_on(store.expire_pending(&past_the_deadline()))
+                .unwrap();
+            assert_eq!(expired, vec![*p.replay_key()]);
+            let results: Vec<[u8; 2]> = (0..THREADS)
+                .map(|i| [round, u8::try_from(i).unwrap()])
+                .collect();
+            let answers = race(THREADS, |i| {
+                refund(store, exec, p.replay_key(), &results[i])
+            });
+            let rec = outcome(store, exec, p.replay_key());
+            assert!(rec.refund_recorded && !rec.needs_refund());
+            let written = rec.scheme_result.clone().expect("one refund was written");
+            assert!(results.iter().any(|r| written == r));
+            for a in &answers {
+                assert_eq!(a, &rec, "every caller gets the refund that was recorded");
+            }
+        }
     }
 
     /// Section 12 "Retention", 6.1: purge deletes settled records past the
@@ -484,60 +743,186 @@ mod tests {
         conformance::run(MemoryStore::new, &conformance::Spin);
     }
 
-    /// A store that checks a plan in one locked step and writes it in
-    /// another, as a SQL store would with a `SELECT` and an `UPDATE` outside
-    /// a serializable transaction.
-    struct TwoStep(MemoryStore);
+    /// The write a [`TwoStep`] store splits.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Split {
+        Commit,
+        Settle,
+        Timeout,
+        Refund,
+    }
+
+    /// A store that runs one of its writes in two steps: it decides on a
+    /// snapshot of the tables, then writes what the decision changed in a
+    /// second locked step, as a SQL store would with a `SELECT` and an
+    /// `UPDATE` outside a serializable transaction. Its other methods are
+    /// [`MemoryStore`]'s. Every rule holds when calls come one at a time.
+    struct TwoStep {
+        inner: MemoryStore,
+        split: Split,
+    }
+
+    impl TwoStep {
+        fn new(split: Split) -> Self {
+            Self {
+                inner: MemoryStore::new(),
+                split,
+            }
+        }
+
+        /// Runs `decide` on a snapshot, waits, then writes back every row
+        /// the decision changed, with the values the snapshot gave it.
+        fn two_steps<R>(
+            &self,
+            decide: impl FnOnce(&mut MemoryTable) -> R,
+        ) -> Result<R, StoreError> {
+            let before = self.inner.tx()?.clone();
+            let mut after = before.clone();
+            let r = decide(&mut after);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let mut live = self.inner.tx()?;
+            for (rk, rec) in &after.outcomes {
+                if before.outcomes.get(rk) != Some(rec) {
+                    live.outcomes.insert(*rk, rec.clone());
+                }
+            }
+            for (id, rk) in &after.used {
+                live.used.entry(*id).or_insert(*rk);
+            }
+            for key in before.counters.keys().chain(after.counters.keys()) {
+                if before.counters.get(key) != after.counters.get(key) {
+                    let v = after.counter(key);
+                    live.set_counter(*key, v);
+                }
+            }
+            Ok(r)
+        }
+    }
 
     #[async_trait::async_trait]
     impl UseStore for TwoStep {
         async fn commit(&self, plan: &CommitPlan) -> Result<Commit, StoreError> {
-            let full = {
-                let t = self.0.tx()?;
-                plan.counters()
-                    .iter()
-                    .find(|c| t.counter(&c.key) >= c.limit)
-                    .copied()
-            };
-            if let Some(counter) = full {
-                return Ok(Commit::RateLimited { counter });
+            if self.split == Split::Commit {
+                return self.two_steps(|t| logic::commit(t, plan));
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            let mut t = self.0.tx()?;
-            for c in plan.counters() {
-                let v = t.counter(&c.key);
-                t.set_counter(c.key, v + 1);
-            }
-            t.put_outcome(*plan.replay_key(), OutcomeRecord::pending(plan));
-            Ok(Commit::New)
+            self.inner.commit(plan).await
         }
 
         async fn counter(&self, key: &CounterKey) -> Result<u64, StoreError> {
-            self.0.counter(key).await
+            self.inner.counter(key).await
         }
 
         async fn outcome(&self, rk: &ReplayKey) -> Result<Option<OutcomeRecord>, StoreError> {
-            self.0.outcome(rk).await
+            self.inner.outcome(rk).await
         }
 
         async fn settle(&self, req: &SettleRequest<'_>) -> Result<Settle, StoreError> {
-            self.0.settle(req).await
+            if self.split == Split::Settle {
+                return self.two_steps(|t| logic::settle(t, req));
+            }
+            self.inner.settle(req).await
         }
 
         async fn expire_pending(&self, window: &SweepWindow) -> Result<Vec<ReplayKey>, StoreError> {
-            self.0.expire_pending(window).await
+            if self.split == Split::Timeout {
+                return self.two_steps(|t| logic::expire_pending(t, window));
+            }
+            self.inner.expire_pending(window).await
         }
 
         async fn record_refund(
             &self,
             req: &RefundRequest<'_>,
         ) -> Result<Option<OutcomeRecord>, StoreError> {
-            self.0.record_refund(req).await
+            if self.split == Split::Refund {
+                return self.two_steps(|t| logic::record_refund(t, req));
+            }
+            self.inner.record_refund(req).await
         }
 
         async fn purge(&self, window: &SweepWindow) -> Result<u64, StoreError> {
-            self.0.purge(window).await
+            self.inner.purge(window).await
         }
+    }
+
+    /// True when the scenario `f` panics, as a test does.
+    fn fails(f: impl FnOnce()) -> bool {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err()
+    }
+
+    #[test]
+    fn a_two_step_store_passes_every_scenario_one_call_at_a_time() {
+        // The negative stores below break no rule sequentially, so what
+        // fails them is the concurrency the scenarios add.
+        for split in [Split::Commit, Split::Settle, Split::Timeout, Split::Refund] {
+            let exec = &conformance::Spin;
+            conformance::commit_is_all_or_nothing(&TwoStep::new(split), exec);
+            conformance::settle_changes_the_status_once(&TwoStep::new(split), exec);
+            conformance::timeout_and_refund(&TwoStep::new(split), exec);
+            conformance::purge_keeps_what_must_stay(&TwoStep::new(split), exec);
+        }
+    }
+
+    #[test]
+    fn a_store_that_settles_in_two_steps_fails_conformance() {
+        // The checker's ReadThenWrite store: settle decides on a snapshot
+        // and writes in a second step. The suite used to pass it.
+        let exec = &conformance::Spin;
+        assert!(fails(|| {
+            conformance::settle_and_timeout_race_to_one_transition(
+                &TwoStep::new(Split::Settle),
+                exec,
+            );
+        }));
+        assert!(fails(|| conformance::run(
+            || TwoStep::new(Split::Settle),
+            exec
+        )));
+    }
+
+    #[test]
+    fn a_store_that_times_out_in_two_steps_fails_conformance() {
+        let exec = &conformance::Spin;
+        assert!(fails(|| {
+            conformance::settle_and_timeout_race_to_one_transition(
+                &TwoStep::new(Split::Timeout),
+                exec,
+            );
+        }));
+        assert!(fails(|| conformance::run(
+            || TwoStep::new(Split::Timeout),
+            exec
+        )));
+    }
+
+    #[test]
+    fn a_store_that_records_refunds_in_two_steps_fails_conformance() {
+        let exec = &conformance::Spin;
+        assert!(fails(|| conformance::concurrent_refunds_record_once(
+            &TwoStep::new(Split::Refund),
+            exec
+        )));
+        assert!(fails(|| conformance::run(
+            || TwoStep::new(Split::Refund),
+            exec
+        )));
+    }
+
+    #[test]
+    fn a_store_that_commits_in_two_steps_fails_the_commit_races() {
+        let exec = &conformance::Spin;
+        assert!(fails(|| {
+            conformance::concurrent_commits_of_one_plan_make_one_outcome(
+                &TwoStep::new(Split::Commit),
+                exec,
+            );
+        }));
+        assert!(fails(|| {
+            conformance::concurrent_commits_sharing_a_single_spend_it_once(
+                &TwoStep::new(Split::Commit),
+                exec,
+            );
+        }));
     }
 
     #[test]
@@ -545,13 +930,15 @@ mod tests {
         // Security review, store lead (c): the concurrent counter scenario
         // catches a commit whose check and increment are not one atomic
         // step.
-        let racy = TwoStep(MemoryStore::new());
-        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            conformance::counters_hold_their_limit_under_concurrent_commits(
-                &racy,
-                &conformance::Spin,
-            );
-        }));
-        assert!(caught.is_err(), "a two-step commit must fail the scenario");
+        let racy = TwoStep::new(Split::Commit);
+        assert!(
+            fails(
+                || conformance::counters_hold_their_limit_under_concurrent_commits(
+                    &racy,
+                    &conformance::Spin,
+                )
+            ),
+            "a two-step commit must fail the scenario"
+        );
     }
 }

@@ -733,9 +733,19 @@ impl StoreError {
 /// serializable isolation or a conditional write that re-checks the limit,
 /// lets two commits pass one free slot. Pricing reads counters
 /// ([`Self::counter`]) outside that transaction, so a pricing read may be
-/// stale; the commit's re-check is what bounds every counter. The
-/// conformance scenarios in `test_support::conformance` (feature
-/// `test-support`) test this, concurrently, against any store.
+/// stale; the commit's re-check is what bounds every counter. The same
+/// holds for every write on the money path: [`Self::settle`],
+/// [`Self::expire_pending`] and [`Self::record_refund`] each decide and
+/// write in one step, so a status leaves PENDING once, a counter is given
+/// back once, and one refund is recorded and returned to every caller. A
+/// store that decides on a snapshot and writes in a second statement (a
+/// `SELECT`, then an `UPDATE` that does not re-check the row) breaks each
+/// of these under concurrency. The conformance scenarios in
+/// `test_support::conformance` (feature `test-support`) run every one of
+/// these methods concurrently, behind a barrier, against any store:
+/// commits of one plan and of plans sharing a single, commits against one
+/// counter, settles racing the timeout on an outcome that shares its
+/// counter, and concurrent refunds of one timed-out outcome.
 #[async_trait::async_trait]
 pub trait UseStore: Send + Sync {
     /// 6.3 commit: replay check, then every single ID, then every counter;
