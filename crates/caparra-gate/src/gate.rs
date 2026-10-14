@@ -356,7 +356,7 @@ impl Inner {
             || parts.uri.authority().is_some() && !self.front.is_auth()
         {
             return Admit::Answer(
-                self.answer_error(ri, &err(ErrorCode::Malformed), None, now)
+                self.answer_error(ri, &err(ErrorCode::Malformed), None, None, now)
                     .await,
             );
         }
@@ -388,7 +388,7 @@ impl Inner {
             Ok(s) => s,
             Err(e) => {
                 return Admit::Answer(
-                    self.answer_error(ri, &ErrorObject::from(&e), None, now)
+                    self.answer_error(ri, &ErrorObject::from(&e), None, None, now)
                         .await,
                 );
             }
@@ -398,7 +398,7 @@ impl Inner {
             Ok(c) => c,
             Err(e) => {
                 return Admit::Answer(
-                    self.answer_error(ri, &ErrorObject::from(&e), Some(action_scope), now)
+                    self.answer_error(ri, &ErrorObject::from(&e), Some(action_scope), addr, now)
                         .await,
                 );
             }
@@ -407,7 +407,7 @@ impl Inner {
             Ok(c) => c,
             Err(e) => {
                 return Admit::Answer(
-                    self.answer_error(ri, &ErrorObject::from(&e), None, now)
+                    self.answer_error(ri, &ErrorObject::from(&e), None, None, now)
                         .await,
                 );
             }
@@ -453,12 +453,18 @@ impl Inner {
                 sent_context,
             },
             Err(e) => {
-                return Admit::Answer(self.answer_error(ri, &e, Some(action_scope), now).await);
+                return Admit::Answer(
+                    self.answer_error(ri, &e, Some(action_scope), addr, now)
+                        .await,
+                );
             }
         };
         match self.clone().run_socket(input, now).await {
             Ok(a) => a,
-            Err(e) => Admit::Answer(self.answer_error(ri, &e, Some(action_scope), now).await),
+            Err(e) => Admit::Answer(
+                self.answer_error(ri, &e, Some(action_scope), addr, now)
+                    .await,
+            ),
         }
     }
 
@@ -485,14 +491,15 @@ impl Inner {
         ri: usize,
         e: &ErrorObject,
         action_scope: Option<Scope>,
+        addr: Option<IpAddr>,
         now: u64,
     ) -> Answer {
         let fresh = e.socket_code().is_some_and(ErrorCode::sends_fresh_offer);
         let r = match (fresh, action_scope) {
             (true, Some(scope)) => {
-                // A fresh offer never mints invoices here: only the route
-                // offer and offers without natives (bounded work).
-                let offers = self.offers(ri, scope, None, None, now, false).await;
+                // Offers with natives count against the address's mint
+                // limit, as in a 402 for a request without a credential.
+                let offers = self.offers(ri, scope, addr, None, now, true).await;
                 let (offers, natives) = match offers {
                     Ok(o) => o,
                     Err(e2) => return self.auth_status(error_response(&self.carrier, &e2)),
