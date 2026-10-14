@@ -519,11 +519,10 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.23.1",
  "caparra-wallet",
  "clap",
  "rmcp",
- "rpassword",
- "schemars 1.2.3",
  "serde",
  "serde_json",
  "tempfile",
