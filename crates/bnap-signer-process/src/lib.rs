@@ -6,6 +6,12 @@
 //! holds a [`ProcessSigner`], which implements [`bnap_plug::Signer`] by
 //! asking that process. No key ever crosses the socket.
 //!
+//! Both sides require the socket's directory to have no group or other
+//! write bit (a sticky `/tmp` is refused), and the client talks only to a
+//! process running as the signer's user
+//! ([`ProcessSigner::with_signer_uid`]), so another local user cannot
+//! answer in the signer's place while it is down.
+//!
 //! # Only messages bnap-core built
 //!
 //! A sealed [`bnap_core::CoreMessage`] cannot cross a process boundary, so

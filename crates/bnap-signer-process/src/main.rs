@@ -5,7 +5,8 @@
 //! ```
 //!
 //! The key file must be mode `0600` or stricter; the socket is created mode
-//! `0600` in a directory others cannot write. Logs go to stderr (filter
+//! `0600` in a directory the group and others cannot write (a sticky one
+//! such as `/tmp` is refused). Logs go to stderr (filter
 //! with `RUST_LOG`) and never hold a secret or a request's contents.
 //! SIGINT or SIGTERM stops it and removes the socket.
 
