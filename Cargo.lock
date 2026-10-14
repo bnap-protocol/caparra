@@ -267,6 +267,12 @@ version = "0.0.0"
 [[package]]
 name = "bnap-store-postgres"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bnap-core",
+ "sqlx",
+ "tokio",
+]
 
 [[package]]
 name = "bnap-store-sqlite"
