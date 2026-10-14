@@ -30,7 +30,7 @@ use bnap_core::store::{
 use bnap_core::test_support::conformance::Executor;
 use bnap_core::{ReplayKey, Status, VerifiedAttest};
 
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use crate::{Tried, race};
 
@@ -641,36 +641,44 @@ pub fn change_reservations_keep_one_total<S: UseStore + ?Sized>(store: &S, exec:
     }
 }
 
-/// One gate instance's loop for the crash tests: admit fresh credentials
-/// (all counting against one shared rate counter), then settle OK, reserve
-/// change and settle OK, settle FAILED, or leave the outcome PENDING, and
-/// sweep now and then. Every admitted `ReplayKey` goes to `acked` once
-/// `process` returned it, every credential to `tried` before it is
-/// presented. Returns at the first [`bnap_core::StoreError`] (a connection
-/// the test killed); any other surprise panics.
-pub async fn gate<S: UseStore + ?Sized>(
-    store: Arc<S>,
-    gate_no: u32,
-    tried: Arc<Mutex<Vec<Tried>>>,
-    acked: Arc<Mutex<Vec<ReplayKey>>>,
-) {
+/// What the gate loops of [`gate`] saw, for the checks after them.
+#[derive(Debug, Clone, Default)]
+pub struct Log {
+    /// Every credential, logged before it is presented.
+    pub tried: Vec<Tried>,
+    /// Every `ReplayKey` `process` admitted, logged once it returned.
+    pub acked: Vec<ReplayKey>,
+    /// Every record a settle returned as `Ok`: the call that moved it.
+    pub settled: Vec<(ReplayKey, OutcomeRecord)>,
+    /// Every outcome a sweep reported timing out.
+    pub timed_out: Vec<ReplayKey>,
+}
+
+/// One gate instance's loop, `rounds` times: admit a fresh credential (all
+/// of them count against one shared rate counter), then settle it OK,
+/// reserve change and settle it OK, settle it FAILED, or leave it PENDING,
+/// and now and then sweep past every deadline, which times out whatever is
+/// still PENDING. What it sees goes to `log`. Returns at the first
+/// [`bnap_core::StoreError`] (a connection a crash test killed); any other
+/// surprise panics.
+pub async fn gate<S: UseStore + ?Sized>(store: &S, gate_no: u32, rounds: u32, log: &Mutex<Log>) {
     let lim = limits();
-    for n in 0..u32::MAX {
+    for n in 0..rounds {
         let cred = gate_no * 1_000_000 + n;
         let req = Req::note(cred, &note(cred), 96, 50, Some((u64::MAX, b"everyone")));
-        tried.lock().unwrap().push(req.tried());
-        let p = match req.process(&*store).await {
+        log.lock().unwrap().tried.push(req.tried());
+        let p = match req.process(store).await {
             Ok(Admitted::New(p)) => p,
             Err(ProcessError::Store(_)) => return,
             other => panic!("a fresh credential is admitted: {other:?}"),
         };
-        acked.lock().unwrap().push(*p.replay_key());
+        log.lock().unwrap().acked.push(*p.replay_key());
         let s = match n % 4 {
             0 => Some(settlement(&p, Status::Ok, T0 + 1, b"ok")),
             1 => {
                 let ok = p.charge(Status::Ok, 0);
                 let outs = [output(1, 0, 32), output(1, 1, 8), output(1, 2, 4)];
-                if outcome::reserve_change(&*store, ok.cap(), &outs)
+                if outcome::reserve_change(store, ok.cap(), &outs)
                     .await
                     .is_err()
                 {
@@ -682,19 +690,76 @@ pub async fn gate<S: UseStore + ?Sized>(
             _ => None,
         };
         if let Some(s) = s {
-            match outcome::settle(&*store, &p, &s, &lim).await {
-                Ok(_) | Err(SettleError::AlreadySettled(_)) => {}
+            match outcome::settle(store, &p, &s, &lim).await {
+                Ok(won) => {
+                    let rec = won.record().clone();
+                    log.lock().unwrap().settled.push((*p.replay_key(), rec));
+                }
+                Err(SettleError::AlreadySettled(_)) => {}
                 Err(SettleError::Store(_)) => return,
                 Err(e) => panic!("{e:?}"),
             }
         }
-        if n % 9 == 8
-            && outcome::sweep(&*store, T0 + lim.pending_timeout + 1, &lim)
-                .await
-                .is_err()
-        {
-            return;
+        if n % 9 == 8 {
+            match outcome::sweep(store, T0 + lim.pending_timeout + 1, &lim).await {
+                Ok(sw) => log.lock().unwrap().timed_out.extend(sw.timed_out),
+                Err(_) => return,
+            }
         }
+    }
+}
+
+/// Gate instances under mixed load: eight [`gate`] loops of 60 rounds run
+/// at once on one store, admitting, settling, reserving change and
+/// sweeping, with no barrier but much overlap. Afterwards every outcome
+/// was moved by exactly one call, and is what that call wrote: a record a
+/// settle returned is the final record and no sweep timed it out; a record
+/// a sweep timed out is FAILED and `timed_out`; a record no call moved is
+/// still PENDING. The shared rate counter equals the outcomes that are not
+/// FAILED, and every change total is its outputs. A store that settles or
+/// times out on a stale read, or loses a give-back, fails here even when
+/// its lock is unfair enough that barrier races rarely interleave (SQLite's
+/// busy handler favours the connection that just committed).
+pub fn mixed_load_moves_each_outcome_once<S: UseStore + ?Sized>(store: &S, exec: &impl Executor) {
+    let log = Mutex::new(Log::default());
+    race(8, |i| exec.block_on(gate(store, 500 + idx(i), 60, &log)));
+    audit(store, exec, &log.into_inner().unwrap());
+}
+
+/// The checks of [`mixed_load_moves_each_outcome_once`] over a `log` of
+/// gates that ran to the end.
+pub fn audit<S: UseStore + ?Sized>(store: &S, exec: &impl Executor, log: &Log) {
+    use std::collections::{BTreeMap, BTreeSet};
+    let settled: BTreeMap<ReplayKey, &OutcomeRecord> =
+        log.settled.iter().map(|(rk, r)| (*rk, r)).collect();
+    assert_eq!(
+        settled.len(),
+        log.settled.len(),
+        "one settle wins each outcome"
+    );
+    let timed_out: BTreeSet<ReplayKey> = log.timed_out.iter().copied().collect();
+    assert_eq!(timed_out.len(), log.timed_out.len(), "each times out once");
+    let mut live = 0;
+    for rk in &log.acked {
+        let rec = record(store, exec, rk);
+        let sum: u64 = rec.change_outputs.iter().map(|o| o.amount).sum();
+        assert_eq!(rec.change_total, sum, "{rec:?}");
+        assert!(rec.change_total <= rec.refund_cap, "{rec:?}");
+        match (settled.get(rk), timed_out.contains(rk)) {
+            (Some(won), false) => assert_eq!(*won, &rec, "the settle's record stays"),
+            (None, true) => assert!(rec.timed_out && rec.status == OutcomeStatus::Failed),
+            (None, false) => assert_eq!(rec.status, OutcomeStatus::Pending, "{rec:?}"),
+            (Some(won), true) => panic!("settled {won:?} and timed out: {rec:?}"),
+        }
+        live += u64::from(rec.status != OutcomeStatus::Failed);
+    }
+    if let Some(rk) = log.acked.first() {
+        let key = record(store, exec, rk).counters[0];
+        assert_eq!(
+            exec.block_on(store.counter(&key)).unwrap(),
+            live,
+            "the shared counter counts the outcomes that are not FAILED"
+        );
     }
 }
 
@@ -706,6 +771,7 @@ pub fn run<S: UseStore>(make: impl Fn() -> S, exec: &impl Executor) {
     concurrent_replays_get_one_answer(&make(), exec);
     counters_never_pass_their_limit(&make(), exec);
     change_reservations_keep_one_total(&make(), exec);
+    mixed_load_moves_each_outcome_once(&make(), exec);
 }
 
 fn idx(i: usize) -> u32 {

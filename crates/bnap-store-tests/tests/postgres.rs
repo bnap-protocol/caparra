@@ -16,6 +16,7 @@ use bnap_core::store::UseStore;
 use bnap_core::test_support::conformance::{self, Executor};
 use bnap_core::{CounterKey, ReplayKey, Status};
 use bnap_store_postgres::{PostgresConfig, PostgresStore};
+use bnap_store_tests::scenarios::Log;
 use bnap_store_tests::scenarios::{self, Req, T0, limits, note, settlement};
 use bnap_store_tests::{Dump, Held, Tokio, check_consistent};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -258,6 +259,13 @@ fn change_reservations_keep_one_total() {
 }
 
 #[test]
+fn mixed_load_moves_each_outcome_once() {
+    let Some(url) = database_url() else { return };
+    let exec = Tokio::new();
+    scenarios::mixed_load_moves_each_outcome_once(&fresh(&exec, &url), &exec);
+}
+
+#[test]
 fn the_schema_is_applied_once_and_a_store_reconnects() {
     let Some(url) = database_url() else { return };
     let exec = Tokio::new();
@@ -292,22 +300,19 @@ fn a_pool_dropped_mid_transaction_leaves_a_consistent_store() {
     for round in 0..3 {
         let store = Arc::new(schema.open(&exec));
         let pool = store.pool().clone();
-        let tried = Arc::new(Mutex::new(Vec::new()));
-        let acked = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::new(Mutex::new(Log::default()));
         let gates: Vec<_> = (0..8)
             .map(|w| {
-                exec.runtime().spawn(scenarios::gate(
-                    Arc::clone(&store),
-                    round * 8 + w,
-                    Arc::clone(&tried),
-                    Arc::clone(&acked),
-                ))
+                let (store, log) = (Arc::clone(&store), Arc::clone(&log));
+                exec.runtime().spawn(async move {
+                    scenarios::gate(&*store, round * 8 + w, u32::MAX, &log).await;
+                })
             })
             .collect();
         // Let the gates write, then cut them off while transactions are
         // open, kill their server sessions and drop the pool.
         let start = std::time::Instant::now();
-        while acked.lock().unwrap().len() < 24 && start.elapsed() < Duration::from_secs(60) {
+        while log.lock().unwrap().acked.len() < 24 && start.elapsed() < Duration::from_secs(60) {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(
@@ -349,13 +354,13 @@ fn a_pool_dropped_mid_transaction_leaves_a_consistent_store() {
 
         let store = schema.open(&exec);
         let d = dump(&exec, &store);
-        let tried = tried.lock().unwrap().clone();
-        check_consistent(&d, &tried);
+        let log = log.lock().unwrap().clone();
+        check_consistent(&d, &log.tried);
         let committed: Vec<ReplayKey> = d.outcomes.iter().map(|(rk, _)| *rk).collect();
-        for rk in acked.lock().unwrap().iter() {
+        for rk in &log.acked {
             assert!(committed.contains(rk), "an acknowledged commit survives");
         }
-        assert!(acked.lock().unwrap().len() >= 24, "the gates got going");
+        assert!(log.acked.len() >= 24, "the gates got going");
         // The reconnected store keeps working.
         let r = Req::note(900_000 + round, &note(900_000 + round), 96, 50, None);
         let p = scenarios::new(exec.block_on(r.process(&store)));
