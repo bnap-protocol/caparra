@@ -283,8 +283,8 @@ through `process`); the small-order key test failed (admitted) before the
 
 ## Status at hand-off
 
-- `cargo-q nextest run -p bnap-scheme-dpop -p bnap-scheme-webbotauth`: 45
-  passed.
+- `cargo-q nextest run -p bnap-scheme-dpop -p bnap-scheme-webbotauth`: 49
+  passed (after repair round 1).
 - `cargo-q clippy -p bnap-scheme-dpop -p bnap-scheme-webbotauth
   --all-targets --locked -- -D warnings`: clean (pedantic, `missing_docs`).
 - `cargo-q fmt --all --check`: clean.
