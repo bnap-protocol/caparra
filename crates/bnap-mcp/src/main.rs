@@ -20,9 +20,10 @@ struct Args {
     /// The wallet file (made with `bnap init`).
     #[arg(long, env = "BNAP_WALLET")]
     wallet: Option<PathBuf>,
-    /// The task this server's payments count against.
-    #[arg(long, env = "BNAP_TASK", default_value = "mcp")]
-    task: String,
+    /// The task this server's payments count against; each run is its own
+    /// task unless a name groups several.
+    #[arg(long, env = "BNAP_TASK")]
+    task: Option<String>,
     /// Serve streamable HTTP at this loopback address instead of stdio.
     #[arg(long)]
     http: Option<SocketAddr>,
@@ -65,7 +66,10 @@ async fn main() -> ExitCode {
         Err(e) => return fail(&e),
     };
     let mut opts = Options::new(Arc::new(transport));
-    opts.task = args.task.clone();
+    opts.task = args
+        .task
+        .clone()
+        .unwrap_or_else(|| format!("mcp-{}", &caparra_wallet::wallet::random_id()[..8]));
     let wallet = match Wallet::open(&path, &pass, &opts).await {
         Ok(w) => Arc::new(w),
         Err(e) => return fail(&e.to_string()),

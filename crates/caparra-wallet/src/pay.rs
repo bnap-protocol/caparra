@@ -298,6 +298,11 @@ struct Plan {
     how: How,
     attest: Vec<String>,
     cand: Candidate,
+    /// The most this plan puts at risk, reserved against the caps: the
+    /// face value of the notes sent (an operator that kept the change
+    /// would keep it all), the quote and its routing fee, or the invoice
+    /// and its routing fee.
+    risk: u64,
 }
 
 struct Ctx<'a> {
@@ -525,6 +530,14 @@ impl Wallet {
             .map(|n| n.amount)
             .sum();
         let keys_ok = self.attest_keys().await.is_ok();
+        let room = policy::remaining(
+            &cx.caps,
+            &self.ledger().await?,
+            &cx.origin,
+            &self.task,
+            self.now(),
+        )
+        .min();
         let has_pay = self.pay_source(cx.cfg).is_some();
         let mut plans = Vec::new();
         let mut refusal: Option<Refusal> = None;
@@ -572,7 +585,7 @@ impl Wallet {
                     fee_sat: fee,
                     linkable,
                 };
-                let plan = |how: How, cand: Candidate| Plan {
+                let plan = |how: How, cand: Candidate, risk: u64| Plan {
                     offer: offer.clone(),
                     scope: *scope,
                     entry: ei,
@@ -581,9 +594,10 @@ impl Wallet {
                     how,
                     attest: attest.clone(),
                     cand,
+                    risk,
                 };
                 if pr == 0 && e.scheme == NOTES {
-                    plans.push(plan(How::AttestOnly, mk(0, 0, false)));
+                    plans.push(plan(How::AttestOnly, mk(0, 0, false), 0));
                     continue;
                 }
                 if e.scheme == NOTES {
@@ -594,12 +608,15 @@ impl Wallet {
                     else {
                         continue;
                     };
+                    // Only notes the caps could lose whole: the face value is
+                    // what a payment puts at risk.
                     let mine: Vec<NoteRecord> = notes
                         .iter()
                         .filter(|n| {
                             n.origin == cx.origin
                                 && n.issuer == params.issuer
                                 && n.state == NoteState::Unspent
+                                && n.amount <= room
                         })
                         .cloned()
                         .collect();
@@ -617,13 +634,15 @@ impl Wallet {
                                 value: sel.value,
                             },
                             mk(pr, input_fee, false),
+                            face,
                         ));
                     } else if has_pay
                         && params.max_fund.is_some_and(|m| m >= pr)
                         && balance.saturating_add(pr) <= p.max_balance_per_origin
                     {
                         // Funding in the 402 links this action to the payment.
-                        plans.push(plan(How::Fund, mk(pr, p.fee.max_fee(pr), true)));
+                        let fee = p.fee.max_fee(pr);
+                        plans.push(plan(How::Fund, mk(pr, fee, true), pr.saturating_add(fee)));
                     } else {
                         refusal.get_or_insert_with(|| {
                             Refusal::new(
@@ -679,30 +698,45 @@ impl Wallet {
                         invoice,
                     },
                     mk(amount, p.fee.max_fee(amount), crate::registry::linkable(&v)),
+                    amount.saturating_add(p.fee.max_fee(amount)),
                 ));
             }
         }
         let ranked = rank::rank(plans.iter().map(|p| p.cand.clone()).collect(), p);
-        let Some(best) = ranked.first() else {
+        if ranked.is_empty() {
             return Err(refusal.unwrap_or_else(|| {
                 Refusal::new(
                     Code::NoOffer,
                     "No offer lists a scheme this wallet can pay with.",
                 )
             }));
-        };
+        }
+        // The best ranked plan whose risk fits every cap.
         let ledger = self.ledger().await?;
-        policy::check(
-            &cx.caps,
-            &ledger,
-            &cx.origin,
-            &self.task,
-            best.cost(),
-            self.now(),
-        )?;
+        let now = self.now();
+        let mut first_refusal = None;
+        let mut best = None;
+        for c in &ranked {
+            let plan = plans
+                .iter()
+                .find(|p| p.cand == *c)
+                .expect("the ranked candidate is one of the plans");
+            match policy::check(&cx.caps, &ledger, &cx.origin, &self.task, plan.risk, now) {
+                Ok(()) => {
+                    best = Some(c.clone());
+                    break;
+                }
+                Err(r) => {
+                    first_refusal.get_or_insert(r);
+                }
+            }
+        }
+        let Some(best) = best else {
+            return Err(first_refusal.expect("a refusal for every candidate"));
+        };
         Ok(plans
             .into_iter()
-            .find(|p| p.cand == *best)
+            .find(|p| p.cand == best)
             .expect("the ranked candidate is one of the plans"))
     }
 
@@ -838,7 +872,7 @@ impl Wallet {
                 &cx.caps,
                 &cx.origin,
                 &id,
-                plan.cand.cost(),
+                plan.risk,
                 &format!("{} {}", cx.base.method, cx.base.url),
             )
             .await?;
@@ -1000,7 +1034,7 @@ impl Wallet {
             &cx.caps,
             &cx.origin,
             &id,
-            plan.cand.cost(),
+            plan.risk,
             &format!("{} {}", cx.base.method, cx.base.url),
         )
         .await?;
@@ -1198,6 +1232,7 @@ impl Wallet {
                 fee_sat: rec.fee_sat,
                 linkable: true,
             },
+            risk: q.amount + max_fee,
         };
         let step = self
             .pay_notes(

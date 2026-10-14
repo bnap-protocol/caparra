@@ -23,9 +23,10 @@ pub struct Cli {
     /// The wallet file.
     #[arg(long, env = "BNAP_WALLET", global = true)]
     pub wallet: Option<PathBuf>,
-    /// The task payments count against (the per-task cap).
-    #[arg(long, env = "BNAP_TASK", default_value = "cli", global = true)]
-    pub task: String,
+    /// The task payments count against (the per-task cap). Each command
+    /// is its own task unless a name groups several.
+    #[arg(long, env = "BNAP_TASK", global = true)]
+    pub task: Option<String>,
     /// Print JSON for scripts.
     #[arg(long, global = true)]
     pub json: bool,
@@ -285,7 +286,10 @@ fn passphrase(confirm: bool) -> Result<Zeroizing<String>, Refusal> {
 fn options(cli: &Cli) -> Result<Options, Refusal> {
     let t = HttpsTransport::new().map_err(Refusal::network)?;
     let mut o = Options::new(Arc::new(t));
-    o.task.clone_from(&cli.task);
+    o.task = cli
+        .task
+        .clone()
+        .unwrap_or_else(|| format!("cli-{}", &caparra_wallet::wallet::random_id()[..8]));
     Ok(o)
 }
 

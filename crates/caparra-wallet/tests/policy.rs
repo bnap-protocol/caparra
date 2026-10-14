@@ -276,3 +276,39 @@ async fn unlinkable_notes_win_over_cheaper_or_earlier_linkable_entries() {
     assert_eq!(r.payment.unwrap().scheme.as_deref(), Some("bnap:notes"));
     assert_eq!(kit.pay.total(), paid_before, "no Lightning payment");
 }
+
+#[tokio::test]
+async fn a_note_worth_more_than_the_cap_is_never_put_at_risk() {
+    let kit = Kit::new();
+    let dir = tempfile::tempdir().unwrap();
+    let w = testkit::wallet(&kit, dir.path(), "t").await;
+    w.fund(ORIGIN, 512, None).await.unwrap();
+    caps(&w, |c| c.per_request = 100).await;
+    // No funding in the 402: the only way to pay is the 512 sat note, and
+    // an operator that kept the change would keep all of it.
+    kit.server.knobs.lock().unwrap().max_fund = None;
+    w.set_policy(|p| {
+        p.max_balance_per_origin = 512;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let e = w
+        .fetch(FetchRequest::post(url("/v1/chat"), b"x".to_vec()))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, Code::InsufficientNotes, "{e}");
+    assert_eq!(w.balances().await.unwrap()[ORIGIN], 512);
+    // With room for the whole note it pays, and the change comes back.
+    caps(&w, |c| c.per_request = 600).await;
+    let r = w
+        .fetch(FetchRequest::post(url("/v1/chat"), b"x".to_vec()))
+        .await
+        .unwrap();
+    let p = r.payment.unwrap();
+    assert_eq!(w.balances().await.unwrap()[ORIGIN], 512 - p.cost_sat);
+    let ledger = w.ledger().await.unwrap();
+    let e = ledger.iter().find(|e| e.what.starts_with("POST")).unwrap();
+    assert_eq!(e.reserved, 512, "the reservation was the face value");
+    assert_eq!(e.actual, Some(p.cost_sat));
+}
