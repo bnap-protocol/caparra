@@ -453,3 +453,87 @@ async fn a_signer_that_is_gone_or_silent_is_unavailable() {
     hold.abort();
     assert_eq!(silent.socket(), Path::new(&path));
 }
+
+fn is_refused<T>(r: Result<T, bnap_plug::SignerError>) -> bool {
+    matches!(r, Err(bnap_plug::SignerError::Refused(_)))
+}
+
+/// A fake signer process that answers every request with `reply`.
+fn fake(dir: &Path, name: &str, reply: Reply) -> (ProcessSigner, tokio::task::JoinHandle<()>) {
+    let path = dir.join(name);
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let task = tokio::spawn(async move {
+        while let Ok((mut s, _)) = listener.accept().await {
+            let reply = reply.clone();
+            tokio::spawn(async move {
+                let mut len = [0u8; 4];
+                if s.read_exact(&mut len).await.is_err() {
+                    return;
+                }
+                let mut body = vec![0u8; usize::try_from(u32::from_be_bytes(len)).unwrap()];
+                let _ = s.read_exact(&mut body).await;
+                let out = bnap_signer_process::wire::encode_reply(reply);
+                let _ = send(&mut s, &out).await;
+            });
+        }
+    });
+    (ProcessSigner::new(path), task)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_client_checks_what_the_process_answers() {
+    let dir = tempfile::tempdir().unwrap();
+    let fx = testkit::fixture();
+
+    // A signature that does not verify over the message.
+    let mut f = OfferFields::new(Scope([1; 32]), 1_999_999_999, fx.offer_key, [0; 16]);
+    f.pay.push(PayEntry::new("bnap:notes", 21, "sat"));
+    let offer = UnsignedOffer::new(&f, Some(&[7; 32])).unwrap();
+    let (bad_sig, t1) = fake(dir.path(), "a.sock", Reply::Signature { sig: [1; 64] });
+    assert!(is_refused(bad_sig.schnorr(offer.message()).await));
+
+    // A Y that is not hash_to_curve(secret).
+    let other_y = bnap_core::note::hash_to_curve(b"another secret").unwrap();
+    let (bad_y, t2) = fake(dir.path(), "b.sock", Reply::Unblinded { y: Some(other_y) });
+    let c = bnap_plug::Point([2; 33]);
+    assert!(is_refused(
+        bad_y
+            .verify_unblinded(&fx.active.id, "sat", 1, b"a secret", &c)
+            .await
+    ));
+
+    // Blind signatures that do not match the outputs, and a reply of the
+    // wrong kind.
+    let one = [testkit::output(1).output];
+    let lim = testkit::limit(Status::Ok, 8);
+    let (short, t3) = fake(
+        dir.path(),
+        "c.sock",
+        Reply::BlindSignatures { sigs: vec![] },
+    );
+    assert!(is_refused(
+        short.blind_sign(&fx.active.id, &one, &lim).await
+    ));
+    let wrong_amount = bnap_signer_process::wire::WireSignature {
+        amount: 2,
+        c: [2; 33],
+        e: [0; 32],
+        s: [0; 32],
+    };
+    let (wrong, t4) = fake(
+        dir.path(),
+        "d.sock",
+        Reply::BlindSignatures {
+            sigs: vec![wrong_amount],
+        },
+    );
+    assert!(is_refused(
+        wrong.blind_sign(&fx.active.id, &one, &lim).await
+    ));
+    let (kind, t5) = fake(dir.path(), "e.sock", Reply::Unblinded { y: None });
+    assert!(is_refused(kind.blind_sign(&fx.active.id, &one, &lim).await));
+    assert!(is_refused(kind.schnorr(offer.message()).await));
+    for t in [t1, t2, t3, t4, t5] {
+        t.abort();
+    }
+}
