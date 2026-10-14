@@ -8,6 +8,8 @@
 //! what the policy forbids; rank by cost; send exactly one value
 //! credential. The wallet never says which schemes it supports.
 
+use std::fmt::Write as _;
+
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bnap_core::credential::{Credential, OfferRef, SchemePart};
@@ -965,6 +967,8 @@ impl Wallet {
             face,
             quote: fund.map(|(q, _)| q.quote.clone()),
             lightning_sat: 0,
+            invoice: None,
+            preimage: None,
             ledger: id.clone(),
             issuer: Some(params.issuer.clone()),
             state: OpState::Sent,
@@ -1006,6 +1010,8 @@ impl Wallet {
             face: 0,
             quote: None,
             lightning_sat: 0,
+            invoice: None,
+            preimage: None,
             ledger: id.clone(),
             issuer: None,
             state: OpState::Sent,
@@ -1051,12 +1057,10 @@ impl Wallet {
                     "The pay source returned a preimage that does not open the invoice. The payment is counted as spent.",
                 ));
             }
-            Err(e) => {
-                self.true_up(&id, Some(0)).await?;
-                return Err(e);
-            }
+            Err(e) => return Err(uncertain(e)),
         };
-        let fee = paid.fee_sat.min(max_fee);
+        // The fee the pay source reports counts in full, ceiling or not.
+        let fee = paid.fee_sat;
         let body = lightning_body(&plan.scheme, challenge, paid.preimage)?;
         let (cred, _ctx, digest) = self
             .build_credential(
@@ -1084,6 +1088,8 @@ impl Wallet {
             face: 0,
             quote: None,
             lightning_sat: amount + fee,
+            invoice: Some(invoice_text.clone()),
+            preimage: Some(paid.preimage),
             ledger: id.clone(),
             issuer: None,
             state: OpState::Sent,
@@ -1207,14 +1213,11 @@ impl Wallet {
                     "The pay source returned a preimage that does not open the invoice. The payment is counted as spent.",
                 ));
             }
-            Err(e) => {
-                self.true_up(&reserve_id, Some(0)).await?;
-                return Err(e);
-            }
+            Err(e) => return Err(uncertain(e)),
         };
         let mut rec = rec;
         rec.state = QuoteState::Paid;
-        rec.fee_sat = paid.fee_sat.min(max_fee);
+        rec.fee_sat = paid.fee_sat;
         self.store.put(kind::QUOTE, &q.quote, &rec).await?;
         let fplan = Plan {
             offer: offer.clone(),
@@ -1410,6 +1413,32 @@ impl Wallet {
         {
             e.actual = Some(actual);
             tx.put(kind::LEDGER, &op.ledger, &e).await?;
+        }
+        // A Lightning payment the server refused stays provable: the
+        // invoice and its preimage are kept as a receipt.
+        if let (Some(invoice), Some(preimage)) = (&op.invoice, op.preimage) {
+            let rec = ReceiptRecord {
+                id: op.id.clone(),
+                kind: ReceiptKind::Native,
+                origin: op.origin.clone(),
+                method: op.request.method.clone(),
+                url: op.request.url.clone(),
+                scheme: op.scheme.clone(),
+                at: self.now(),
+                cost_sat: actual,
+                charged: 0,
+                unit: Some("sat".into()),
+                ok: false,
+                change_ok: true,
+                offer: op.offer.clone(),
+                credential: op.credential.clone(),
+                response: Vec::new(),
+                manifest: Vec::new(),
+                action_scope: op.action_scope,
+                invoice: Some(invoice.clone()),
+                preimage: Some(preimage),
+            };
+            tx.put(kind::RECEIPT, &rec.id, &rec).await?;
         }
         tx.delete(kind::OP, &op.id).await?;
         tx.commit().await
@@ -1689,24 +1718,13 @@ impl Wallet {
                     "The pay source returned a preimage that does not open the invoice. The payment is counted as spent.",
                 ));
             }
-            Err(e) => {
-                self.true_up(&id, Some(0)).await?;
-                return Err(e);
-            }
+            Err(e) => return Err(uncertain(e)),
         };
-        let cost = cand.value_sat + paid.fee_sat.min(cand.fee_sat);
+        let cost = cand.value_sat + paid.fee_sat;
         self.true_up(&id, Some(cost)).await?;
-        let auth = native_authorization(&cand.scheme, &text, paid.preimage)?;
-        let mut req = base.clone();
-        req.headers
-            .retain(|(n, _)| !n.eq_ignore_ascii_case("authorization"));
-        req.headers.push(("Authorization".into(), auth));
-        let resp = self
-            .transport
-            .send(req)
-            .await
-            .map_err(|e| Refusal::network(e).with_paid(cost))?;
-        let rec = ReceiptRecord {
+        // The invoice and its preimage are kept before the paid request
+        // goes out: they prove the payment whatever happens next.
+        let mut rec = ReceiptRecord {
             id: id.clone(),
             kind: ReceiptKind::Native,
             origin: origin.to_owned(),
@@ -1717,16 +1735,29 @@ impl Wallet {
             cost_sat: cost,
             charged: cand.value_sat,
             unit: Some("sat".into()),
-            ok: (200..300).contains(&resp.status),
+            ok: false,
             change_ok: true,
             offer: Vec::new(),
             credential: Vec::new(),
-            response: receipt_bytes(&resp).unwrap_or_default(),
+            response: Vec::new(),
             manifest: Vec::new(),
             action_scope: [0; 32],
             invoice: Some(invoice_text),
             preimage: Some(paid.preimage),
         };
+        self.store.put(kind::RECEIPT, &id, &rec).await?;
+        let auth = native_authorization(&cand.scheme, &text, paid.preimage)?;
+        let mut req = base.clone();
+        req.headers
+            .retain(|(n, _)| !n.eq_ignore_ascii_case("authorization"));
+        req.headers.push(("Authorization".into(), auth));
+        let resp = self.transport.send(req).await.map_err(|e| {
+            let mut r = Refusal::network(e).with_paid(cost);
+            let _ = write!(r.message, " The payment's proof is kept as receipt {id}.");
+            r
+        })?;
+        rec.ok = (200..300).contains(&resp.status);
+        rec.response = receipt_bytes(&resp).unwrap_or_default();
         self.store.put(kind::RECEIPT, &id, &rec).await?;
         Ok(FetchResult {
             status: resp.status,
@@ -1774,7 +1805,15 @@ impl Wallet {
             });
         }
         let quotes: Vec<QuoteRecord> = self.store.list(kind::QUOTE).await?;
-        for q in quotes.iter().filter(|q| q.state == QuoteState::Paid) {
+        for q in &quotes {
+            if q.state == QuoteState::Unpaid {
+                // Paid late, perhaps: mint it if the issuer says so.
+                let _ = self.mint_quote(&q.id).await;
+                continue;
+            }
+            if q.state != QuoteState::Paid {
+                continue;
+            }
             let r = self.mint_quote(&q.id).await.map(|_| None);
             out.push(ResumeOutcome {
                 id: q.id.clone(),
@@ -1783,6 +1822,15 @@ impl Wallet {
         }
         Ok(out)
     }
+}
+
+/// A pay source error: the payment may still settle (a timeout, a hold
+/// invoice), so its reservation stays counted against the caps.
+fn uncertain(mut e: Refusal) -> Refusal {
+    e.message.push_str(
+        " It may still settle, so its reservation stays counted against the caps; `bnap resume` collects a late payment.",
+    );
+    e
 }
 
 /// What resuming one operation gave.

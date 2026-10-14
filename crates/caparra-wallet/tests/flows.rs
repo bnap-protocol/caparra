@@ -247,7 +247,7 @@ async fn restore_from_the_mnemonic_recovers_the_balance() {
     )
     .await
     .unwrap();
-    let rep = b.restore(&[ORIGIN.to_owned()], None).await.unwrap();
+    let rep = b.restore(&[ORIGIN.to_owned()], None, &[]).await.unwrap();
     assert_eq!(rep[0].restored_sat, held);
     assert_eq!(b.balances().await.unwrap()[ORIGIN], held);
     // The restored notes spend (caps with room for the largest note).

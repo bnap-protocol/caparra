@@ -285,12 +285,13 @@ impl Wallet {
                 ));
             }
             Err(e) => {
-                self.true_up(&id, Some(0)).await?;
+                // The payment may still settle: the fee stays reserved and
+                // `resume` mints the quote if it does.
                 return Err(e);
             }
         };
         rec.state = QuoteState::Paid;
-        rec.fee_sat = paid.fee_sat.min(max_fee);
+        rec.fee_sat = paid.fee_sat;
         self.store.put(kind::QUOTE, &q.quote, &rec).await?;
         self.true_up(&id, Some(rec.fee_sat)).await?;
         self.mint_quote(&q.quote).await?;
@@ -311,7 +312,9 @@ impl Wallet {
         let Some(mut q) = self.store.get::<QuoteRecord>(kind::QUOTE, quote).await? else {
             return Ok(0);
         };
-        if q.state != QuoteState::Paid {
+        // An unpaid quote may have been paid late (a pay source error is
+        // not proof that nothing settled): the issuer decides.
+        if !matches!(q.state, QuoteState::Paid | QuoteState::Unpaid) {
             return Ok(0);
         }
         let cfg = self.config().await?;
@@ -420,13 +423,15 @@ impl Wallet {
     /// the issuer lists, regenerates outputs in batches of 100 counter
     /// values, asks the issuer to restore them (NUT-09), and stops after
     /// three empty batches past the highest counter recorded; then keeps
-    /// the notes NUT-07 reports unspent. Counters move past everything
+    /// the notes NUT-07 reports unspent. Slots scanned: the recorded
+    /// ones, this device's, 0 and `extra_slots`. Counters move past everything
     /// scanned, so no restored output is ever sent again.
     #[allow(clippy::too_many_lines)]
     pub async fn restore(
         &self,
         origins: &[String],
         issuer: Option<&str>,
+        extra_slots: &[u16],
     ) -> Result<Vec<RestoreReport>> {
         let cfg = self.config().await?;
         let seed = self.seed().await?;
@@ -442,7 +447,10 @@ impl Wallet {
                 .await?
                 .unwrap_or_default();
             let mut slots: Vec<u16> = site.slots.clone();
-            for s in [cfg.slot, 0] {
+            // Slots the backup list names, this device's, slot 0, and every
+            // slot the person names (a seed restored without its backup
+            // does not know the others).
+            for &s in [cfg.slot, 0].iter().chain(extra_slots) {
                 if !slots.contains(&s) {
                     slots.push(s);
                 }

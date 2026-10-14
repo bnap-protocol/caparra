@@ -487,6 +487,13 @@ pub struct OpRecord {
     pub quote: Option<String>,
     /// What went out over Lightning for it, fees included.
     pub lightning_sat: u64,
+    /// The invoice paid over Lightning, kept with its preimage so the
+    /// payment stays provable whatever the server answers.
+    #[serde(default)]
+    pub invoice: Option<String>,
+    /// That invoice's preimage.
+    #[serde(with = "hexopt", default)]
+    pub preimage: Option<[u8; 32]>,
     /// The ledger entry.
     pub ledger: String,
     /// The issuer, for notes.

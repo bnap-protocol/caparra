@@ -302,7 +302,8 @@ impl PaySource for TestPay {
             "paid what the wallet said"
         );
         let fee = self.fee_sat.load(Ordering::SeqCst);
-        assert!(fee <= max_fee_sat, "fee within the ceiling");
+        // A pay source may ignore the ceiling (NIP-47 has none).
+        let _ = max_fee_sat;
         let preimage = self
             .rail
             .pay(&inv.payment_hash)

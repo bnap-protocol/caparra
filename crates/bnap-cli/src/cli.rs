@@ -80,6 +80,10 @@ pub enum Command {
         /// The notes issuer URL, when the manifest does not lead to it.
         #[arg(long)]
         issuer: Option<String>,
+        /// Counter slots to scan besides 0 and this device's (repeatable):
+        /// the slots other devices on the same seed used.
+        #[arg(long = "slot")]
+        slots: Vec<u16>,
     },
     /// Replay paid requests that got no final answer, mint paid quotes.
     Resume,
@@ -528,7 +532,11 @@ async fn run_inner(cli: &Cli) -> Result<Outcome, Refusal> {
                 }
             }
         }
-        Command::Restore { origins, issuer } => {
+        Command::Restore {
+            origins,
+            issuer,
+            slots,
+        } => {
             let w = if path.exists() {
                 open(cli, &path).await?
             } else {
@@ -550,7 +558,7 @@ async fn run_inner(cli: &Cli) -> Result<Outcome, Refusal> {
                     "Name the origins to restore with --origin <https://...>.",
                 ));
             }
-            let r = w.restore(origins, issuer.as_deref()).await?;
+            let r = w.restore(origins, issuer.as_deref(), slots).await?;
             Ok(if json {
                 ok_json(&json!({ "ok": true, "restored": r }))
             } else {
