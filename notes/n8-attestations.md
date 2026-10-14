@@ -54,13 +54,13 @@ Cloudflare's `web-bot-auth` 0.7.0. `josekit` was not used.
 
 | Item | What it is |
 | --- | --- |
-| `ID`, `CONTEXT_FIELD` (`"bnap-context"`), `TAG` (`"web-bot-auth"`), `DEFAULT_MAX_LIFETIME` (86,400) | Constants |
+| `ID`, `CONTEXT_FIELD` (`"bnap-context"`), `TAG` (`"web-bot-auth"`), `LABEL` (`"sig1"`), `DEFAULT_MAX_LIFETIME` (86,400) | Constants |
 | `WebBotAuthScheme::new(authority, Arc<dyn KeyDirectory>)`, `.with_max_lifetime(Option<u64>)` | The plug; `authority` is the manifest origin's host (and port when not the default) |
 | `KeyDirectory` (async trait: `resolve(&KeyQuery) -> Option<[u8; 32]>`), `KeyQuery { agent, keyid, now }`, `SignatureAgent { url, kind }`, `AgentType::{Directory, JwksUri, Cimd}`, `DirectoryError` | Key discovery, keyed on (agent URL, `keyid`); an error is UNAVAILABLE |
 | `StaticDirectory` (`new`, `with_agent_key(url, key)`, `with_held_key(key)`) | Fixed keys, for tests and for pinned agents |
 | `thumbprint(&[u8; 32])`, `keyid(&[u8; 32])`, `directory::thumbprint_input` | RFC 7638 / RFC 8037 thumbprints |
 | `body::{WbaBody, types, MAX_FIELD, BodyError}` | The attest body |
-| `client::{sign, SignParams, SignError}` | The agent side: a signature over the Context, as a body |
+| `client::{sign, SignParams, SignError}` | The agent side: a signature over the Context, as a body, always under `LABEL` (`SignParams` has no label field) |
 | `codes::*` | `BAD_BODY`, `BAD_SIGNATURE_INPUT`, `UNSUPPORTED_COMPONENT`, `MISSING_COMPONENT`, `UNSUPPORTED_ALG`, `BAD_AGENT`, `BAD_KEYID`, `UNKNOWN_KEY`, `KEYID_MISMATCH`, `STALE_SIGNATURE`, `LIFETIME_TOO_LONG`, `BAD_SIGNATURE`, `NOT_AN_ATTESTATION` |
 
 ## Wire formats (proposed adapter specs)
@@ -82,7 +82,13 @@ when a token is sent. ES256 signatures must have a low `s`.
 **`httpsig:web-bot-auth` body**, nested TLV: 0 `signature`, 2
 `signature_input`, 4 `signature_agent` (optional): the three field values,
 each in its strict RFC 9651 serialization, one signature (one dictionary
-member) each. The covered components are exactly `"@authority"`,
+member) each. The signature label is fixed: `Signature` and
+`Signature-Input` both hold exactly one member, and its key MUST be `sig1`
+(`LABEL`); any other label is BAD_BODY. RFC 9421 does not sign the label
+(the signature base covers the components and `@signature-params`, not the
+dictionary key), so a free label would let anyone rename it and get a
+second body that verifies over the same Context. `sig1` is what the
+`web-bot-auth` crate's own signer writes. The covered components are exactly `"@authority"`,
 `"bnap-context"` and, when `Signature-Agent` is sent, the agent
 (`"signature-agent";key="<member key>"` with a one-member dictionary, or the
 legacy plain `"signature-agent"` with a String item). Parameters: `created`,
@@ -143,7 +149,9 @@ key would be unlimited (a client mints keys).
   `ProofKey` writes low-`s` ES256 signatures; a proof from another JOSE
   library must be normalized the same way or it is refused.
 - Web Bot Auth: `client::sign(&SigningKey, &SignParams { authority,
-  context, agent, label, created, expires, nonce })` returns the body. Pick
+  context, agent, created, expires, nonce })` returns the body, always under
+  the label `sig1`; a wallet that copies a signature from its HTTP layer
+  must use that label there too. Pick
   `expires` to cover the offer's expiry plus `pending_timeout` and a clock
   skew if the wallet may replay the credential to fetch a missed receipt
   (see ERRATA N8-3), and at most 24 hours after `created`.
@@ -176,13 +184,27 @@ key would be unlimited (a client mints keys).
 - **The identity is the key's thumbprint**, as the registry says, computed
   by the scheme from the key itself: for Web Bot Auth the directory's key
   must hash to the `keyid` the signature names (`KEYID_MISMATCH`).
-- **Canonical bodies are enforced in full**: TLV records, base64url
-  (no padding, zero trailing bits), I-JSON (`manifest::parse_strict`
-  refuses a member named twice), exact `bnap_ctx` hex, low-`s` ES256,
-  strict structured-field serializations with one signature and one agent
-  member. The proof of the test: a high-`s` twin of a valid proof is
-  refused, so nobody on the path can commit a re-encoded attestation-only
-  credential under another `ReplayKey`.
+- **Canonical bodies** (draft-00 5.1): TLV records, base64url (no padding,
+  zero trailing bits), I-JSON (`manifest::parse_strict` refuses a member
+  named twice), exact `bnap_ctx` hex, low-`s` ES256, strict
+  structured-field serializations with one signature and one agent member,
+  one fixed Web Bot Auth label (`sig1`), and no small-order Ed25519 key
+  (DPoP through `verify_strict`, Web Bot Auth through an `is_weak` check,
+  since the `web-bot-auth` crate calls the non-strict `verify`; Ed25519 `S`
+  is checked canonical, as the tree does not enable
+  `legacy_compatibility`). The tests that prove it: a high-`s` twin of a
+  valid DPoP proof is refused; a Web Bot Auth body renamed from `sig1` to
+  any other label (both fields) still verifies over the crate but is
+  refused, admits nothing and takes no quota slot; a signature forged under
+  the identity-point key (R = B, s = 1) is refused. So nobody on the path
+  can commit a re-encoded attestation-only credential under another
+  `ReplayKey`.
+  - Correction (repair round 1): an earlier hand-off claimed canonical
+    bodies were "enforced in full" while the Web Bot Auth label was free.
+    It was not: renaming `sig1=` in both fields gave a second verifying
+    body, so an observer could rerun a waived action, drain a quota, or
+    commit first (class O or none pay with a Web Bot Auth discount) and
+    leave the client's credential SPENT. Fixed by the fixed label.
 - **Without DPoP binding a token is class none.** `DpopScheme` refuses a
   token bound to no key (`UNBOUND_TOKEN`); `BearerScheme` refuses a token
   bound to a key (`DPOP_BOUND_TOKEN`, RFC 9449 7.1). bnap-core already
@@ -220,12 +242,14 @@ key would be unlimited (a client mints keys).
 | N8-9 | draft-00 section 7, registry `theft = bearer` | A class A attestation covers the Context, not the Digest, so anyone who sees a credential can put its attestation in another credential with the same Context and another pay body: the same discount, or a slot of the same quota, for the same request | Inherent to class A; documented. Quotas can be drained by an observer of the client's credentials |
 | N8-10 | RFC 9449 4.3 step 10, draft-00 | BNAP has no `DPoP-Nonce` round trip | `nonce` is not checked; the OfferID in the Context is the server-chosen freshness |
 | N8-11 | RFC 7515 4.1.9 | `typ` is a media type, compared case-insensitively | Only `dpop+jwt` exactly (a client's own signed value; strict costs nothing) |
+| N8-12 | draft-00 5.1 "Canonical bodies"; RFC 9421 2.5, 4.2 | The signature label is not in the signature base, so any HTTP-signature attestation body that carries `Signature` and `Signature-Input` has as many encodings as there are labels | The label is fixed to `sig1` and any other is BAD_BODY. The adapter spec for `httpsig:web-bot-auth` (and any later `httpsig:` scheme) must fix it too |
+| N8-13 | draft-00 5.1; RFC 8032 5.1.7 | RFC 8032 does not refuse small-order public keys, and under one anyone can make a verifying Ed25519 signature for any message | Small-order keys are refused: Web Bot Auth answers UNKNOWN_KEY (tested with a forged identity-point signature); DPoP checks `EdDSA` with `verify_strict`, which refuses them as BAD_SIGNATURE (library behaviour, no DPoP test of its own). The adapter spec should require it |
 
 ## Tests
 
 - `bnap-scheme-dpop`: 26 (unit: JOSE vectors, base64url, keys, JWS,
   bodies; `tests/process.rs`: through `process`).
-- `bnap-scheme-webbotauth`: 19 (unit: thumbprints, bodies, the draft's
+- `bnap-scheme-webbotauth`: 23 (unit: thumbprints, bodies, the draft's
   Ed25519 vectors, agent parsing; `tests/process.rs`: through `process`).
 
 Through `process`, for each scheme: waive and discount apply for classes S,
@@ -244,11 +268,18 @@ credential's replay returns the recorded outcome with `replayed`; the same
 attestation under another `ReplayKey` runs twice (reusable) and is SPENT
 under a single model; required attestations; time rules; malformed headers,
 claims, components and parameters; authority and directory outages fail
-closed.
+closed. For Web Bot Auth also: a body relabelled from `sig1` (with an
+agent, and with a held key and no agent) is refused, waives nothing, and
+the client's own credential still replays its outcome; on a quota of 2 a
+relabelled copy takes no slot and the agent's next fresh credential is
+admitted; a signature forged under a small-order key is refused.
 
 Mutation probes (run in this worktree, reverted): dropping the `bnap_ctx`
 comparison, the low-`s` check, the `bnap-context` requirement or the
-`keyid` check each turns tests red.
+`keyid` check each turns tests red. Repair round 1: relaxing the fixed
+label back to "the two labels match" turns four tests red (two unit, two
+through `process`); the small-order key test failed (admitted) before the
+`is_weak` check existed.
 
 ## Status at hand-off
 
