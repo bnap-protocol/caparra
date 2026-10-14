@@ -94,6 +94,7 @@ pub async fn prepare(cfg: &Config, clock: &Clock) -> anyhow::Result<(Gate, Arc<P
     unsigned
         .finish(&sig)
         .map_err(|e| anyhow::anyhow!("the signer's offer signature does not verify: {e}"))?;
+    probe_receipt(&plugs, &loaded, now).await?;
     let gate = Gate::new(
         Settings {
             front: cfg.gate.front,
@@ -111,6 +112,87 @@ pub async fn prepare(cfg: &Config, clock: &Clock) -> anyhow::Result<(Gate, Arc<P
         clock.clone(),
     );
     Ok((gate, Arc::new(plugs)))
+}
+
+/// The signer must acknowledge with the manifest's receipt key: a probe
+/// outcome (a price-0 entry, no value, random Context) is committed, settled FAILED
+/// and acknowledged through the same path a paid request takes, so a gate
+/// that could not sign receipts never admits an action it cannot answer.
+async fn probe_receipt(
+    plugs: &Plugs,
+    loaded: &crate::manifest::Loaded,
+    now: u64,
+) -> anyhow::Result<()> {
+    use bnap_core::outcome::{self, Admitted, ReceiptInput, Request};
+    use bnap_core::response::Status;
+    use bnap_core::store::Settlement;
+    let mut f = OfferFields::new(
+        bnap_core::hash::Scope(rand::random()),
+        now + 60,
+        loaded.offer_key.kid,
+        rand::random(),
+    );
+    f.pay = vec![bnap_core::offer::PayEntry::new("bnap:probe", 0, "sat")];
+    let context = bnap_core::hash::Context(rand::random());
+    let admitted = outcome::process(
+        &*plugs.store,
+        &Request {
+            offer: &f,
+            context: &context,
+            pay_body: &[],
+            attest_bodies: &[],
+            schemes: &[],
+            rail_ids: &[],
+            pay: Some(bnap_core::pricing::PayValue {
+                scheme: "bnap:probe",
+                claimed: 0,
+                backing: Vec::new(),
+                refund: bnap_core::pricing::Refund::None,
+            }),
+            attest: &[],
+            now,
+        },
+        &loaded.limits,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("receipt probe: the use store refused the probe outcome: {e}"))?;
+    let Admitted::New(pending) = admitted else {
+        anyhow::bail!("receipt probe: a fresh probe outcome was already known");
+    };
+    let charge = pending.charge(Status::Failed, 0);
+    let recorded = outcome::settle(
+        &*plugs.store,
+        &pending,
+        &Settlement::new(&charge, now),
+        &loaded.limits,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("receipt probe: settle: {e:?}"))?;
+    let unsigned = recorded
+        .unsigned_receipt(&ReceiptInput {
+            offer_id: f
+                .offer_id()
+                .map_err(|e| anyhow::anyhow!("receipt probe: {e}"))?,
+            digest: bnap_core::hash::Digest(rand::random()),
+            unit: Some("sat".into()),
+            metered: false,
+            receipt_key: loaded.receipt_key.kid,
+        })
+        .ok_or_else(|| anyhow::anyhow!("receipt probe: no receipt for a settled outcome"))?
+        .map_err(|e| anyhow::anyhow!("receipt probe: {e}"))?;
+    let sig = plugs
+        .signer
+        .schnorr(unsigned.message())
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "the signer does not sign receipts with the manifest's receipt key: {e}"
+            )
+        })?;
+    unsigned
+        .finish(&sig)
+        .map_err(|e| anyhow::anyhow!("the signer's receipt signature does not verify: {e}"))?;
+    Ok(())
 }
 
 /// Starts the gate on `listener` (or on `gate.listen`).

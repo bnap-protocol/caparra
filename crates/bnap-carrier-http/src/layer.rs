@@ -380,7 +380,19 @@ where
                 )
             }
         },
-        Admit::Run(run) => run_action(inner, limits, run).await,
+        // The action and its settlement run in their own task: a client
+        // that disconnects cannot cancel the settlement (10.2: it is charged
+        // for what was produced, and can fetch the receipt by replay, 6.4).
+        Admit::Run(run) => match tokio::spawn(run_action(inner, limits, run)).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("the action task failed: {e}");
+                plain(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "The gate failed while settling. Retry with the same credential.",
+                )
+            }
+        },
     }
 }
 
@@ -711,6 +723,29 @@ mod tests {
             .unwrap();
         let r = svc.oneshot(req).await.unwrap();
         assert!(r.headers().get(CACHE_CONTROL).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_client_that_disconnects_does_not_cancel_the_settlement() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let gate = Arc::new(TestGate {
+            metered: false,
+            log: log.clone(),
+        });
+        let svc = BnapLayer::<_, Full<Bytes>>::new(gate).layer(tower::service_fn(upstream));
+        let req = Request::builder()
+            .uri("/slow")
+            .body(Full::new(Bytes::from_static(b"{}")))
+            .unwrap();
+        // The client goes away after 50 ms; the action's deadline is 200 ms.
+        let gone = tokio::time::timeout(Duration::from_millis(50), svc.oneshot(req)).await;
+        assert!(gone.is_err());
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            log.lock().unwrap().len(),
+            1,
+            "settled although the client left"
+        );
     }
 
     #[tokio::test]

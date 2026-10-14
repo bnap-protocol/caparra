@@ -467,12 +467,20 @@ async fn encoded_variants_of_a_paid_path_are_still_paid_routes() {
         "//v1/chat/completions",
         "/v1/x/../chat/completions",
         "/v1/%66ixed",
+        "/v1/chat/completions/",
+        "/V1/chat/completions",
+        "/v1/chat/completions;x=1",
+        "/v1;a=b/chat/completions",
+        "/v1/fixed/",
+        "/V1/FIXED",
     ] {
         let method = "POST";
         let r = read(w.send(method, path, CHAT_BODY, &[]).await).await;
-        assert_eq!(
-            r.status, 402,
-            "{path} must not reach the application unpaid"
+        assert!(
+            r.status == 402 || r.body.contains("PATH_NOT_ROUTED"),
+            "{path} must not reach the application unpaid: {} {}",
+            r.status,
+            r.body
         );
     }
     assert_eq!(w.calls(), 0);
@@ -536,4 +544,52 @@ async fn a_manifest_whose_keys_expire_too_soon_is_refused() {
     assert!(check(&sign(NOW + 600, NOW + 30 * 86_400)).is_err());
     // The receipt key would expire within pending_timeout.
     assert!(check(&sign(NOW + 30 * 86_400, NOW + 100)).is_err());
+}
+
+#[tokio::test]
+async fn a_tls_binding_is_refused_by_a_gate_that_cannot_check_it() {
+    let w = World::new().await;
+    let chat = read(w.send("POST", CHAT, CHAT_BODY, &[]).await)
+        .await
+        .route_offer();
+    let mut c = Credential::new(OfferRef::Id(chat.offer_id()));
+    c.pay = Some(SchemePart::new("bnap:notes", vec![]));
+    c.binding = Some([7; 32]);
+    let r = read(w.send("POST", CHAT, CHAT_BODY, &[cred_header(&c)]).await).await;
+    assert_eq!(r.status, 400, "{}", r.body);
+    assert_eq!(r.error(), Some(ErrorCode::Binding));
+}
+
+#[tokio::test]
+async fn a_gate_whose_signer_lacks_the_receipt_key_does_not_start() {
+    let w = World::new().await;
+    // The same keys without the receipt key; the manifest still lists it.
+    let keys = key_file();
+    let cut = keys.find("[[key]]\nuse = \"receipt\"").unwrap();
+    let end = keys[cut..].find("[[keyset]]").unwrap() + cut;
+    let no_receipt = format!("{}{}", &keys[..cut], &keys[end..]);
+    std::fs::write(w.dir.path().join("keys.toml"), no_receipt).unwrap();
+    let c = w.clock.clone();
+    let clk: caparra_gate::plugs::Clock =
+        std::sync::Arc::new(move || c.load(std::sync::atomic::Ordering::SeqCst));
+    let e = caparra_gate::server::prepare(&w.cfg, &clk)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("receipt"), "{e}");
+}
+
+#[tokio::test]
+async fn nothing_is_offered_or_admitted_once_receipts_could_not_be_signed() {
+    let w = World::new().await;
+    // The receipt key expires within pending_timeout from here on.
+    w.advance(NOT_AFTER - NOW - 100);
+    let r = read(w.send("POST", "/v1/fixed", "{}", &[]).await).await;
+    assert_eq!(r.status, 503, "{}", r.body);
+    assert_eq!(r.error(), Some(ErrorCode::Unavailable));
+    assert_eq!(
+        w.fake().invoice_count(),
+        0,
+        "no invoice for an offer that could never be acknowledged"
+    );
 }

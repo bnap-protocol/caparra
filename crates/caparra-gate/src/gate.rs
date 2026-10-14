@@ -279,6 +279,18 @@ impl Inner {
         &self.limits
     }
 
+    /// UNAVAILABLE when the receipt key would expire before an action
+    /// admitted now is settled.
+    fn receipts_possible(&self, now: u64) -> Result<(), ErrorObject> {
+        if self.receipt_key.not_after < now + self.limits.pending_timeout {
+            tracing::error!(
+                "the manifest's receipt key expires within pending_timeout: sign a new manifest"
+            );
+            return Err(err(ErrorCode::Unavailable));
+        }
+        Ok(())
+    }
+
     fn now(&self) -> u64 {
         (self.clock)()
     }
@@ -353,8 +365,25 @@ impl Inner {
             .iter()
             .position(|r| r.plan.manifest.matches(parts.method.as_str(), &path))
         else {
+            // A path that differs from a paid route only by letter case, a
+            // trailing slash, or HEAD for GET is routed to that route's
+            // handler by many frameworks: never forward it unpaid.
+            if self
+                .routes
+                .iter()
+                .any(|r| loosely_matches(&r.plan.manifest, parts.method.as_str(), &path))
+            {
+                return Admit::Answer(self.auth_status(plain(
+                    StatusCode::NOT_FOUND,
+                    "PATH_NOT_ROUTED",
+                    "This path is not a route of this gate. Send the request to the route's exact path.",
+                )));
+            }
             if self.front.is_auth() {
                 return Admit::Answer(Response::new(Bytes::new()));
+            }
+            for f in fields::REQUEST_FIELDS {
+                parts.headers.remove(f);
             }
             return Admit::Forward(HttpReq::from_parts(parts, body));
         };
@@ -444,6 +473,10 @@ impl Inner {
         let mut forward = HttpReq::from_parts(parts, body);
         for f in fields::REQUEST_FIELDS {
             forward.headers_mut().remove(f);
+        }
+        if route.plan.section.metered {
+            // The meter reads the answer as sent: ask for no content coding.
+            forward.headers_mut().remove(http::header::ACCEPT_ENCODING);
         }
         let result = match extracted {
             None => {
@@ -625,6 +658,7 @@ impl Inner {
             tracing::error!("the manifest's offer key has expired: sign a new manifest");
             return Err(err(ErrorCode::Unavailable));
         }
+        self.receipts_possible(now)?;
         let mut offers = Vec::new();
         let mut natives = Vec::new();
         if plan.section.scope == bnap_core::manifest::RouteScopeMode::Route
@@ -1228,6 +1262,8 @@ impl Inner {
             }),
             _ => None,
         };
+        // Nothing is admitted that could not be acknowledged.
+        self.receipts_possible(now)?;
         let empty: &[u8] = &[];
         let admitted = outcome::process(
             &*self.store,
@@ -1328,6 +1364,31 @@ impl Inner {
     }
 }
 
+/// True when `method path` would reach `route`'s handler in a lenient
+/// framework: letter case ignored, one trailing slash ignored, HEAD for GET.
+fn loosely_matches(route: &bnap_core::manifest::Route, method: &str, path: &str) -> bool {
+    let Some((m, p)) = route.match_.split_once(' ') else {
+        return false;
+    };
+    let method_ok =
+        m.eq_ignore_ascii_case(method) || (method.eq_ignore_ascii_case("HEAD") && m == "GET");
+    if !method_ok {
+        return false;
+    }
+    let norm = |x: &str| {
+        let l = x.to_ascii_lowercase();
+        match l.strip_suffix('/') {
+            Some(t) if !t.is_empty() => t.to_owned(),
+            _ => l,
+        }
+    };
+    let lowered = bnap_core::manifest::Route {
+        match_: format!("{m} {}", norm(p)),
+        ..route.clone()
+    };
+    lowered.matches(m, &norm(path))
+}
+
 /// The path a route is matched on: percent-decoded once, dot-segments
 /// removed (RFC 3986 5.2.4), empty segments collapsed.
 #[must_use]
@@ -1350,6 +1411,8 @@ pub fn route_path(raw: &str) -> String {
     let dec = String::from_utf8_lossy(&dec);
     let mut out: Vec<&str> = Vec::new();
     for seg in dec.split('/') {
+        // Segment parameters (`;x=1`) are dropped by servlet containers.
+        let seg = seg.split(';').next().unwrap_or("");
         match seg {
             "" | "." => {}
             ".." => {
