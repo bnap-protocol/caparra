@@ -284,7 +284,10 @@ comparison, the low-`s` check, the `bnap-context` requirement or the
   only implementation.
 - No HTTP key directory fetcher, no signed directory responses (draft
   appendix B): `KeyDirectory` is the extension point, `StaticDirectory` the
-  only implementation.
+  only implementation. `StaticDirectory` compares agent URLs byte for byte;
+  draft 5.5 compares identifiers after RFC 3986 syntax- and scheme-based
+  normalization, which a real directory should apply (and it should resolve
+  a `directory` member at the origin's well-known URI).
 - Algorithms: DPoP ES256 and `EdDSA` only (no RS256, PS256, ES384); Web Bot
   Auth Ed25519 only (the `web-bot-auth` crate verifies nothing else).
 - No signer or settle path: attestations carry no value.
