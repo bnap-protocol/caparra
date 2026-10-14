@@ -19,6 +19,8 @@ pub mod rank;
 pub mod records;
 pub mod registry;
 pub mod store;
+#[cfg(feature = "testkit")]
+pub mod testkit;
 pub mod transport;
 pub mod wallet;
 

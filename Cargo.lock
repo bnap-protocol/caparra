@@ -783,7 +783,6 @@ version = "0.0.0"
 dependencies = [
  "argon2",
  "async-trait",
- "axum",
  "base64 0.23.1",
  "bip39",
  "bitcoin",
@@ -808,7 +807,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "tower",
  "url",
  "zeroize",
 ]

@@ -319,8 +319,13 @@ impl Wallet {
         let ks = self.keyset_keys(&q.origin, &q.issuer, &ks_id).await?;
         let seed = self.seed().await?;
         let mut tx = self.store.tx().await?;
+        // NUT-04: outputs that add up to the quote, one per bit.
+        let amounts: Vec<u64> = (0..64)
+            .map(|b| 1u64 << b)
+            .filter(|v| q.amount & v != 0)
+            .collect();
         let outputs = self
-            .take_ladder(&mut tx, &seed, cfg.slot, &ks_id, q.amount)
+            .take_outputs(&mut tx, &seed, cfg.slot, &ks_id, &amounts)
             .await?;
         self.record_site(&mut tx, &q.origin, &q.issuer, &ks_id, cfg.slot)
             .await?;
@@ -350,8 +355,9 @@ impl Wallet {
         Ok(got.iter().map(|n| n.amount).sum())
     }
 
-    /// The canonical ladder for `value` on `keyset`, from this slot's next
-    /// counter on; the counter advance is written in `tx`.
+    /// The canonical change ladder for `value` on `keyset` (bnap:notes
+    /// 6.3), from this slot's next counter on; the counter advance is
+    /// written in `tx`.
     pub(crate) async fn take_ladder(
         &self,
         tx: &mut crate::store::Tx,
@@ -360,6 +366,20 @@ impl Wallet {
         keyset: &[u8; 33],
         value: u64,
     ) -> Result<Vec<PendingOutput>> {
+        let amounts = bnap_scheme_notes::amount::canonical_ladder(value);
+        self.take_outputs(tx, seed, slot, keyset, &amounts).await
+    }
+
+    /// Outputs of these amounts on `keyset`, from this slot's next counter
+    /// on; the counter advance is written in `tx` before any is sent.
+    pub(crate) async fn take_outputs(
+        &self,
+        tx: &mut crate::store::Tx,
+        seed: &[u8; 64],
+        slot: u16,
+        keyset: &[u8; 33],
+        amounts: &[u64],
+    ) -> Result<Vec<PendingOutput>> {
         let name = format!("{}/{slot}", hex::encode(keyset));
         let next = tx
             .get::<CounterRecord>(kind::COUNTER, &name)
@@ -367,7 +387,7 @@ impl Wallet {
             .map_or(0, |c| c.next);
         let start =
             notes::counter(slot, next).ok_or_else(|| Refusal::storage("counter overflow"))?;
-        let (outs, end) = notes::ladder_outputs(seed, keyset, value, start);
+        let (outs, end) = notes::derive_outputs(seed, keyset, amounts, start);
         let base = u64::from(slot) << notes::SLOT_SHIFT;
         tx.put(kind::COUNTER, &name, &CounterRecord { next: end - base })
             .await?;
