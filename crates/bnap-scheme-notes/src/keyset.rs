@@ -471,6 +471,17 @@ mod tests {
     }
 
     #[test]
+    fn cashu_and_bnap_core_agree_on_hash_to_curve() {
+        // The signer's view derives Y with bnap-core; cashu's BDHKE derives
+        // it inside blind_message and verify_message. They must agree.
+        for msg in [&b""[..], b"a", &[0u8; 32], &[0xff; 64], b"bnap notes"] {
+            let ours = hash_to_curve(msg).unwrap();
+            let theirs = cashu::dhke::hash_to_curve(msg).unwrap().to_bytes();
+            assert_eq!(ours, theirs);
+        }
+    }
+
+    #[test]
     fn notes_verify_only_with_their_amount_key() {
         let k = keyset("x");
         let secret = b"note secret";
