@@ -352,11 +352,28 @@ fresh offer once the mint limit was used up (now 429 RATE_LIMITED).
 
 ## Docker
 
-`docker build -t caparra-gate .`: see the status section below. In this
+`docker build -t caparra-gate .` succeeded here (image 96 MB, distroless,
+uid 65532), with two sandbox-only workarounds. In this
 sandbox Docker Hub rate-limits and Debian mirrors are blocked, so the image
 is built with `--build-arg RUST_IMAGE=mirror.gcr.io/library/rust:1.99-slim-bookworm`
 and a scratch copy of the Dockerfile that takes `protoc` from the host and
 trusts the sandbox proxy's CA; the shipped Dockerfile is unchanged by that.
+
+## Other file touched
+
+`crates/bnap-scheme-notes/Cargo.toml`: its self dev-dependency now goes
+through the workspace dependency. With `caparra-gate` as a second user of
+`bnap-scheme-notes`, cargo-deny's `workspace-duplicate` ban failed on the
+old `path = "."` form; nothing else changes.
+
+## CI status at hand-off
+
+`cargo fmt --all --check`, `cargo clippy --workspace --all-targets
+--locked -- -D warnings`, `cargo nextest run --workspace --locked` (552
+passed, 1 skipped), `cargo test --workspace --doc --locked`, `cargo deny
+--all-features check bans licenses sources`, MSRV `cargo check
+--workspace --all-targets --locked` on 1.94: all green. Postgres and
+regtest jobs not run here.
 
 ## Gaps
 
