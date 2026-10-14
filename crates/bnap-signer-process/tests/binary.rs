@@ -2,10 +2,11 @@
 //! behaviour suite through `ProcessSigner`, and what the process refuses on
 //! the wire, at start-up and in its logs.
 
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use bnap_core::hash::{Digest, OfferId, Scope, tagged_hash};
@@ -578,5 +579,107 @@ fn bind_refuses_a_directory_others_can_write_sticky_or_not() {
         let socket = bnap_signer_process::SignerSocket::bind(d.join("s.sock"))
             .unwrap_or_else(|e| panic!("mode {mode:o}: {e}"));
         assert!(socket.path().exists());
+    }
+}
+
+/// A fake signer process, running as this test's user, that answers
+/// `verify_unblinded` for `secret` the way a real one would for a good
+/// note, whatever `C` is: the impostor of a socket path someone else could
+/// take over. It counts the requests it is sent.
+struct Impostor {
+    client: ProcessSigner,
+    asked: Arc<AtomicUsize>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for Impostor {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn impostor(dir: &Path, secret: &[u8]) -> Impostor {
+    let y = bnap_core::note::hash_to_curve(secret).unwrap();
+    let out = bnap_signer_process::wire::encode_reply(Reply::Unblinded { y: Some(y) });
+    let path = dir.join("impostor.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let counter = asked.clone();
+    let task = tokio::spawn(async move {
+        while let Ok((mut s, _)) = listener.accept().await {
+            let mut len = [0u8; 4];
+            if s.read_exact(&mut len).await.is_err() {
+                continue;
+            }
+            counter.fetch_add(1, Ordering::SeqCst);
+            let mut body = vec![0u8; usize::try_from(u32::from_be_bytes(len)).unwrap()];
+            let _ = s.read_exact(&mut body).await;
+            send(&mut s, &out).await;
+        }
+    });
+    Impostor {
+        client: ProcessSigner::new(path),
+        asked,
+        task,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_client_talks_only_to_a_process_running_as_the_signer_uid() {
+    let dir = tempfile::tempdir().unwrap();
+    let own = std::fs::metadata(dir.path()).unwrap().uid();
+    let fx = testkit::fixture();
+    let any_c = bnap_plug::Point([2; 33]);
+    let fake = impostor(dir.path(), b"a secret");
+    // The listener runs as this user: the default signer uid, or this uid
+    // named, accepts it.
+    for client in [
+        fake.client.clone(),
+        fake.client.clone().with_signer_uid(own),
+    ] {
+        let got = client
+            .verify_unblinded(&fx.active.id, "sat", 1, b"a secret", &any_c)
+            .await;
+        assert!(matches!(got, Ok(Some(_))), "{got:?}");
+    }
+    assert_eq!(fake.asked.load(Ordering::SeqCst), 2);
+    // Expecting the signer under another uid, the same listener is refused
+    // before the note's secret is sent to it.
+    let other = fake.client.clone().with_signer_uid(own.wrapping_add(1));
+    let got = other
+        .verify_unblinded(&fx.active.id, "sat", 1, b"a secret", &any_c)
+        .await;
+    assert!(
+        matches!(got, Err(bnap_plug::SignerError::Unavailable(ref m)) if m.contains("uid")),
+        "{got:?}"
+    );
+    let one = [testkit::output(1).output];
+    let lim = testkit::limit(Status::Ok, 1);
+    assert!(matches!(
+        other.blind_sign(&fx.active.id, &one, &lim).await,
+        Err(bnap_plug::SignerError::Unavailable(_))
+    ));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(fake.asked.load(Ordering::SeqCst), 2, "nothing was sent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_client_refuses_a_socket_in_a_directory_others_can_write() {
+    let base = tempfile::tempdir().unwrap();
+    let fx = testkit::fixture();
+    let any_c = bnap_plug::Point([2; 33]);
+    for (i, mode) in [0o1777, 0o777, 0o770, 0o1730].into_iter().enumerate() {
+        let d = dir_with_mode(base.path(), &format!("d{i}"), mode);
+        let fake = impostor(&d, b"a secret");
+        let got = fake
+            .client
+            .verify_unblinded(&fx.active.id, "sat", 1, b"a secret", &any_c)
+            .await;
+        assert!(
+            matches!(got, Err(bnap_plug::SignerError::Unavailable(_))),
+            "mode {mode:o}: {got:?}"
+        );
+        assert_eq!(fake.asked.load(Ordering::SeqCst), 0, "mode {mode:o}");
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 }
