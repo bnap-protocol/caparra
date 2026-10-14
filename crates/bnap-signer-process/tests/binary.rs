@@ -272,6 +272,7 @@ async fn closed(stream: &mut UnixStream) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[allow(clippy::too_many_lines)]
 async fn only_objects_bnap_core_builds_are_signed() {
     let running = start();
     let fx = testkit::fixture();
@@ -455,7 +456,7 @@ async fn a_signer_that_is_gone_or_silent_is_unavailable() {
 }
 
 fn is_refused<T>(r: Result<T, bnap_plug::SignerError>) -> bool {
-    matches!(r, Err(bnap_plug::SignerError::Refused(_)))
+    r.is_err_and(|e| matches!(e, bnap_plug::SignerError::Refused(_)))
 }
 
 /// A fake signer process that answers every request with `reply`.
@@ -473,7 +474,7 @@ fn fake(dir: &Path, name: &str, reply: Reply) -> (ProcessSigner, tokio::task::Jo
                 let mut body = vec![0u8; usize::try_from(u32::from_be_bytes(len)).unwrap()];
                 let _ = s.read_exact(&mut body).await;
                 let out = bnap_signer_process::wire::encode_reply(reply);
-                let _ = send(&mut s, &out).await;
+                send(&mut s, &out).await;
             });
         }
     });
