@@ -39,7 +39,24 @@ more than "no panic" where a property is cheap to state.
 | `mcp_meta` | `parse_strict` of a JSON-RPC message, `_meta` credential through `from_b64u` and `Credential::parse_with`, `mpp::credential_token`, `ErrorData::from_value`, `scope::parse_arguments` | base64url decodes only its canonical form |
 | `signer_ipc` | `read_frame` over arbitrary bytes, `decode_request`, `decode_reply` | |
 
-FUZZ_RESULTS_PLACEHOLDER
+### Fuzz results (10 minutes per target)
+
+Every target ran `cargo +nightly fuzz run -O <t> -- -max_total_time=600` on 2026-10-14: about 2 CPU hours and 338,641,974 executions in total. No crash, hang, leak or assertion failure, so no regression test came from fuzzing.
+
+| Target | Time | Executions | Coverage (libFuzzer cov) | Crashes |
+| --- | --- | --- | --- | --- |
+| `credential` | 601 s | 57,512,279 | 904 | none |
+| `dpop_jwt` | 601 s | 11,037,116 | 1838 | none |
+| `l402_token` | 601 s | 42,511,061 | 755 | none |
+| `manifest` | 601 s | 6,503,967 | 1385 | none |
+| `mcp_meta` | 601 s | 10,121,213 | 1771 | none |
+| `mpp_credential` | 601 s | 17,446,002 | 2335 | none |
+| `notes_wire` | 601 s | 15,204,446 | 1018 | none |
+| `offer` | 601 s | 29,080,018 | 632 | none |
+| `response` | 601 s | 59,135,931 | 514 | none |
+| `signer_ipc` | 601 s | 9,438,498 | 2424 | none |
+| `tlv_bigsize` | 601 s | 48,542,480 | 355 | none |
+| `webbotauth_input` | 601 s | 32,108,963 | 1722 | none |
 
 ## Findings
 
