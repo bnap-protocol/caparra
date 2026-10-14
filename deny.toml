@@ -48,6 +48,9 @@ exceptions = [
   # hex_lit is a required dependency of bitcoin (and so of bnap-core). Its
   # MITNFA license is MIT plus a clause against false attribution.
   { crate = "hex_lit", allow = ["MITNFA"] },
+  # fedimint-tonic-lnd, the LND gRPC client of bnap-rail-lnd (pinned in the
+  # workspace dependencies), is MITNFA as well: MIT plus the same clause.
+  { crate = "fedimint-tonic-lnd", allow = ["MITNFA"] },
 ]
 
 [licenses.private]
