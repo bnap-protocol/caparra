@@ -30,6 +30,8 @@ use bnap_core::store::{
 use bnap_core::test_support::conformance::Executor;
 use bnap_core::{ReplayKey, Status, VerifiedAttest};
 
+use std::sync::{Arc, Mutex};
+
 use crate::{Tried, race};
 
 /// The clock every scenario starts at.
@@ -636,6 +638,63 @@ pub fn change_reservations_keep_one_total<S: UseStore + ?Sized>(store: &S, exec:
             );
         }
         assert_eq!(record(store, exec, &rk), rec, "re-reserving adds nothing");
+    }
+}
+
+/// One gate instance's loop for the crash tests: admit fresh credentials
+/// (all counting against one shared rate counter), then settle OK, reserve
+/// change and settle OK, settle FAILED, or leave the outcome PENDING, and
+/// sweep now and then. Every admitted `ReplayKey` goes to `acked` once
+/// `process` returned it, every credential to `tried` before it is
+/// presented. Returns at the first [`bnap_core::StoreError`] (a connection
+/// the test killed); any other surprise panics.
+pub async fn gate<S: UseStore + ?Sized>(
+    store: Arc<S>,
+    gate_no: u32,
+    tried: Arc<Mutex<Vec<Tried>>>,
+    acked: Arc<Mutex<Vec<ReplayKey>>>,
+) {
+    let lim = limits();
+    for n in 0..u32::MAX {
+        let cred = gate_no * 1_000_000 + n;
+        let req = Req::note(cred, &note(cred), 96, 50, Some((u64::MAX, b"everyone")));
+        tried.lock().unwrap().push(req.tried());
+        let p = match req.process(&*store).await {
+            Ok(Admitted::New(p)) => p,
+            Err(ProcessError::Store(_)) => return,
+            other => panic!("a fresh credential is admitted: {other:?}"),
+        };
+        acked.lock().unwrap().push(*p.replay_key());
+        let s = match n % 4 {
+            0 => Some(settlement(&p, Status::Ok, T0 + 1, b"ok")),
+            1 => {
+                let ok = p.charge(Status::Ok, 0);
+                let outs = [output(1, 0, 32), output(1, 1, 8), output(1, 2, 4)];
+                if outcome::reserve_change(&*store, ok.cap(), &outs)
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                Some(settlement(&p, Status::Ok, T0 + 1, b"ok with change"))
+            }
+            2 => Some(settlement(&p, Status::Failed, T0 + 1, b"failed")),
+            _ => None,
+        };
+        if let Some(s) = s {
+            match outcome::settle(&*store, &p, &s, &lim).await {
+                Ok(_) | Err(SettleError::AlreadySettled(_)) => {}
+                Err(SettleError::Store(_)) => return,
+                Err(e) => panic!("{e:?}"),
+            }
+        }
+        if n % 9 == 8
+            && outcome::sweep(&*store, T0 + lim.pending_timeout + 1, &lim)
+                .await
+                .is_err()
+        {
+            return;
+        }
     }
 }
 

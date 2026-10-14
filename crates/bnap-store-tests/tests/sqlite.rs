@@ -6,13 +6,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bnap_core::ReplayKey;
-use bnap_core::outcome::{self, Admitted, SettleError};
+use bnap_core::outcome;
 use bnap_core::store::UseStore;
 use bnap_core::test_support::conformance::{self, Executor};
 use bnap_core::{CounterKey, Status};
 use bnap_store_sqlite::{SqliteConfig, SqliteStore};
-use bnap_store_tests::scenarios::{self, Req, T0, limits, note, output, settlement};
-use bnap_store_tests::{Dump, Held, Tokio, Tried, check_consistent};
+use bnap_store_tests::scenarios::{self, Req, T0, limits, note, settlement};
+use bnap_store_tests::{Dump, Held, Tokio, check_consistent};
 use sqlx::{Connection, Row};
 
 /// Enough connections for every task of a scenario to hold its own.
@@ -170,51 +170,6 @@ fn the_schema_is_applied_once_and_a_store_reopens_its_file() {
     assert_eq!(sync, 2, "synchronous = FULL");
 }
 
-/// One gate instance's loop: admit fresh credentials (all counting against
-/// one shared rate counter), then settle OK, reserve change and settle OK,
-/// settle FAILED, or leave the outcome PENDING, and sweep now and then.
-async fn gate(
-    store: Arc<SqliteStore>,
-    gate_no: u32,
-    tried: Arc<Mutex<Vec<Tried>>>,
-    acked: Arc<Mutex<Vec<ReplayKey>>>,
-) {
-    let lim = limits();
-    for n in 0..u32::MAX {
-        let cred = gate_no * 1_000_000 + n;
-        let req = Req::note(cred, &note(cred), 96, 50, Some((u64::MAX, b"everyone")));
-        tried.lock().unwrap().push(req.tried());
-        let Ok(Admitted::New(p)) = req.process(&*store).await else {
-            panic!("a fresh credential is admitted");
-        };
-        acked.lock().unwrap().push(*p.replay_key());
-        let s = match n % 4 {
-            0 => Some(settlement(&p, Status::Ok, T0 + 1, b"ok")),
-            1 => {
-                let ok = p.charge(Status::Ok, 0);
-                let outs = [output(1, 0, 32), output(1, 1, 8), output(1, 2, 4)];
-                outcome::reserve_change(&*store, ok.cap(), &outs)
-                    .await
-                    .unwrap();
-                Some(settlement(&p, Status::Ok, T0 + 1, b"ok with change"))
-            }
-            2 => Some(settlement(&p, Status::Failed, T0 + 1, b"failed")),
-            _ => None,
-        };
-        if let Some(s) = s {
-            match outcome::settle(&*store, &p, &s, &lim).await {
-                Ok(_) | Err(SettleError::AlreadySettled(_)) => {}
-                Err(e) => panic!("{e:?}"),
-            }
-        }
-        if n % 9 == 8 {
-            outcome::sweep(&*store, T0 + lim.pending_timeout + 1, &lim)
-                .await
-                .unwrap();
-        }
-    }
-}
-
 /// True while another connection holds the write lock: a write
 /// transaction is open.
 fn writer_active(exec: &Tokio, path: &Path) -> bool {
@@ -248,7 +203,7 @@ fn a_pool_dropped_mid_transaction_leaves_a_consistent_store() {
         let acked = Arc::new(Mutex::new(Vec::new()));
         let gates: Vec<_> = (0..8)
             .map(|w| {
-                exec.runtime().spawn(gate(
+                exec.runtime().spawn(scenarios::gate(
                     Arc::clone(&store),
                     round * 8 + w,
                     Arc::clone(&tried),
