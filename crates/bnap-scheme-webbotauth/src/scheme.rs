@@ -30,6 +30,18 @@ pub const CONTEXT_FIELD: &str = "bnap-context";
 /// The `tag` every Web Bot Auth signature carries.
 pub const TAG: &str = "web-bot-auth";
 
+/// The one signature label an attest body may use, in `Signature` and
+/// `Signature-Input` alike.
+///
+/// RFC 9421 does not sign the label (the dictionary key): the signature
+/// base covers the components and the parameters only. A body free to
+/// choose its label would let anyone who sees a credential rename it and
+/// get another body that verifies over the same Context, so another Digest
+/// and another `ReplayKey` (draft-00 5.1, "Canonical bodies"). The label is
+/// therefore fixed by the adapter's wire format. `sig1` is the label the
+/// `web-bot-auth` crate's own signer writes.
+pub const LABEL: &str = "sig1";
+
 /// The longest signature lifetime (`expires - created`) accepted by
 /// default: 24 hours, the bound the draft recommends to agents (section
 /// 5.2).
@@ -228,15 +240,16 @@ fn is_origin(url: &str) -> bool {
     !rest.is_empty() && !rest.contains(['/', '?', '#', '@'])
 }
 
-/// Every check that needs no key: canonical fields, one signature, the
-/// allowed components, the parameters.
+/// Every check that needs no key: canonical fields, one signature under
+/// [`LABEL`], the allowed components, the parameters.
 fn parse(body: &WbaBody) -> Result<Parsed, SchemeError> {
     let (label, input) = single_member(&body.signature_input, "Signature-Input")?;
     let (sig_label, sig) = single_member(&body.signature, "Signature")?;
-    if sig_label != label {
+    // The label is outside the signature base: only one spelling verifies.
+    if label != LABEL || sig_label != LABEL {
         return Err(reject(
             codes::BAD_BODY,
-            "Signature and Signature-Input name different labels",
+            format!("the signature label is not {LABEL}"),
         ));
     }
     let sfv::ListEntry::Item(sig) = sig else {
@@ -348,7 +361,9 @@ impl SignedMessage for Message<'_> {
 /// include `bnap-context`, the Context, which makes it class A.
 ///
 /// The client sends the `Signature`, `Signature-Input` and
-/// `Signature-Agent` field values in its attest body ([`crate::body`]).
+/// `Signature-Agent` field values in its attest body ([`crate::body`]),
+/// with the one signature under the label [`LABEL`], since RFC 9421 does
+/// not sign the label.
 /// `verify` builds the signature base from the gate's own values only
 /// (draft-00 5.1): `@authority` is the authority this scheme was configured
 /// with (the manifest origin's), `bnap-context` is the base64url Context
@@ -606,21 +621,65 @@ mod tests {
         assert!(!verify_vector(&e21(), Some(("agent1", member))));
         assert!(verify_vector(&e22(), None));
 
-        // The canonical-form checks accept both bodies as they are.
+        // The canonical-form checks accept both fields as they are.
         for b in [e21(), e22()] {
             let (label, _) = single_member(&b.signature_input, "Signature-Input").unwrap();
             assert_eq!(label, "sig2");
             single_member(&b.signature, "Signature").unwrap();
         }
-        // Read as BNAP attestations they are refused: they do not cover
-        // bnap-context, so they embed no Context and are not class A.
-        for b in [e21(), e22()] {
-            let err = parse(&b).unwrap_err();
-            assert_eq!(
-                err.to_error_object().scheme_code.as_deref(),
-                Some("httpsig:web-bot-auth/MISSING_COMPONENT")
-            );
+        // The label is not in the signature base: renamed in both fields,
+        // the vectors still verify. That is why a body has one label only.
+        for (b, m) in [(e21(), Some(("agent2", member))), (e22(), None)] {
+            let renamed = with_label(&b, LABEL);
+            assert!(verify_vector(&renamed, m));
+            assert_eq!(code(&parse(&b).unwrap_err()), "BAD_BODY");
+            // Read as BNAP attestations under the fixed label they are still
+            // refused: they do not cover bnap-context, so they embed no
+            // Context and are not class A.
+            assert_eq!(code(&parse(&renamed).unwrap_err()), "MISSING_COMPONENT");
         }
+    }
+
+    /// `b` with its signature label renamed to `to` in both fields.
+    fn with_label(b: &WbaBody, to: &str) -> WbaBody {
+        let rename = |f: &str| format!("{to}={}", f.split_once('=').unwrap().1);
+        WbaBody {
+            signature: rename(&b.signature),
+            signature_input: rename(&b.signature_input),
+            signature_agent: b.signature_agent.clone(),
+        }
+    }
+
+    /// The part of a refusal's scheme code after `httpsig:web-bot-auth/`.
+    fn code(e: &SchemeError) -> String {
+        let full = e.to_error_object().scheme_code.unwrap();
+        full.strip_prefix("httpsig:web-bot-auth/")
+            .unwrap()
+            .to_owned()
+    }
+
+    /// A body that would pass every key-free check under [`LABEL`].
+    fn labelled(label: &str) -> WbaBody {
+        let input = format!(
+            r#"{label}=("@authority" "bnap-context");created=1;expires=2;keyid="k";tag="web-bot-auth""#
+        );
+        WbaBody {
+            signature: format!("{label}=:AAAA:"),
+            signature_input: input,
+            signature_agent: None,
+        }
+    }
+
+    #[test]
+    fn only_the_fixed_label_is_accepted() {
+        assert!(parse(&labelled(LABEL)).is_ok());
+        for other in ["sig2", "zz", "bnap", "sig10", "a"] {
+            assert_eq!(code(&parse(&labelled(other)).unwrap_err()), "BAD_BODY");
+        }
+        // One field renamed, the other kept.
+        let mut half = labelled(LABEL);
+        half.signature = "sig2=:AAAA:".into();
+        assert_eq!(code(&parse(&half).unwrap_err()), "BAD_BODY");
     }
 
     #[test]

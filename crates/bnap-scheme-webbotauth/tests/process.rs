@@ -430,7 +430,6 @@ impl Cred {
                 authority,
                 context: ctx,
                 agent: self.agent,
-                label: "sig1",
                 created: self.created,
                 expires: self.expires,
                 nonce: Some(self.nonce),
@@ -817,6 +816,83 @@ fn signatures_live_from_created_to_expires() {
     }
     .build(&lax);
     assert!(lax.verify(&long, NOW).is_ok());
+}
+
+/// Renames the signature label in `Signature` and `Signature-Input`. The
+/// label is not in the signature base (RFC 9421 2.5 covers the components
+/// and the parameters, not the dictionary key), so the signature itself
+/// still verifies over the renamed fields.
+fn relabel(c: &Credential, to: &'static str) -> Credential {
+    with_field(c, move |b| {
+        for f in [&mut b.signature, &mut b.signature_input] {
+            let (_, rest) = f.split_once('=').unwrap();
+            *f = format!("{to}={rest}");
+        }
+    })
+}
+
+#[test]
+fn a_relabelled_signature_is_refused_and_waives_nothing() {
+    // Draft-00 5.1: a body with a byte the scheme does not verify is
+    // refused. A renamed label would be another body over the same
+    // Context, so another Digest and ReplayKey: an observer could run the
+    // waived action again, or commit first and leave the client's own
+    // credential SPENT. Only the fixed label is accepted.
+    let gate = waive_gate();
+    let with_agent = Cred::bot("a", "n1").build(&gate);
+    let held = Cred {
+        agent: None,
+        ..Cred::bot("held", "n2")
+    }
+    .build(&gate);
+    for cred in [&with_agent, &held] {
+        let ctx = gate.context(cred);
+        let p = new(gate.process(cred, NOW));
+        gate.settle_ok(&p, b"the answer", NOW + 1);
+        for to in ["zz", "sig2", "bnap"] {
+            let x = relabel(cred, to);
+            assert_eq!(gate.context(&x), ctx);
+            assert_ne!(x.digest(&ctx), cred.digest(&ctx));
+            rejected_with(gate.verify(&x, NOW), codes::BAD_BODY);
+            assert_eq!(gate.process(&x, NOW).unwrap_err(), ErrorCode::Underpaid);
+        }
+        // The client's own credential still replays its outcome.
+        let again = replayed(gate.process(cred, NOW + 2));
+        assert_eq!(again.replay_key(), p.replay_key());
+    }
+}
+
+#[test]
+fn a_relabelled_signature_takes_no_quota_slot() {
+    let gate = Gate::with(
+        NOW + 7200,
+        Some(21),
+        vec![AttestEntry::quota(ID, 2, 3600)],
+        directory(),
+    );
+    let counter = || {
+        let id = ids::use_id(ID, &thumbprint(&public("a")));
+        block_on(
+            gate.store
+                .counter(&ids::quota_key(&id, 2, 3600, NOW).unwrap()),
+        )
+        .unwrap()
+    };
+    let cred = Cred::bot("a", "q1").build(&gate);
+    let p = new(gate.process(&cred, NOW));
+    gate.settle_ok(&p, b"answer", NOW);
+    assert_eq!(counter(), 1);
+    for to in ["zz", "sig2"] {
+        assert_eq!(
+            gate.process(&relabel(&cred, to), NOW).unwrap_err(),
+            ErrorCode::Underpaid
+        );
+    }
+    assert_eq!(counter(), 1);
+    // The agent's next fresh credential still finds its slot.
+    let next = Cred::bot("a", "q2").build(&gate);
+    assert_eq!(new(gate.process(&next, NOW)).admission().price(), 0);
+    assert_eq!(counter(), 2);
 }
 
 /// Verifies `cred` with one body field edited, and expects `code`.

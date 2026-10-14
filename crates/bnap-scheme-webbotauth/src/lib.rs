@@ -37,13 +37,13 @@ pub use directory::{
     AgentType, DirectoryError, KeyDirectory, KeyQuery, SignatureAgent, StaticDirectory, keyid,
     thumbprint,
 };
-pub use scheme::{CONTEXT_FIELD, DEFAULT_MAX_LIFETIME, ID, TAG, WebBotAuthScheme};
+pub use scheme::{CONTEXT_FIELD, DEFAULT_MAX_LIFETIME, ID, LABEL, TAG, WebBotAuthScheme};
 
 /// Scheme codes, the part after `httpsig:web-bot-auth/`.
 pub mod codes {
     /// The body is not canonical: unknown records, fields not in their
-    /// strict serialization, more than one signature, mismatched labels, a
-    /// witness.
+    /// strict serialization, more than one signature, a label other than
+    /// [`LABEL`](crate::LABEL), a witness.
     pub const BAD_BODY: &str = "BAD_BODY";
     /// `Signature-Input` lacks a parameter, has the wrong `tag`, names a
     /// component twice, or has `expires` before `created`.
@@ -55,8 +55,8 @@ pub mod codes {
     pub const MISSING_COMPONENT: &str = "MISSING_COMPONENT";
     /// `alg` is not `ed25519`.
     pub const UNSUPPORTED_ALG: &str = "UNSUPPORTED_ALG";
-    /// `Signature-Agent` is malformed, not `https`, not keyed to the label,
-    /// or not covered.
+    /// `Signature-Agent` is malformed, not `https`, not the one member the
+    /// signature covers, or not covered.
     pub const BAD_AGENT: &str = "BAD_AGENT";
     /// `keyid` is not a base64url SHA-256 thumbprint.
     pub const BAD_KEYID: &str = "BAD_KEYID";

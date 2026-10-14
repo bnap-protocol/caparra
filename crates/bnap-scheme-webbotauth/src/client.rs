@@ -6,8 +6,9 @@
 //! 10.2) and, with an agent URL, the `Signature-Agent` member keyed to the
 //! label (draft-ietf-webbotauth-httpsig-protocol-00 5.2.1), with the
 //! parameters `created`, `expires`, `keyid` (the key's JWK thumbprint) and
-//! `tag="web-bot-auth"`. Every field is written in its strict
-//! structured-field serialization, the only form the scheme accepts.
+//! `tag="web-bot-auth"`. The label is always [`LABEL`] and every field is
+//! written in its strict structured-field serialization: the scheme accepts
+//! no other label and no other form.
 //!
 //! Choose `expires` with replays in mind: a client fetches a receipt it
 //! missed by sending the same credential again (draft-00 6.4), the gate
@@ -24,14 +25,14 @@ use sfv::SerializeValue as _;
 
 use crate::body::WbaBody;
 use crate::directory::keyid;
-use crate::scheme::{CONTEXT_FIELD, TAG};
+use crate::scheme::{CONTEXT_FIELD, LABEL, TAG};
 
 /// Why a signature could not be made.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("cannot sign: {0}")]
 pub struct SignError(pub String);
 
-/// What one signature covers.
+/// What one signature covers. Its label is always [`LABEL`].
 #[derive(Debug, Clone, Copy)]
 pub struct SignParams<'a> {
     /// The gate's authority (`@authority`): host, and port when not the
@@ -41,8 +42,6 @@ pub struct SignParams<'a> {
     pub context: &'a Context,
     /// The agent's `https` URL for `Signature-Agent`, if it publishes one.
     pub agent: Option<&'a str>,
-    /// The signature label, such as `sig1`.
-    pub label: &'a str,
     /// `created`, Unix seconds.
     pub created: u64,
     /// `expires`, Unix seconds.
@@ -85,9 +84,9 @@ pub fn sign(key: &ed25519_dalek::SigningKey, p: &SignParams<'_>) -> Result<WbaBo
     if let Some(url) = p.agent {
         let member = sfv::Item::new(sfv_string(url)?);
         let mut d = sfv::Dictionary::new();
-        d.insert(sfv_key(p.label)?, sfv::ListEntry::Item(member.clone()));
+        d.insert(sfv_key(LABEL)?, sfv::ListEntry::Item(member.clone()));
         agent_field = d.serialize_value();
-        items.push(component("signature-agent", Some(p.label))?);
+        items.push(component("signature-agent", Some(LABEL))?);
         values.push(member.serialize_value());
     }
     let mut params = sfv::Parameters::new();
@@ -114,7 +113,7 @@ pub fn sign(key: &ed25519_dalek::SigningKey, p: &SignParams<'_>) -> Result<WbaBo
     let _ = write!(base, "\"@signature-params\": {signature_params}");
     let sig = key.sign(base.as_bytes()).to_bytes().to_vec();
 
-    let label = sfv_key(p.label)?;
+    let label = sfv_key(LABEL)?;
     let mut input = sfv::Dictionary::new();
     input.insert(label.clone(), sfv::ListEntry::InnerList(inner));
     let mut signature = sfv::Dictionary::new();
