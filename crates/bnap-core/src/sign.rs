@@ -11,7 +11,7 @@
 //! ```compile_fail,E0451
 //! use bnap_core::sign::CoreMessage;
 //! // Private fields: no code outside bnap-core can build one.
-//! let m = CoreMessage { purpose: todo!(), key: todo!(), digest: [0u8; 32] };
+//! let m = CoreMessage { purpose: todo!(), key: todo!(), digest: [0u8; 32], signed: vec![] };
 //! ```
 //!
 //! The two ways to get one are [`UnsignedOffer`] (4.2) and
@@ -83,6 +83,7 @@ pub struct CoreMessage {
     purpose: Purpose,
     key: Key,
     digest: [u8; 32],
+    signed: Vec<u8>,
 }
 
 impl CoreMessage {
@@ -91,6 +92,7 @@ impl CoreMessage {
             purpose,
             key,
             digest: tagged_hash(purpose.tag(), signed),
+            signed: signed.to_vec(),
         }
     }
 
@@ -110,6 +112,20 @@ impl CoreMessage {
     #[must_use]
     pub fn digest(&self) -> &[u8; 32] {
         &self.digest
+    }
+
+    /// The bytes the digest is the tagged hash of: `S` for an offer (every
+    /// record outside the signature range, natives included, 4.2), every
+    /// record of the Response outside 240 to 1000 for an ack (8.1).
+    ///
+    /// Public data, for a signer in another process: it cannot take a
+    /// [`CoreMessage`] across the process boundary, so it receives these
+    /// bytes, parses them as the object [`CoreMessage::purpose`] names and
+    /// recomputes the digest itself before it signs, instead of signing 32
+    /// bytes it was handed.
+    #[must_use]
+    pub fn signed_bytes(&self) -> &[u8] {
+        &self.signed
     }
 
     /// Signs with a local key, for signers that hold one. Refuses a key

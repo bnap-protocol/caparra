@@ -145,3 +145,57 @@ fn messages_are_domain_separated() {
     assert_eq!(Purpose::Ack.tag(), bnap_core::hash::tags::ACK);
     assert_ne!(Purpose::OfferSig.tag(), Purpose::Ack.tag());
 }
+
+#[test]
+fn a_core_message_carries_the_bytes_its_digest_hashes() {
+    // A signer in another process gets these bytes and recomputes the
+    // digest itself; they are exactly the object's signed part.
+    let key = sk(b"bnap test offer key");
+    let unsigned = UnsignedOffer::new(
+        &route_offer_fields(&key),
+        Some(&sha256(b"bnap test mac key")),
+    )
+    .unwrap();
+    let msg = unsigned.message();
+    assert_eq!(
+        msg.digest(),
+        &bnap_core::hash::tagged_hash(Purpose::OfferSig.tag(), msg.signed_bytes())
+    );
+    let signed = msg.signed_bytes().to_vec();
+    let sig = msg.sign_with(&key, &AUX0).unwrap();
+    let offer = unsigned.finish(&sig).unwrap();
+    assert_eq!(offer.signed_bytes(), &signed[..]);
+    assert_eq!(
+        offer.sig_message(),
+        bnap_core::hash::tagged_hash(Purpose::OfferSig.tag(), &signed)
+    );
+
+    let key = sk(b"bnap test receipt key");
+    let v = vectors();
+    let fields = ResponseFields {
+        status: Status::Failed,
+        replayed: false,
+        charged: 0,
+        unit: Some("sat".into()),
+        offer_id: OfferId(hex32(&v["offer"]["offer_id"])),
+        digest: Digest(hex32(&v["credential"]["digest"])),
+        metered_units: None,
+        scheme_result: None,
+        receipt_key: key.public_key(),
+        settled_at: 1_791_700_042,
+        unknown: Vec::new(),
+    };
+    let unsigned = unsigned_response(&fields).unwrap();
+    let msg = unsigned.message();
+    assert_eq!(
+        msg.digest(),
+        &bnap_core::hash::tagged_hash(Purpose::Ack.tag(), msg.signed_bytes())
+    );
+    let sig = msg.sign_with(&key, &AUX0).unwrap();
+    let signed = msg.signed_bytes().to_vec();
+    let resp = unsigned.finish(&sig).unwrap();
+    assert_eq!(
+        resp.ack_message(),
+        bnap_core::hash::tagged_hash(Purpose::Ack.tag(), &signed)
+    );
+}
