@@ -231,10 +231,11 @@ connections and `-j 4` ran clean.
 
 Status at hand-off: `cargo-q nextest run -p bnap-store-tests -p
 bnap-store-sqlite -p bnap-store-postgres --locked -j 4` with `DATABASE_URL`
-set: 41 tests (22 in `bnap-store-tests`, 19 unit tests in the store
-crates), all passing, in about 40 s, repeatedly (the writer child is the
-one skipped, ignored, test). The Postgres tests use the default retry
-budget.
+set: 45 tests (26 in `bnap-store-tests`, 19 unit tests in the store
+crates), all passing, in about 20 s, twice in a row after repair round 1
+(the writer child is the one skipped, ignored, test). The Postgres tests
+use the default retry budget. Without `DATABASE_URL` the Postgres tests,
+the two new ones included, print the skip line and pass.
 `cargo-q clippy --workspace --all-targets --locked -- -D warnings` clean,
 `cargo-q fmt --all --check` clean, `RUSTDOCFLAGS="-D warnings" cargo-q doc`
 clean for the three crates, doctests pass, `RUSTUP_TOOLCHAIN=1.94 cargo-q
