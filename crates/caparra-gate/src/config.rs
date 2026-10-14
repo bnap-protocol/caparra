@@ -718,10 +718,17 @@ impl Config {
             }
         }
         let mut ids = BTreeSet::new();
+        let mut matches = BTreeSet::new();
         let mut plans = Vec::new();
         for r in &self.routes {
             if !ids.insert(r.id.clone()) {
                 return Err(invalid(format!("route {:?} is listed twice", r.id)));
+            }
+            if !matches.insert(r.match_.clone()) {
+                return Err(invalid(format!(
+                    "route {:?}: match {:?} is another route's; only the first could ever match",
+                    r.id, r.match_
+                )));
             }
             plans.push(self.plan_route(registry, r)?);
         }

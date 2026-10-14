@@ -369,8 +369,8 @@ old `path = "."` form; nothing else changes.
 ## CI status at hand-off
 
 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets
---locked -- -D warnings`, `cargo nextest run --workspace --locked` (552
-passed, 1 skipped), `cargo test --workspace --doc --locked`, `cargo deny
+--locked -- -D warnings`, `cargo nextest run --workspace --locked` (563
+passed, 1 skipped, after checker round 3), `cargo test --workspace --doc --locked`, `cargo deny
 --all-features check bans licenses sources`, MSRV `cargo check
 --workspace --all-targets --locked` on 1.94: all green. Postgres and
 regtest jobs not run here.
@@ -429,6 +429,25 @@ are forwarded without `Accept-Encoding`.
 The start-up probe leaves one FAILED outcome record per start in the use
 store (no use IDs, purged with the record window).
 
+### Round 3 (the last allowed): FAIL (1 MEDIUM, in the examples only)
+
+The checker found no HIGH or MEDIUM problem in the Rust code at
+`a1fa7b1`.
+
+| # | Finding | Fix | Test |
+| --- | --- | --- | --- |
+| M1 | The auth-front examples did not serve `/.well-known/bnap` from the gate, did not put `BNAP-Receipt` and `Cache-Control: private, no-store` on the client's answer (Caddy's `copy_headers` copies into the upstream request), let the credential reach the application, and nginx always answered 402 and dropped `Retry-After` and a replay's receipt | `Caddyfile` and `nginx.conf` rewritten: the manifest location proxies to the gate, the receipt and no-store go on the client's answer, BNAP request fields are removed before the application, nginx gives back the gate's status from `BNAP-Status` with `Retry-After` and the receipt | `gate::the_auth_front_examples_carry_what_the_spec_requires` (checks the directives; the configurations were not run against a real Caddy or nginx here) |
+
+Also from round 3: L-g `stream` anything but absent or `false` is refused
+on metered OpenAI routes (`gate::any_stream_value_but_false_is_refused_on_a_metered_route`);
+L-h two routes with one `match` refuse to start
+(`gate::two_routes_with_one_match_refuse_to_start`).
+
+**Final checker verdict:** round 3 FAIL on the examples only (no HIGH or
+MEDIUM in the code); that finding was fixed after the round, and no fourth
+round ran (the brief allows three). The orchestrator should look at the
+auth-front examples, which no test runs against a real front.
+
 ### LOW findings kept open
 
 - L2 (rest): `check_ack` cannot bind the Response's `digest` or `offer_id`
@@ -449,6 +468,11 @@ store (no use IDs, purged with the record window).
   limits of the server).
 - L-f (round 2): `check_ack` accepts a Response without `unit` when the
   record has one.
+- L-i (round 3): when every offer of a route is left out because a plug is
+  unavailable (rail down), the answer is 429 RATE_LIMITED where 503 would
+  be accurate.
+- L-j (round 3): `loosely_matches` does not cover format suffixes
+  (`/v1/chat/completions.json`); only Rails-style upstreams route those.
 - L7: once an address's mint limit is used up, a refusal owed a fresh
   offer on an exact route is 429 RATE_LIMITED, not 402 (DECISIONS row 24
   against 8.2); the N11 run hits it unless `mints_per_minute` is raised.

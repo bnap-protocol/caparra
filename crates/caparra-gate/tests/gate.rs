@@ -593,3 +593,65 @@ async fn nothing_is_offered_or_admitted_once_receipts_could_not_be_signed() {
         "no invoice for an offer that could never be acknowledged"
     );
 }
+
+/// The shipped auth-front configurations serve the manifest from the gate,
+/// put the receipt and `Cache-Control: private, no-store` on the client's
+/// answer, keep the credential from the application, and give back the
+/// gate's real status (10.2, 9.1, 6.4).
+#[test]
+fn the_auth_front_examples_carry_what_the_spec_requires() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/llm-proxy/");
+    let caddy = std::fs::read_to_string(format!("{dir}Caddyfile")).unwrap();
+    for needle in [
+        "handle /.well-known/bnap",
+        "header Cache-Control \"private, no-store\"",
+        "header BNAP-Receipt",
+        "request_header -BNAP-Credential",
+    ] {
+        assert!(caddy.contains(needle), "Caddyfile lacks {needle}");
+    }
+    let nginx = std::fs::read_to_string(format!("{dir}nginx.conf")).unwrap();
+    for needle in [
+        "location = /.well-known/bnap",
+        "proxy_set_header BNAP-Credential \"\"",
+        "if ($bnap_status = 409)",
+        "if ($bnap_status = 429)",
+        "add_header BNAP-Receipt $bnap_receipt always",
+        "add_header Retry-After $bnap_retry_after always",
+    ] {
+        assert!(nginx.contains(needle), "nginx.conf lacks {needle}");
+    }
+}
+
+#[tokio::test]
+async fn any_stream_value_but_false_is_refused_on_a_metered_route() {
+    let w = World::new().await;
+    for v in ["1", "\"true\"", "\"yes\"", "{}"] {
+        let body = format!(r#"{{"model":"m-1","stream":{v},"messages":[]}}"#);
+        let r = read(w.send("POST", CHAT, &body, &[]).await).await;
+        assert_eq!(r.status, 400, "stream {v}");
+    }
+    let ok = read(
+        w.send("POST", CHAT, r#"{"model":"m-1","stream":false}"#, &[])
+            .await,
+    )
+    .await;
+    assert_eq!(ok.status, 402);
+}
+
+#[test]
+fn two_routes_with_one_match_refuse_to_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = config_text(
+        dir.path(),
+        "127.0.0.1:9",
+        "\n[[route]]\nid = \"fixed2\"\nmatch = \"POST /v1/fixed\"\nscope = \"exact\"\nprice = { sat = 1 }\naccept = [\"httpauth:L402\"]\nallow_experimental = true\n",
+    );
+    let registry = caparra_gate::registry::Registry::embedded().unwrap();
+    let e = caparra_gate::config::Config::parse(&text)
+        .unwrap()
+        .plan(&registry)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("match"), "{e}");
+}

@@ -21,14 +21,15 @@ pub fn count(pointer: &str, content_type: Option<&str>, body: &[u8]) -> Result<u
         .ok_or_else(|| format!("the answer has no non-negative integer at {pointer}"))
 }
 
-/// True when an OpenAI-compatible request asks for a streamed answer
-/// (`"stream": true`).
+/// True when an OpenAI-compatible request may ask for a streamed answer:
+/// `stream` is present and is anything but `false` (lenient servers read
+/// `1` or `"true"` as true).
 #[must_use]
 pub fn asks_for_stream(body: &[u8]) -> bool {
     serde_json::from_slice::<serde_json::Value>(body)
         .ok()
-        .and_then(|v| v.get("stream").and_then(serde_json::Value::as_bool))
-        .unwrap_or(false)
+        .and_then(|v| v.get("stream").cloned())
+        .is_some_and(|s| s != serde_json::Value::Bool(false))
 }
 
 #[cfg(test)]
@@ -69,5 +70,8 @@ mod tests {
         assert!(asks_for_stream(br#"{"stream":true}"#));
         assert!(!asks_for_stream(br#"{"stream":false}"#));
         assert!(!asks_for_stream(b"not json"));
+        assert!(asks_for_stream(br#"{"stream":1}"#));
+        assert!(asks_for_stream(br#"{"stream":"true"}"#));
+        assert!(!asks_for_stream(br#"{"model":"m"}"#));
     }
 }
