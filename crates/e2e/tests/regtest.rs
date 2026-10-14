@@ -26,14 +26,21 @@ use bnap_plug::{FundingRail, PayState, RailRef, confirm_rail_id};
 use bnap_rail_lnd::{LndConfig, LndRail};
 use bnap_scheme_l402::{L402, MacaroonKeys, OfferInvoices, Token};
 use bnap_scheme_mpp::{ChallengeKeys, ChargeRequest, LightningCharge, Network};
-use e2e::{Gate, Refused};
+use e2e::{Gate, OFFER_LIFETIME, Refused};
 
 fn devenv() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../devenv/regtest")
 }
 
-/// The payee node's gRPC address, TLS cert and invoice macaroon.
+/// The payee node's gRPC address, TLS cert and invoice macaroon, with
+/// invoices that end with the test gate's offers.
 fn lnd_config() -> LndConfig {
+    let mut config = lnd_node();
+    config.expiry = OFFER_LIFETIME;
+    config
+}
+
+fn lnd_node() -> LndConfig {
     if let (Ok(a), Ok(c), Ok(m)) = (
         std::env::var("BNAP_REGTEST_LND_ADDRESS"),
         std::env::var("BNAP_REGTEST_LND_CERT"),
@@ -259,4 +266,39 @@ async fn one_regtest_payment_through_l402_and_mpp_admits_one_action() {
         first.fields().charged,
         again.fields().replayed
     );
+}
+
+#[tokio::test]
+async fn an_lnd_rail_whose_invoices_outlive_the_offer_cannot_issue() {
+    // An hour-long LND invoice in a five-minute offer could be paid after
+    // the offer is STALE, and the payment kept: the gate fails closed.
+    let mut long = lnd_config();
+    long.expiry = 3_600;
+    let lnd: Arc<dyn FundingRail> = Arc::new(LndRail::connect(&long).await.expect("connect"));
+    let invoices: Arc<dyn FundingRail> = Arc::new(OfferInvoices::new(lnd.clone()));
+    let l402 = Arc::new(L402::new(MacaroonKeys::new([0x41; 32]), invoices.clone()));
+    let mpp = Arc::new(
+        LightningCharge::new(
+            ChallengeKeys::new([0x42; 32]).unwrap(),
+            "api.example",
+            Network::Regtest,
+            invoices,
+        )
+        .unwrap(),
+    );
+    let gate = Gate::new(lnd, vec![l402, mpp]);
+    let scope = Scope(sha256(b"POST https://api.example/v1/regtest-long"));
+    let t = now();
+    for scheme in [bnap_scheme_l402::SCHEME_ID, bnap_scheme_mpp::SCHEME_ID] {
+        let nonce: [u8; 16] = sha256(scheme.as_bytes())[..16].try_into().unwrap();
+        assert_eq!(
+            gate.issue(scope, &[(scheme, 21)], nonce, t)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Unavailable,
+            "{scheme}"
+        );
+    }
+    println!("regtest: a 3600 s LND invoice in a {OFFER_LIFETIME} s offer is refused at issue");
 }

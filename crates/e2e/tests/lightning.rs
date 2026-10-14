@@ -12,6 +12,7 @@ use std::sync::Arc;
 use bnap_core::credential::{OfferRef, SchemePart};
 use bnap_core::hash::{Scope, sha256};
 use bnap_core::ids::{rail, rail_id};
+use bnap_core::limits::CLOCK_SKEW;
 use bnap_core::response::{Response, Status};
 use bnap_core::store::UseTable;
 use bnap_core::test_support::block_on;
@@ -20,7 +21,7 @@ use bnap_plug::FundingRail;
 use bnap_rail_fake::FakeRail;
 use bnap_scheme_l402::{L402, MacaroonKeys, OfferInvoices, Token};
 use bnap_scheme_mpp::{ChallengeKeys, ChargeRequest, LightningCharge, Network};
-use e2e::{Gate, Refused};
+use e2e::{Gate, OFFER_LIFETIME, Refused};
 
 const NOW: u64 = 1_791_700_000;
 const L402_ID: &str = bnap_scheme_l402::SCHEME_ID;
@@ -32,8 +33,13 @@ struct World {
     scope: Scope,
 }
 
+/// A gate whose fake rail's invoices end with its offers.
 fn world() -> World {
-    let fake = Arc::new(FakeRail::new([0x11; 32]));
+    world_with(FakeRail::new([0x11; 32]).with_ttl(OFFER_LIFETIME))
+}
+
+fn world_with(fake: FakeRail) -> World {
+    let fake = Arc::new(fake);
     fake.set_now(NOW);
     // One invoice per offer, shared by both schemes.
     let invoices: Arc<dyn FundingRail> = Arc::new(OfferInvoices::new(fake.clone()));
@@ -366,4 +372,55 @@ fn a_rail_outage_fails_closed() {
     );
     w.fake.set_unavailable(false);
     ok(&w.handle(&cred, NOW).unwrap(), 21, NOW, false);
+}
+
+#[test]
+fn an_offer_is_never_issued_with_an_invoice_that_outlives_it() {
+    // A rail whose invoices live longer than the gate's offers, such as
+    // the old 3600 s rail defaults: a client could pay after the offer is
+    // STALE and lose the payment, since class O refunds nothing. The gate
+    // cannot issue such an offer under either scheme: it fails closed.
+    let pays: [&[(&str, u64)]; 3] = [
+        &[(L402_ID, 21)],
+        &[(MPP_ID, 21)],
+        &[(L402_ID, 21), (MPP_ID, 21)],
+    ];
+    for pay in pays {
+        let w = world_with(FakeRail::new([0x11; 32]).with_ttl(3_600));
+        assert_eq!(
+            block_on(w.gate.issue(w.scope, pay, [1; 16], NOW)).unwrap_err(),
+            Refused {
+                code: ErrorCode::Unavailable,
+                scheme_code: None,
+            },
+            "{pay:?}"
+        );
+    }
+    // An invoice that ends within the skew after the offer is fine.
+    let w = world_with(FakeRail::new([0x11; 32]).with_ttl(OFFER_LIFETIME + CLOCK_SKEW));
+    World::natives(&w.offer(1, 21));
+}
+
+#[test]
+fn a_default_rail_issues_offers_whose_invoice_ends_with_them() {
+    let w = world_with(FakeRail::new([0x11; 32]));
+    let offer = w.offer(1, 21);
+    let n = World::natives(&offer);
+    let invoice = w.fake.invoice(&n.payment_hash).unwrap();
+    assert!(
+        invoice.expires <= offer.fields().expires + CLOCK_SKEW,
+        "the invoice ends at {}, the offer at {}",
+        invoice.expires,
+        offer.fields().expires
+    );
+    // And the flow runs: a native L402 client pays and is admitted.
+    let preimage = w.pay(&n);
+    let header = bnap_scheme_l402::authorization(&Token::new(&n.l402.token, preimage).unwrap());
+    let native = bnap_scheme_l402::credential_from_authorization(&header).unwrap();
+    ok(
+        &w.handle_native(L402_ID, native, NOW).unwrap(),
+        21,
+        NOW,
+        false,
+    );
 }
