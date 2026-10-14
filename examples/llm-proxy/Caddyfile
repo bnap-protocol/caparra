@@ -1,0 +1,11 @@
+# Caddy in front, caparra-gate as the authorizer (front = "forward_auth").
+# The gate sees the method, URI and fields, never the content or the
+# answer: it admits and settles each paid request at once, so only
+# non-metered routes whose requests carry no content can be paid here.
+api.example {
+	forward_auth 127.0.0.1:8080 {
+		uri /auth
+		copy_headers BNAP-Receipt Payment-Receipt Cache-Control
+	}
+	reverse_proxy 127.0.0.1:9000
+}

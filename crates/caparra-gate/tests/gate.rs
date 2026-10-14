@@ -411,3 +411,16 @@ async fn the_gate_refuses_to_start_on_a_bad_manifest() {
     assert!(caparra_gate::manifest::check(&good, &w.cfg, &plans, NOT_AFTER - 10).is_err());
     let _ = offer_of;
 }
+
+#[test]
+fn the_example_configuration_resolves() {
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/llm-proxy/gate.toml"
+    ))
+    .unwrap();
+    let cfg = caparra_gate::config::Config::parse(&text).unwrap();
+    let registry = caparra_gate::registry::Registry::embedded().unwrap();
+    let plans = cfg.plan(&registry).unwrap();
+    assert_eq!(plans[0].manifest.pay.len(), 3);
+}

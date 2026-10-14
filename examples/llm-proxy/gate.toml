@@ -1,0 +1,73 @@
+# caparra-gate in front of an OpenAI-compatible inference API (draft-00
+# 10.3). Every path below is an example; adjust it to your host.
+
+[gate]
+origin = "https://api.example"          # the manifest origin, RFC 6454
+listen = "0.0.0.0:8080"
+front = "proxy"                         # proxy | forward_auth | auth_request
+upstream = "http://127.0.0.1:9000"      # the inference API, plain HTTP on a private network
+replay_window_s = 86400                 # written into the manifest by `manifest sign`
+pending_timeout_s = 300                 # must exceed the longest completion
+offer_lifetime_s = 300                  # exact-scope offers (invoices live as long)
+route_offer_lifetime_s = 3600           # route-scope offers, shared by every client
+mac_key_file = "/etc/caparra/mac.key"   # `caparra-gate key new --out mac.key`
+
+[manifest]
+file = "/etc/caparra/manifest.json"     # made offline by `caparra-gate manifest sign`
+root = "<64 hex: the root key's public half>"
+required = true
+max_age_s = 604800
+
+[store]
+kind = "sqlite"
+path = "/var/lib/caparra/use.db"        # local disk; the notes issuer tables go next to it
+
+[signer]
+kind = "process"                        # the bnap-signer socket (recommended)
+socket = "/run/caparra-signer/signer.sock"
+signer_uid = 990                        # the user bnap-signer runs as
+
+[[rail]]
+id = "ln"
+kind = "phoenixd"
+url = "http://127.0.0.1:9740"
+password_file = "/etc/caparra/phoenixd.password"
+invoice_expiry_s = 300
+
+[[scheme]]
+id = "bnap:notes"
+rail = "ln"
+max_fund_sat = 10000                    # funding inside the 402 (bnap:notes 8)
+
+[[scheme]]
+id = "httpauth:L402"
+rail = "ln"
+secret_file = "/etc/caparra/l402.key"
+
+[[scheme]]
+id = "payment:lightning/charge"
+rail = "ln"
+secret_file = "/etc/caparra/mpp.key"
+network = "mainnet"
+
+[[attest]]
+id = "httpauth:DPoP"
+keys = ["<b64u JWK thumbprint of a key you registered>"]
+
+[[route]]
+id = "chat"
+match = "POST /v1/chat/completions"
+scope = "route"
+upstream = "openai"                     # the meter reads usage.total_tokens
+price = { sat = 2100 }                  # the ceiling per call
+metered = true
+meter = "tokens"
+rate = 500                              # sat per 1,000 tokens
+accept = ["bnap:notes", "httpauth:L402", "payment:lightning/charge"]
+attest = [{ scheme = "httpauth:DPoP", effect = "discount", value = 2000 }]
+require = { use = "single" }
+allow_experimental = true               # every Lightning scheme is experimental in the registry
+
+[limits]
+mints_per_minute = 20                   # offers with invoices, per client address
+verifies_per_minute = 600

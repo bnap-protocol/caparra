@@ -1,0 +1,4 @@
+target
+.git
+book/book
+**/*.db
