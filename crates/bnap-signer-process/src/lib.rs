@@ -43,6 +43,7 @@
 
 mod client;
 mod server;
+mod trust;
 pub mod wire;
 
 pub use client::{DEFAULT_TIMEOUT, ProcessSigner};

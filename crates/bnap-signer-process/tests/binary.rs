@@ -538,3 +538,45 @@ async fn the_client_checks_what_the_process_answers() {
         t.abort();
     }
 }
+
+// ------------------------------------------- who serves the socket
+
+/// A directory under a private temporary one, with `mode`.
+fn dir_with_mode(base: &Path, name: &str, mode: u32) -> PathBuf {
+    let d = base.join(name);
+    std::fs::create_dir(&d).unwrap();
+    std::fs::set_permissions(&d, std::fs::Permissions::from_mode(mode)).unwrap();
+    assert_eq!(
+        std::fs::metadata(&d).unwrap().permissions().mode() & 0o7777,
+        mode,
+        "the platform keeps mode {mode:o}"
+    );
+    d
+}
+
+#[test]
+fn bind_refuses_a_directory_others_can_write_sticky_or_not() {
+    let base = tempfile::tempdir().unwrap();
+    for (i, mode) in [0o1777, 0o1770, 0o1730, 0o777, 0o770, 0o720, 0o702]
+        .into_iter()
+        .enumerate()
+    {
+        let d = dir_with_mode(base.path(), &format!("bad{i}"), mode);
+        let path = d.join("s.sock");
+        match bnap_signer_process::SignerSocket::bind(&path) {
+            Err(bnap_signer_process::BindError::UnsafeDirectory { dir, mode: m }) => {
+                assert_eq!(dir, d);
+                assert_eq!(m, mode);
+            }
+            other => panic!("mode {mode:o}: {other:?}"),
+        }
+        assert!(!path.exists(), "nothing is created in mode {mode:o}");
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    for (i, mode) in [0o700, 0o750, 0o755, 0o711, 0o1755].into_iter().enumerate() {
+        let d = dir_with_mode(base.path(), &format!("good{i}"), mode);
+        let socket = bnap_signer_process::SignerSocket::bind(d.join("s.sock"))
+            .unwrap_or_else(|e| panic!("mode {mode:o}: {e}"));
+        assert!(socket.path().exists());
+    }
+}

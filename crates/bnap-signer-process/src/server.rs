@@ -13,6 +13,7 @@ use bnap_signer_file::FileSigner;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
 
+use crate::trust::{DirInfo, parent_dir};
 use crate::wire::{
     FrameError, Reply, Request, WireSignature, decode_request, encode_reply, read_frame,
     write_frame,
@@ -66,16 +67,26 @@ impl std::fmt::Debug for ServeOptions {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum BindError {
-    /// The socket's directory can be written by others and is not sticky,
-    /// so someone else could replace the socket.
+    /// The group or others can write the socket's directory, so someone
+    /// else could serve the path while the signer is down. A sticky
+    /// directory such as `/tmp` is refused as well.
     #[error(
         "{dir} can be written by the group or others (mode {mode:o}); put the socket in a private directory"
     )]
     UnsafeDirectory {
         /// The directory.
         dir: PathBuf,
-        /// Its permission bits.
+        /// Its permission bits, sticky bit included.
         mode: u32,
+    },
+    /// Another user (not root) owns the socket's directory, and could
+    /// replace the socket.
+    #[error("{dir} belongs to uid {owner}; put the socket in a directory of your own")]
+    ForeignDirectory {
+        /// The directory.
+        dir: PathBuf,
+        /// Its owner.
+        owner: u32,
     },
     /// Something other than a socket is at the path.
     #[error("{0} exists and is not a socket")]
@@ -102,8 +113,9 @@ pub struct SignerSocket {
 }
 
 impl SignerSocket {
-    /// Binds `path`, mode `0600`. Refuses a directory others could write
-    /// (unless it is sticky, as `/tmp` is), a path that holds anything but
+    /// Binds `path`, mode `0600`. Refuses a directory the group or others
+    /// can write (sticky or not: `/tmp` is refused) or that another user
+    /// than root or the signer's own owns, a path that holds anything but
     /// a socket, and a socket another process still serves; a stale socket
     /// is replaced.
     pub fn bind(path: impl AsRef<Path>) -> Result<Self, BindError> {
@@ -112,13 +124,13 @@ impl SignerSocket {
             path: path.clone(),
             source,
         };
-        let dir = match path.parent() {
-            Some(d) if !d.as_os_str().is_empty() => d.to_owned(),
-            _ => PathBuf::from("."),
-        };
-        let mode = std::fs::metadata(&dir).map_err(io)?.permissions().mode() & 0o7777;
-        if mode & 0o022 != 0 && mode & 0o1000 == 0 {
-            return Err(BindError::UnsafeDirectory { dir, mode });
+        let dir = parent_dir(&path);
+        let info = DirInfo::of(&dir).map_err(io)?;
+        if info.writable_by_others() {
+            return Err(BindError::UnsafeDirectory {
+                dir,
+                mode: info.mode,
+            });
         }
         match std::fs::symlink_metadata(&path) {
             Ok(m) if m.file_type().is_socket() => {
@@ -140,6 +152,13 @@ impl SignerSocket {
         };
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(io)?;
         socket.owner = std::fs::symlink_metadata(&path).map_err(io)?.uid();
+        // The socket's owner is the user this process runs as.
+        if !info.owned_by(&[socket.owner]) {
+            return Err(BindError::ForeignDirectory {
+                dir,
+                owner: info.owner,
+            });
+        }
         socket.listener.set_nonblocking(true).map_err(io)?;
         Ok(socket)
     }
