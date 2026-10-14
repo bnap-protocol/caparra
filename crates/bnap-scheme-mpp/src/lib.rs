@@ -45,6 +45,7 @@ use std::sync::Arc;
 use bnap_core::credential::SchemePart;
 use bnap_core::hash::{OfferId, sha256};
 use bnap_core::ids::rail;
+use bnap_core::limits::CLOCK_SKEW;
 use bnap_core::response::Status;
 use bnap_plug::{
     CappedSigner, CredentialScheme, Entry, FundingRail, NativeArtifact, NativeCredential,
@@ -265,7 +266,11 @@ impl CredentialScheme for LightningCharge {
     }
 
     /// Mints the invoice (description hash = `OfferID`) and returns the
-    /// bound challenge as the `mpp-challenge` artifact.
+    /// bound challenge as the `mpp-challenge` artifact. Refuses
+    /// ([`SchemeError::Unavailable`]) an invoice that stays payable after
+    /// the offer or the entry's quote expires (plus the 60 s skew): a
+    /// client pays by the invoice's expiry, and a payment the gate then
+    /// refuses STALE is not refunded.
     async fn native(&self, cx: &NativeCtx<'_>) -> Result<Option<NativeArtifact>, SchemeError> {
         if cx.entry.unit != UNIT {
             return Err(SchemeError::Unsupported);
@@ -277,6 +282,18 @@ impl CredentialScheme for LightningCharge {
             .map_err(|e| unavailable(e.to_string()))?;
         if req.rail_kind != rail::LN || req.amount != cx.entry.amount || req.unit != UNIT {
             return Err(unavailable("the rail made another kind of payment request"));
+        }
+        // The gate takes a credential until the offer, or the entry's
+        // quote, expires, with the skew (4.4 step 4). An invoice still
+        // payable after that takes a payment the gate refuses STALE, and
+        // the lightning method refunds nothing: fail closed rather than
+        // offer it.
+        let deadline = cx.entry.effective_quote_expires(cx.expires).min(cx.expires);
+        if req.expires > deadline.saturating_add(CLOCK_SKEW) {
+            return Err(unavailable(
+                "the invoice outlives the offer: set the rail's invoice expiry \
+                 to the offer lifetime or less",
+            ));
         }
         let payment_hash: [u8; 32] = req
             .id
