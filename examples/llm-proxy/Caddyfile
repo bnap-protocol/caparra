@@ -5,6 +5,9 @@
 api.example {
 	forward_auth 127.0.0.1:8080 {
 		uri /auth
+		# The gate refuses paid requests with content it cannot see.
+		header_up X-Original-Content-Length {http.request.header.Content-Length}
+		header_up X-Original-Transfer-Encoding {http.request.header.Transfer-Encoding}
 		copy_headers BNAP-Receipt Payment-Receipt Cache-Control
 	}
 	reverse_proxy 127.0.0.1:9000

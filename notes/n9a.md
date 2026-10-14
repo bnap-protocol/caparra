@@ -397,6 +397,36 @@ regtest jobs not run here.
   exists).
 - No hot reload: a new manifest or key needs a restart.
 
-## Checker verdict and LOW findings
+## Checker rounds
 
-Filled in after the checker rounds (below).
+### Round 1: FAIL (2 HIGH, 2 MEDIUM), all fixed with a test that failed first
+
+| # | Finding | Fix | Test |
+| --- | --- | --- | --- |
+| H1 | Auth fronts: a replay answered 200, so the front ran the action again on every replay | A replay behind an auth front answers 409 with the receipt (401 + `BNAP-Status: 409` for nginx) | `fronts::forward_auth_challenges_admits_and_settles_without_the_content` (three replays) |
+| H2 | `POST /v1/chat/%63ompletions` matched no route and was forwarded unpaid; uvicorn-style upstreams decode it | Routes match `route_path(path)`: percent-decoded once, dot-segments removed, empty segments collapsed; the scope and the forwarded target stay as received | `gate::encoded_variants_of_a_paid_path_are_still_paid_routes`, unit `route_paths_are_what_an_application_routes` |
+| M1 | A binding with no class S scheme came back NOT_OFFERED, not MALFORMED | `check_binding_classes` and `check_tls_binding` run right after parsing, before the offer checks | `gate::a_binding_without_a_class_s_scheme_is_malformed_before_offered_schemes` |
+| M2 | Auth fronts: the content guard never fired (the subrequest carries no length) and the scope covered empty content | The front must send `X-Original-Content-Length` (and may send `X-Original-Transfer-Encoding`); missing, non-empty-non-zero, or a transfer coding is refused (400); examples updated | `fronts` (missing and `5` refused) |
+
+Also from round 1: L1 (key-expiry checks untested) now has
+`gate::a_manifest_whose_keys_expire_too_soon_is_refused`; L2 `check_ack`
+now compares `unit` (test `store::with_the_store_an_ack_needs_its_settled_outcome`,
+made to bite); L4 the client address is the rightmost `X-Forwarded-For`
+hop.
+
+### LOW findings kept open
+
+- L2 (rest): `check_ack` cannot bind the Response's `digest` or `offer_id`
+  (the record holds neither); a socket-only process can get an ack for a
+  real settled outcome under another credential's Digest.
+- L3: when the OK settle fails and the FAILED fallback succeeds, the
+  application's answer is still sent, with a FAILED refunded receipt. No
+  client-triggered path was found.
+- L5: the manifest is checked only at start; a gate running past
+  `issued + max_age` keeps serving it and issuing offers. Restart with a
+  new manifest; a runtime check is a follow-up.
+- L6: on non-metered routes a buffered `text/event-stream` answer keeps an
+  application `event: bnap-receipt` (10.2 says strip it).
+- L7: once an address's mint limit is used up, a refusal owed a fresh
+  offer on an exact route is 429 RATE_LIMITED, not 402 (DECISIONS row 24
+  against 8.2); the N11 run hits it unless `mints_per_minute` is raised.

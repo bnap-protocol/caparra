@@ -223,6 +223,22 @@ async fn with_the_store_an_ack_needs_its_settled_outcome() {
         .collect();
     s = bnap_core::tlv::TlvStream::from_records(records).unwrap();
     assert!(refused(&server.handle(ask(Some(own), s.to_bytes())).await));
+    // Another unit.
+    let s2 =
+        bnap_core::tlv::TlvStream::parse(&signed, bnap_core::tlv::StreamKind::TopLevel).unwrap();
+    let records: Vec<_> = s2
+        .records()
+        .iter()
+        .map(|(t, v)| {
+            if *t == 8 {
+                (*t, b"msat".to_vec())
+            } else {
+                (*t, v.clone())
+            }
+        })
+        .collect();
+    let s2 = bnap_core::tlv::TlvStream::from_records(records).unwrap();
+    assert!(refused(&server.handle(ask(Some(own), s2.to_bytes())).await));
     // A pending outcome.
     let pending = testkit::commit(&*store, 64, 21);
     assert!(refused(

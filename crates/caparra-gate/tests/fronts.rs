@@ -30,6 +30,7 @@ fn forwarded(method: &str, uri: &str) -> Vec<(&'static str, String)> {
         ("x-forwarded-method", method.into()),
         ("x-forwarded-uri", uri.into()),
         ("x-forwarded-for", "203.0.113.7".into()),
+        ("x-original-content-length", String::new()),
     ]
 }
 
@@ -78,6 +79,23 @@ async fn forward_auth_challenges_admits_and_settles_without_the_content() {
     receipt.verify_ack().unwrap();
     assert_eq!(receipt.fields().charged, 21);
     assert_eq!(w.calls(), 0, "the gate never calls the application itself");
+    // The same credential again: the front must not run the action again,
+    // so the replay is not a 2xx, and it still carries the receipt.
+    for _ in 0..3 {
+        let again = read(w.send("GET", "/auth", "", &h).await).await;
+        assert_eq!(again.status, 409, "{}", again.body);
+        assert!(again.receipt().unwrap().fields().replayed);
+    }
+    // The front must say whether the original request had content.
+    let mut no_len = forwarded("POST", "/v1/fixed");
+    no_len.retain(|(k, _)| *k != "x-original-content-length");
+    let r = read(w.send("GET", "/auth", "", &no_len).await).await;
+    assert_eq!(r.status, 400);
+    let mut with_len = forwarded("POST", "/v1/fixed");
+    with_len.retain(|(k, _)| *k != "x-original-content-length");
+    with_len.push(("x-original-content-length", "5".into()));
+    let r = read(w.send("GET", "/auth", "", &with_len).await).await;
+    assert_eq!(r.status, 400);
     // Content the gate cannot see is refused.
     let r = read(
         w.send("POST", "/auth", "hello", &forwarded("POST", "/v1/fixed"))

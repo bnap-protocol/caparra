@@ -329,9 +329,11 @@ pub async fn check_reserved(
 
 /// Checks an ack against the use store: the Response's outcome (`rk`)
 /// must have a settled record, and the Response must state that record's
-/// status, charge, metered units, scheme result and settlement time. So a
-/// process that reaches the socket but not the store cannot mint a receipt
-/// for an outcome that never settled, or one that says something else.
+/// status, charge, unit, metered units, scheme result and settlement time.
+/// So a process that reaches the socket but not the store cannot mint a
+/// receipt for an outcome that never settled, or one that misstates its
+/// settlement. It cannot check the Response's `digest` or `offer_id`, which
+/// the record does not hold.
 pub async fn check_ack(
     store: &dyn UseStore,
     rk: Option<[u8; 32]>,
@@ -367,6 +369,9 @@ pub async fn check_ack(
         && tu64(t::CHARGED)?.unwrap_or(0) == record.charged.unwrap_or(0)
         && tu64(t::METERED_UNITS)? == record.metered_units
         && tu64(t::SETTLED_AT)? == record.settled_at
+        && stream
+            .get(t::UNIT)
+            .is_none_or(|u| u == record.unit.as_bytes())
         && stream.get(t::SCHEME_RESULT).filter(|r| !r.is_empty())
             == record.scheme_result.as_deref().filter(|r| !r.is_empty());
     if !same {

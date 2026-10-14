@@ -453,3 +453,87 @@ async fn invoices_are_minted_under_a_per_address_limit() {
     assert_eq!(chat.status, 402);
     assert!(chat.offers().iter().all(|o| o.fields().route_scope));
 }
+
+#[tokio::test]
+async fn encoded_variants_of_a_paid_path_are_still_paid_routes() {
+    let w = World::new().await;
+    for path in [
+        "/v1/chat/%63ompletions",
+        "/v1%2Fchat%2Fcompletions",
+        "/v1/chat/%63OMPLETIONS"
+            .replace("OMPLETIONS", "ompletions")
+            .as_str(),
+        "/v1/./chat/completions",
+        "//v1/chat/completions",
+        "/v1/x/../chat/completions",
+        "/v1/%66ixed",
+    ] {
+        let method = "POST";
+        let r = read(w.send(method, path, CHAT_BODY, &[]).await).await;
+        assert_eq!(
+            r.status, 402,
+            "{path} must not reach the application unpaid"
+        );
+    }
+    assert_eq!(w.calls(), 0);
+}
+
+#[tokio::test]
+async fn a_binding_without_a_class_s_scheme_is_malformed_before_offered_schemes() {
+    let w = World::new().await;
+    let a = read(w.send("POST", "/v1/fixed", "{}", &[]).await).await;
+    let offer = a.exact_offer();
+    let mut c = Credential::new(OfferRef::Id(offer.offer_id()));
+    c.pay = Some(SchemePart::new("vnd.hashcash.v1", b"x".to_vec()));
+    c.binding = Some([7; 32]);
+    let r = read(w.send("POST", "/v1/fixed", "{}", &[cred_header(&c)]).await).await;
+    assert_eq!(r.error(), Some(ErrorCode::Malformed), "{}", r.body);
+}
+
+#[tokio::test]
+async fn a_manifest_whose_keys_expire_too_soon_is_refused() {
+    let w = World::new().await;
+    let registry = caparra_gate::registry::Registry::embedded().unwrap();
+    let plans = w.cfg.plan(&registry).unwrap();
+    let pk = |s: &str| {
+        bnap_core::schnorr::SigningKey::from_secret_bytes(
+            &hex::decode(s).unwrap().try_into().unwrap(),
+        )
+        .unwrap()
+        .public_key()
+    };
+    let sign = |offer_na: u64, receipt_na: u64| {
+        caparra_gate::manifest::sign(
+            &w.cfg,
+            &plans,
+            &caparra_gate::manifest::SignInput {
+                root: root_key(),
+                backup: bnap_core::schnorr::SigningKey::from_secret_bytes(&[0x53; 32])
+                    .unwrap()
+                    .public_key(),
+                seq: 2,
+                keys: vec![
+                    bnap_core::manifest::ManifestKey {
+                        kid: pk(OFFER_SECRET),
+                        key_use: bnap_core::manifest::KeyUse::Offer,
+                        not_after: offer_na,
+                    },
+                    bnap_core::manifest::ManifestKey {
+                        kid: pk(RECEIPT_SECRET),
+                        key_use: bnap_core::manifest::KeyUse::Receipt,
+                        not_after: receipt_na,
+                    },
+                ],
+                issued: NOW,
+                aux: [0; 32],
+            },
+        )
+        .unwrap()
+    };
+    let check = |b: &[u8]| caparra_gate::manifest::check(b, &w.cfg, &plans, NOW);
+    assert!(check(&sign(NOW + 30 * 86_400, NOW + 30 * 86_400)).is_ok());
+    // The offer key would expire before a route offer issued now.
+    assert!(check(&sign(NOW + 600, NOW + 30 * 86_400)).is_err());
+    // The receipt key would expire within pending_timeout.
+    assert!(check(&sign(NOW + 30 * 86_400, NOW + 100)).is_err());
+}

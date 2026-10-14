@@ -38,7 +38,7 @@ use bnap_plug::{
 };
 use bnap_scheme_notes::{FundQuote, FundRequest, NotesScheme};
 use bytes::Bytes;
-use http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, HeaderValue};
+use http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, HeaderValue};
 use http::{HeaderMap, Method, Request as HttpReq, Response, StatusCode};
 
 use crate::config::{Front, RoutePlan, Slot, Upstream};
@@ -289,7 +289,7 @@ impl Inner {
                 .headers
                 .get("x-forwarded-for")
                 .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.split(',').next())
+                .and_then(|v| v.rsplit(',').next())
                 .and_then(|v| v.trim().parse().ok())
         {
             return Some(ip);
@@ -342,7 +342,12 @@ impl Inner {
         if parts.method == Method::GET && parts.uri.path() == WELL_KNOWN {
             return Admit::Answer(self.auth_status(self.manifest_answer()));
         }
-        let path = parts.uri.path().to_owned();
+        // Routes match the path as an application would route it
+        // (percent-decoded, dot-segments removed, empty segments
+        // collapsed), so an encoded variant of a paid path is still that
+        // route; the scope still hashes, and the proxy still forwards, the
+        // target exactly as received (10.1).
+        let path = route_path(parts.uri.path());
         let Some(ri) = self
             .routes
             .iter()
@@ -367,13 +372,24 @@ impl Inner {
                     .await,
             );
         }
-        let has_content = !body.is_empty()
-            || parts
-                .headers
-                .get(CONTENT_LENGTH)
-                .is_some_and(|v| v.as_bytes() != b"0")
-            || parts.headers.contains_key(http::header::TRANSFER_ENCODING);
-        if self.front.is_auth() && has_content {
+        let has_content = if self.front.is_auth() {
+            // The subrequest carries no content; the front states the
+            // original request's length (empty or 0 when it had none).
+            !body.is_empty()
+                || match parts.headers.get("x-original-content-length") {
+                    None => true,
+                    Some(v) => {
+                        !(v.as_bytes().is_empty() || v.as_bytes() == b"0")
+                            || parts
+                                .headers
+                                .get("x-original-transfer-encoding")
+                                .is_some_and(|t| !t.as_bytes().is_empty())
+                    }
+                }
+        } else {
+            false
+        };
+        if has_content {
             return Admit::Answer(self.auth_status(plain(
                 StatusCode::BAD_REQUEST,
                 "CONTENT_NOT_VISIBLE",
@@ -944,14 +960,16 @@ impl Inner {
             },
         )
         .map_err(|e| ErrorObject::from(&e))?;
-        let offer = self
-            .check(now, ri, action_scope)
-            .check_credential(&cred, |id| self.cached(id))
-            .map_err(|e| ErrorObject::from(&e))?;
+        // Record rules first (5.1: a binding with no class S scheme is
+        // MALFORMED), before the offer's checks reach NOT_OFFERED (4.4).
         cred.check_binding_classes(|s| Some(self.registry.class(s)))
             .map_err(|e| ErrorObject::from(&e))?;
         // This gate never sees the client's TLS session (5.3).
         cred.check_tls_binding(None)
+            .map_err(|e| ErrorObject::from(&e))?;
+        let offer = self
+            .check(now, ri, action_scope)
+            .check_credential(&cred, |id| self.cached(id))
             .map_err(|e| ErrorObject::from(&e))?;
         let context = cred.context(&offer.offer_id(), &action_scope);
         let digest = cred.digest(&context);
@@ -1250,7 +1268,14 @@ impl Inner {
                     r
                 };
                 let receipt = settle.receipt_fields(&r).await?;
-                Ok(Admit::Answer(self.replay_answer(&r, receipt)))
+                let mut answer = self.replay_answer(&r, receipt);
+                if self.front.is_auth() {
+                    // A 2xx would let the front run the action again: a
+                    // replay never runs it twice (6.4).
+                    *answer.status_mut() = StatusCode::CONFLICT;
+                    answer = self.auth_status(answer);
+                }
+                Ok(Admit::Answer(answer))
             }
             Admitted::New(pending) => {
                 let ticket = GateTicket {
@@ -1300,6 +1325,53 @@ impl Inner {
         resp.headers_mut()
             .insert(CACHE_CONTROL, HeaderValue::from_static(NO_STORE));
         self.auth_status(resp)
+    }
+}
+
+/// The path a route is matched on: percent-decoded once, dot-segments
+/// removed (RFC 3986 5.2.4), empty segments collapsed.
+#[must_use]
+pub fn route_path(raw: &str) -> String {
+    let b = raw.as_bytes();
+    let mut dec = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let (Some(h), Some(l)) = (hex_val(b[i + 1]), hex_val(b[i + 2]))
+        {
+            dec.push(h * 16 + l);
+            i += 3;
+        } else {
+            dec.push(b[i]);
+            i += 1;
+        }
+    }
+    let dec = String::from_utf8_lossy(&dec);
+    let mut out: Vec<&str> = Vec::new();
+    for seg in dec.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            s => out.push(s),
+        }
+    }
+    let trailing = dec.ends_with('/') && !out.is_empty();
+    let mut p = format!("/{}", out.join("/"));
+    if trailing {
+        p.push('/');
+    }
+    p
+}
+
+fn hex_val(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -1532,5 +1604,28 @@ impl Ticket for GateTicket {
             }
         };
         self.state.receipt_fields(&recorded).await.map_err(refuse)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::route_path;
+
+    #[test]
+    fn route_paths_are_what_an_application_routes() {
+        for (raw, want) in [
+            ("/v1/chat/completions", "/v1/chat/completions"),
+            ("/v1/chat/%63ompletions", "/v1/chat/completions"),
+            ("/v1%2Fchat%2fcompletions", "/v1/chat/completions"),
+            ("//v1///chat/./completions", "/v1/chat/completions"),
+            ("/v1/x/../chat/completions", "/v1/chat/completions"),
+            ("/../../v1", "/v1"),
+            ("/files/", "/files/"),
+            ("/", "/"),
+            ("/%zz", "/%zz"),
+            ("/%2", "/%2"),
+        ] {
+            assert_eq!(route_path(raw), want, "{raw}");
+        }
     }
 }
