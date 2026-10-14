@@ -323,6 +323,161 @@ fn the_schema_is_applied_once_and_a_store_reconnects() {
     exec.block_on(again.close());
 }
 
+/// `SHOW synchronous_commit` on `n` connections of `pool` held at once, so
+/// the answer is not one connection's.
+fn synchronous_commit(exec: &Tokio, pool: &sqlx::PgPool, n: usize) -> Vec<String> {
+    exec.block_on(async {
+        let mut held = Vec::with_capacity(n);
+        for _ in 0..n {
+            held.push(pool.acquire().await.unwrap());
+        }
+        let mut seen = Vec::with_capacity(n);
+        for conn in &mut held {
+            seen.push(
+                sqlx::query_scalar::<_, String>("SHOW synchronous_commit")
+                    .fetch_one(&mut **conn)
+                    .await
+                    .unwrap(),
+            );
+        }
+        seen
+    })
+}
+
+/// Runs each of `sql` on a connection of its own to `url`.
+fn admin_run(exec: &Tokio, url: &str, sql: &[String]) -> Result<(), sqlx::Error> {
+    exec.block_on(async {
+        let admin = PgPoolOptions::new().max_connections(1).connect(url).await?;
+        for one in sql {
+            sqlx::query(AssertSqlSafe(one.clone()))
+                .execute(&admin)
+                .await?;
+        }
+        admin.close().await;
+        Ok(())
+    })
+}
+
+/// A login role of its own whose server-side default is
+/// `synchronous_commit = off` (`ALTER ROLE ... SET`), so other tests on the
+/// server keep the stock default. Dropped, with what it owns, when dropped.
+struct OffRole {
+    url: String,
+    name: String,
+    handle: tokio::runtime::Handle,
+}
+
+impl OffRole {
+    const PASSWORD: &'static str = "test";
+
+    /// Creates the role, allowed to create the store's tables in `schema`.
+    fn create(exec: &Tokio, schema: &Schema) -> Self {
+        let name = format!("{}_off", schema.name);
+        admin_run(
+            exec,
+            &schema.url,
+            &[
+                format!("CREATE ROLE {name} LOGIN PASSWORD '{}'", Self::PASSWORD),
+                format!("ALTER ROLE {name} SET synchronous_commit = off"),
+                format!("GRANT USAGE, CREATE ON SCHEMA {} TO {name}", schema.name),
+            ],
+        )
+        .unwrap();
+        Self {
+            url: schema.url.clone(),
+            name,
+            handle: exec.runtime().handle().clone(),
+        }
+    }
+}
+
+impl Drop for OffRole {
+    fn drop(&mut self) {
+        let (url, name) = (self.url.clone(), self.name.clone());
+        let _ = self.handle.block_on(async move {
+            let admin = PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&url)
+                .await?;
+            for sql in [
+                format!("DROP OWNED BY {name}"),
+                format!("DROP ROLE IF EXISTS {name}"),
+            ] {
+                sqlx::query(AssertSqlSafe(sql)).execute(&admin).await?;
+            }
+            admin.close().await;
+            Ok::<_, sqlx::Error>(())
+        });
+    }
+}
+
+/// Draft-00 section 12: a commit that is not durable lets a crash re-admit a
+/// spent credential, so the store forces `synchronous_commit` on. A client
+/// whose own connection options ask for `off` (a common performance
+/// setting) still gets durable commits. The stock server default is already
+/// `on`, so only an unsafe request can show the store overriding it.
+#[test]
+fn synchronous_commit_stays_on_when_the_client_asks_for_off() {
+    let Some(url) = database_url() else { return };
+    let exec = Tokio::new();
+    let schema = Schema::create(&exec, &url);
+    let unsafe_options = schema.options().options([("synchronous_commit", "off")]);
+    // Without the store the request takes effect, so the check can fail.
+    let plain = exec
+        .block_on(
+            PgPoolOptions::new()
+                .max_connections(1)
+                .connect_with(unsafe_options.clone()),
+        )
+        .unwrap();
+    assert_eq!(synchronous_commit(&exec, &plain, 1), ["off"]);
+    exec.block_on(plain.close());
+    let store = exec
+        .block_on(PostgresStore::connect_with(unsafe_options, &config()))
+        .expect("the store connects");
+    assert_eq!(synchronous_commit(&exec, store.pool(), 4), ["on"; 4]);
+    exec.block_on(store.close());
+}
+
+/// The same with `synchronous_commit = off` as the server-side default of
+/// the role the store logs in as (`ALTER DATABASE` defaults rank the same):
+/// the store's startup option outranks it.
+#[test]
+fn synchronous_commit_stays_on_when_the_role_default_is_off() {
+    let Some(url) = database_url() else { return };
+    let exec = Tokio::new();
+    let schema = Schema::create(&exec, &url);
+    let role = OffRole::create(&exec, &schema);
+    let options = schema
+        .options()
+        .username(&role.name)
+        .password(OffRole::PASSWORD);
+    let plain = exec
+        .block_on(
+            PgPoolOptions::new()
+                .max_connections(1)
+                .connect_with(options.clone()),
+        )
+        .unwrap();
+    assert_eq!(synchronous_commit(&exec, &plain, 1), ["off"]);
+    exec.block_on(plain.close());
+    let store = exec
+        .block_on(PostgresStore::connect_with(options, &config()))
+        .expect("the store connects as the role");
+    assert_eq!(synchronous_commit(&exec, store.pool(), 4), ["on"; 4]);
+    // The role can write: an admission and its settle commit.
+    let r = Req::note(1, &note(1), 96, 50, None);
+    let p = scenarios::new(exec.block_on(r.process(&store)));
+    exec.block_on(outcome::settle(
+        &store,
+        &p,
+        &settlement(&p, Status::Ok, T0 + 1, b"kept"),
+        &limits(),
+    ))
+    .unwrap();
+    exec.block_on(store.close());
+}
+
 #[test]
 fn a_pool_dropped_mid_transaction_leaves_a_consistent_store() {
     let Some(url) = database_url() else { return };
