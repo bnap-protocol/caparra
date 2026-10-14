@@ -61,27 +61,33 @@ fn lnd_config() -> LndConfig {
 }
 
 /// Pays `invoice` from the payer node and returns the preimage it learned.
+/// A failed attempt is retried a few times: right after the channel opens
+/// the payer's router can briefly report no balance.
 fn payer_pays(invoice: &str) -> [u8; 32] {
-    let out = Command::new("docker")
-        .arg("compose")
-        .arg("-f")
-        .arg(devenv().join("compose.yml"))
-        .args(["exec", "-T", "payer", "lncli", "--network=regtest"])
-        .args(["payinvoice", "--force", "--json", invoice])
-        .output()
-        .expect("run lncli payinvoice");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        out.status.success(),
-        "payinvoice failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let v: serde_json::Value = serde_json::from_str(&stdout).expect("payinvoice prints JSON");
-    assert_eq!(v["status"], "SUCCEEDED", "payment status");
-    let hex = v["payment_preimage"].as_str().expect("a preimage");
-    let mut preimage = [0; 32];
-    hex::decode_to_slice(hex, &mut preimage).expect("hex preimage");
-    preimage
+    let mut last = String::new();
+    for _ in 0..10 {
+        let out = Command::new("docker")
+            .arg("compose")
+            .arg("-f")
+            .arg(devenv().join("compose.yml"))
+            .args(["exec", "-T", "payer", "lncli", "--network=regtest"])
+            .args(["payinvoice", "--force", "--json", invoice])
+            .output()
+            .expect("run lncli payinvoice");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        if out.status.success()
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&stdout)
+            && v["status"] == "SUCCEEDED"
+        {
+            let hex = v["payment_preimage"].as_str().expect("a preimage");
+            let mut preimage = [0; 32];
+            hex::decode_to_slice(hex, &mut preimage).expect("hex preimage");
+            return preimage;
+        }
+        last = format!("{stdout}{}", String::from_utf8_lossy(&out.stderr));
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    panic!("payinvoice did not succeed: {last}");
 }
 
 fn now() -> u64 {
@@ -191,6 +197,14 @@ async fn one_regtest_payment_through_l402_and_mpp_admits_one_action() {
         )
         .await
         .expect("issue the offer");
+    // Two challenges with a real regtest invoice fit in the default offer
+    // size limit.
+    assert!(offer.bytes().len() <= bnap_core::limits::MAX_OFFER);
+    println!(
+        "regtest: offer with both natives is {} bytes (limit {})",
+        offer.bytes().len(),
+        bnap_core::limits::MAX_OFFER
+    );
     let native = |kind: &str| {
         let n = offer
             .fields()

@@ -3,7 +3,8 @@
 #
 #   1. docker compose up, waiting until every service is healthy;
 #   2. mine to the payer node until it has spendable coins;
-#   3. open a payer -> payee channel and wait until it is active;
+#   3. open a payer -> payee channel, wait until it is active and a 1 sat
+#      payment goes through;
 #   4. copy the payee's TLS cert and invoice macaroon to .state/ and write
 #      .state/env with the paths the bnap-rail-lnd plug needs.
 #
@@ -97,6 +98,15 @@ if ! payer listchannels --active_only | grep -q "\"remote_pubkey\": *\"$payee_ke
 	retry active
 fi
 retry synced payee
+
+# A channel can be active a moment before the payer's router sees its
+# balance ("insufficient_balance"): pay 1 sat until a payment goes through.
+pays() {
+	inv=$(payee addinvoice --amt 1 --memo bnap-regtest-warmup | field payment_request)
+	[ -n "$inv" ] && payer payinvoice --force --json "$inv" | grep -q '"status": *"SUCCEEDED"'
+}
+tries=60
+retry pays
 
 say "exporting the payee's TLS cert and invoice macaroon"
 mkdir -p "$state"
