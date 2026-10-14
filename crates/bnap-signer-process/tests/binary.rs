@@ -323,6 +323,24 @@ async fn only_objects_bnap_core_builds_are_signed() {
         )
         .await
     ));
+    // An offer that names another key, asked of the offer key.
+    let stranger = bnap_core::SigningKey::from_secret_bytes(&bnap_core::hash::sha256(b"stranger"))
+        .unwrap()
+        .public_key();
+    let mut foreign = fields.clone();
+    foreign.offer_key = stranger;
+    let foreign = UnsignedOffer::new(&foreign, Some(&[7; 32])).unwrap();
+    assert!(refused(
+        ask(
+            &mut conn,
+            schnorr(
+                WirePurpose::OfferSig,
+                fx.offer_key,
+                foreign.message().signed_bytes().to_vec()
+            )
+        )
+        .await
+    ));
     // A Response that names the offer key.
     let response = ResponseFields {
         status: Status::Ok,
