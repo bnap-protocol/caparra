@@ -281,7 +281,8 @@ the admitted value for an `atomic` scheme, 0 otherwise, N3b-26),
 `CappedSigner::for_change(signer, &cap, *recorded.replay_key())`, the guard
 closed when it returns, then `outcome::record_refund(store, &recorded,
 result.as_deref())` (first write wins; `None` when the scheme has nothing
-to refund), and answer from the `Recorded` it returns.
+to refund; a credential without pay has no value scheme to settle and
+records `None`), and answer from the `Recorded` it returns.
 `Recorded::receipt` returns `None` while a refund is due, so this step
 cannot be skipped.
 
@@ -607,8 +608,8 @@ refuses a `replay_window` below `pending_timeout + 120`, and calls
 #### Status at hand-off, part B (after the re-cut, round 3)
 
 - `cargo-q nextest run -p bnap-core -p bnap-plug --features
-  bnap-core/test-support`, and the same without the feature: 187 tests,
-  187 passed (160 in `bnap-core`, 27 in `bnap-plug`).
+  bnap-core/test-support`, and the same without the feature: 188 tests,
+  188 passed (161 in `bnap-core`, 27 in `bnap-plug`).
 - `cargo-q test --doc -p bnap-core -p bnap-plug`: 5 doctests pass, all
   compile_fail: no `CoreMessage` from raw bytes in either crate, no
   `Admission` literal, no `Pending` literal, no `CommitPlan::build` outside

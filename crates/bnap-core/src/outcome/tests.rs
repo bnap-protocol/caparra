@@ -231,6 +231,36 @@ impl UseStore for StaleReads {
 // ------------------------------------------------------------ the basics
 
 #[test]
+fn process_and_settle_futures_are_send() {
+    // A gate on a work-stealing runtime spawns them.
+    fn send<T: Send>(_: &T) {}
+    let store: &dyn UseStore = &MemoryStore::new();
+    let r = Req::note(1, b"Y", T0);
+    let schemes = [SchemeUses {
+        scheme: "bnap:notes",
+        model: UseModel::Single,
+        local_ids: &r.uses[0].2,
+    }];
+    let req = Request {
+        offer: &r.offer,
+        context: &r.ctx,
+        pay_body: &r.pay_body,
+        attest_bodies: &[],
+        schemes: &schemes,
+        rail_ids: &[],
+        pay: r.pay.clone(),
+        attest: &[],
+        now: T0,
+    };
+    let l = limits();
+    send(&process(store, &req, &l));
+    let p = new(r.process(&MemoryStore::new()));
+    let s = settlement(Status::Ok, 0, T0);
+    send(&settle(store, &p, &s, &l));
+    send(&sweep(store, T0, &l));
+}
+
+#[test]
 fn process_is_new_then_a_retry_is_pending() {
     let store = MemoryStore::new();
     let r = Req::note(1, b"Y1", T0);

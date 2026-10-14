@@ -264,7 +264,8 @@ impl Recorded {
     /// The gate then calls the scheme's `settle` for FAILED, charge 0,
     /// under [`Self::refund_cap`], and stores the result with
     /// [`record_refund`], which writes it only once; the answer is the
-    /// [`Recorded`] that returns.
+    /// [`Recorded`] that returns. A credential without pay has no value
+    /// scheme to settle and nothing to refund: the gate records `None`.
     #[must_use]
     pub fn needs_refund(&self) -> bool {
         self.record.needs_refund()
