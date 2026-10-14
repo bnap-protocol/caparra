@@ -409,7 +409,10 @@ impl Refusal {
             Code::Binding => {
                 "The server could not check the TLS binding. Nothing was spent.".to_owned()
             }
-            Code::Spent => "This payment was already used for another request.".to_owned(),
+            Code::Spent => {
+                "The server says this payment was already used for another request; the wallet marks it spent. See `bnap receipts` for what was paid."
+                    .to_owned()
+            }
             Code::Pending => format!(
                 "The server is still working on this request. Run `bnap resume`{wait} to get the answer."
             ),

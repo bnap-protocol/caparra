@@ -483,6 +483,18 @@ version = "0.0.0"
 [[package]]
 name = "bnap-cli"
 version = "0.0.0"
+dependencies = [
+ "base64 0.23.1",
+ "bnap-core",
+ "caparra-wallet",
+ "clap",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "zeroize",
+]
 
 [[package]]
 name = "bnap-core"
