@@ -49,8 +49,8 @@ pub use signer::{
 /// The use store plug, defined in `bnap-core` so the outcome state machine
 /// can be generic over it.
 pub use bnap_core::store::{
-    Commit, CommitPlan, OutcomeRecord, RefundRequest, Settle, SettleRequest, Settlement,
-    StoreError, SweepWindow, UseStore,
+    ChangeOutput, ChangeRequest, Commit, CommitPlan, OutcomeRecord, RefundRequest, Reserve, Settle,
+    SettleRequest, Settlement, StoreError, SweepWindow, UseStore,
 };
 
 /// The sealed message type [`Signer::schnorr`] takes.

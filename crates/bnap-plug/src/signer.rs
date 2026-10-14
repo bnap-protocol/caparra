@@ -25,12 +25,24 @@
 //!   clones share it, and the [`SettleGuard`] the gate holds closes it when
 //!   the scheme's `settle` returns, so a clone kept past `settle` signs
 //!   nothing.
-//! - The signer enforces the total as well: every call names its
-//!   settlement ([`ChangeLimit`]: `ReplayKey`, status, unit and total cap),
-//!   and the signer keeps one running total per `ReplayKey`, across the OK
-//!   change and the FAILED refund of the outcome ([`ChangeLedger`]), which
-//!   bounds an out-of-process signer and every budget made for the same
-//!   outcome together: never more than the outcome's value.
+//! - **The outcome's total is kept in the use store.** Before the signer is
+//!   called, [`CappedSigner::blind_sign`] reserves the outputs in the
+//!   outcome's record ([`bnap_core::outcome::reserve_change`],
+//!   [`UseStore::reserve_change`]), in one durable store transaction: one
+//!   running total per `ReplayKey`, across the OK change and the FAILED
+//!   refund, each distinct output once, never above the admitted value. The
+//!   store is the gate's durable state, shared by every gate instance, so
+//!   the bound holds when a signer restarts, when a gate restarts, and
+//!   across every signer instance: a scheme that keeps its signatures and
+//!   fails every settle, so that no refund is ever recorded and each replay
+//!   opens a new budget, still gets at most the value signed for one
+//!   outcome (ERRATA N3b-29).
+//! - The signer keeps a total of its own as a second line: every call
+//!   names its settlement ([`ChangeLimit`]: `ReplayKey`, status, unit, cap
+//!   and how long the outcome can still be settled), and [`ChangeLedger`]
+//!   keeps one total per `ReplayKey` in the signer's memory. A restart or a
+//!   second signer instance starts it from 0, which is why it is not the
+//!   bound the gate relies on.
 //! - A scheme names a note by its secret, never by its point: the signer
 //!   derives `Y = hash_to_curve(secret)` itself
 //!   ([`bnap_core::note::hash_to_curve`]) and checks `C = k·Y` against
@@ -54,11 +66,14 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use bnap_core::ErrorCode;
 use bnap_core::hash::ReplayKey;
+use bnap_core::limits::CLOCK_SKEW;
 use bnap_core::note::hash_to_curve;
+use bnap_core::outcome::reserve_change;
 use bnap_core::pricing::{Backing, BackingSource, ChangeCap};
 use bnap_core::response::Status;
 use bnap_core::schnorr::Signature;
 use bnap_core::sign::CoreMessage;
+use bnap_core::store::{ChangeOutput, Reserve, UseStore};
 
 /// A compressed secp256k1 point, 33 bytes: a note's `Y` or `C`, a blinded
 /// output `B'` or a blind signature `C'`.
@@ -111,11 +126,12 @@ pub enum SignerError {
     /// The outputs are worth more than what is left of the change cap.
     #[error("outputs worth {sum} exceed the cap {cap}")]
     OverCap {
-        /// What the outputs add up to (saturating); for a signer's running
-        /// total, the total they would bring it to.
+        /// What the outputs add up to (saturating); for an outcome's
+        /// running total (the store's or the signer's), the total they
+        /// would bring it to.
         sum: u64,
-        /// What was left of the cap; for a signer's running total, the
-        /// settlement's whole cap.
+        /// What was left of the cap; for an outcome's running total, the
+        /// cap that bounds it.
         cap: u64,
     },
     /// The signer refused: an unknown key or keyset, a key held for another
@@ -169,16 +185,27 @@ pub trait Signer: Send + Sync {
     /// Signs blinded outputs as change or a refund for the settlement
     /// `limit` names.
     ///
-    /// MUST refuse a keyset that is not in `limit.unit`. MUST keep one
-    /// running total per outcome (`limit.replay_key`), across its OK change
-    /// and its FAILED refund, and refuse a call that would take that total
-    /// above `limit.cap` (bnap-core set it to `value - charged`; the first
-    /// cap named for a `ReplayKey` and status bounds that status). An
+    /// The gate calls it only through [`CappedSigner::blind_sign`], which
+    /// has reserved the outputs in the use store first
+    /// ([`UseStore::reserve_change`]): that reservation, durable and shared
+    /// by every gate and signer instance, is what bounds an outcome's change
+    /// and refund together at its value, across restarts.
+    ///
+    /// MUST refuse a keyset that is not in `limit.unit`. MUST refuse an
+    /// empty batch and any output of amount 0, which carries no value but
+    /// costs signer work. MUST keep one running total per outcome
+    /// (`limit.replay_key`), across its OK change and its FAILED refund, and
+    /// refuse a call that would take that total above `limit.cap`
+    /// (bnap-core set it to `value - charged`; the first cap named for a
+    /// `ReplayKey` and status bounds that status), and MUST NOT drop an
+    /// outcome's total before `limit.keep_until` (plus a clock skew for its
+    /// own clock): until then a replay can still settle the outcome. An
     /// output already signed for the same `ReplayKey`, under either status,
     /// MAY be signed again without counting twice, since it makes the same
-    /// note. MUST refuse an empty batch and any output of amount 0, which
-    /// carries no value but costs signer work. [`ChangeLedger`] does
-    /// exactly this.
+    /// note. [`ChangeLedger`] does exactly this. Its total is a second line
+    /// of defence, not the bound: kept in the signer's memory, it starts
+    /// from 0 after a restart and is not shared with another signer
+    /// instance. A signer MAY persist and share it as well.
     async fn blind_sign(
         &self,
         keyset: &KeysetId,
@@ -190,16 +217,18 @@ pub trait Signer: Send + Sync {
 /// The settlement a blind signature pays change or a refund for, as every
 /// [`Signer::blind_sign`] call names it.
 ///
-/// A `ReplayKey` can be settled twice: once by the gate's own settle (OK,
-/// change worth up to `value - charged`), and again by the refund of a
-/// timed-out outcome (FAILED, up to `value`), when the action or the
-/// scheme's own settle outlived `pending_timeout`. Only one of the two is
-/// recorded, but a scheme can keep what it got signed in the first and
-/// return it inside the second's `scheme_result`, so the signer keeps one
-/// total per `ReplayKey` across both, bounded by each status's cap: never
-/// more than `value` in all (ERRATA N3b-16). An honest refund is a superset
-/// of the change (`bnap:notes` signs `outputs` and `refund_outputs` on
-/// FAILED), so re-signing the change outputs costs it nothing.
+/// A `ReplayKey` can be settled more than once: by the gate's own settle
+/// (OK, change worth up to `value - charged`), and by the refund of a
+/// timed-out outcome (FAILED, up to `value`), which every replay runs again
+/// until a refund is recorded. Only one settlement is recorded, but a
+/// scheme can keep what it got signed in each and return it inside a later
+/// `scheme_result`, so every output is counted against one total per
+/// `ReplayKey` across all of them, bounded by each status's cap: never more
+/// than `value` in all (ERRATA N3b-16, N3b-29). The use store keeps that
+/// total durably ([`UseStore::reserve_change`]); the signer keeps its own
+/// as a second line. An honest refund is a superset of the change
+/// (`bnap:notes` signs `outputs` and `refund_outputs` on FAILED), so
+/// re-signing the change outputs costs it nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ChangeLimit {
     /// The outcome being settled.
@@ -211,6 +240,11 @@ pub struct ChangeLimit {
     /// The most every blind signature for this settlement may be worth
     /// together.
     pub cap: u64,
+    /// Until when the outcome can still be settled: the earliest time the
+    /// store may purge its record ([`ChangeCap::keep_until`]). A signer
+    /// keeps its total for `replay_key` at least until then, plus a clock
+    /// skew ([`ChangeLedger::forget_expired`]).
+    pub keep_until: u64,
 }
 
 /// One output as signed: keyset, amount and `B'`. The same triple always
@@ -240,6 +274,7 @@ struct Signed {
     failed_cap: Option<u64>,
     total: u64,
     outputs: BTreeSet<SignedOutput>,
+    keep_until: u64,
 }
 
 impl Signed {
@@ -254,7 +289,8 @@ impl Signed {
 }
 
 /// The running total of change and refunds a signer signed, per outcome,
-/// for [`Signer::blind_sign`] implementations.
+/// for [`Signer::blind_sign`] implementations: the signer's second line of
+/// defence behind the use store's reservation.
 ///
 /// [`ChangeLedger::reserve`] is called before signing. It keeps one total
 /// per `ReplayKey` across the OK change and the FAILED refund (see
@@ -265,9 +301,18 @@ impl Signed {
 /// outputs pays only for its new ones, and new outputs that would take the
 /// total beyond the call's cap are refused. The first cap a `ReplayKey` and
 /// status is named with bounds that status: a later call with a larger cap
-/// does not raise it. It is in memory: a signer that restarts starts from
-/// 0, which is safe only because the gate never sends change before the
-/// outcome is durable (6.4).
+/// does not raise it.
+///
+/// It is in memory: a signer that restarts starts from 0, and a second
+/// signer instance has its own. That alone would let a scheme that keeps
+/// its signatures and fails every settle (so no refund is ever recorded and
+/// each replay opens a new budget) get a fresh `value` signed after every
+/// restart, and on every instance. What bounds an outcome across restarts
+/// and instances is the reservation [`CappedSigner::blind_sign`] makes in
+/// the use store before every signer call ([`UseStore::reserve_change`]),
+/// durable and shared by every gate instance (ERRATA N3b-29). Drop what it
+/// keeps only with [`ChangeLedger::forget_expired`], once an outcome can no
+/// longer be settled.
 #[derive(Debug, Default)]
 pub struct ChangeLedger {
     outcomes: Mutex<HashMap<ReplayKey, Signed>>,
@@ -296,6 +341,7 @@ impl ChangeLedger {
         check_outputs(outputs)?;
         let mut all = self.outcomes.lock().unwrap_or_else(PoisonError::into_inner);
         let signed = all.entry(limit.replay_key).or_default();
+        signed.keep_until = signed.keep_until.max(limit.keep_until);
         let cap = signed.pin(limit.status, limit.cap).min(limit.cap);
         let fresh: BTreeSet<SignedOutput> = outputs
             .iter()
@@ -334,26 +380,40 @@ impl ChangeLedger {
             .map_or(0, |s| s.total)
     }
 
-    /// Drops what was kept for `replay_key`, once its replay window has
-    /// passed and no replay can settle it again.
-    pub fn forget(&self, replay_key: &ReplayKey) {
-        self.outcomes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(replay_key);
+    /// Drops what was kept for every outcome that can no longer be settled:
+    /// its latest [`ChangeLimit::keep_until`] plus a clock skew (the
+    /// signer's clock may run ahead of the gate's) is before `now`. Returns
+    /// how many outcomes were dropped. An outcome is never dropped earlier,
+    /// since a replay could still settle it.
+    pub fn forget_expired(&self, now: u64) -> usize {
+        let mut all = self.outcomes.lock().unwrap_or_else(PoisonError::into_inner);
+        let before = all.len();
+        all.retain(|_, s| s.keep_until.saturating_add(CLOCK_SKEW) >= now);
+        before - all.len()
     }
 }
 
 /// The notes a verify-only view accepted: amount by `Y`, each note once.
 type Tally = Mutex<BTreeMap<[u8; 33], u64>>;
 
-/// A change budget: what is left of the cap, and whether the settlement
-/// it was made for is over.
-#[derive(Debug)]
+/// A change budget: what is left of the cap, whether the settlement it was
+/// made for is over, and the store that keeps the outcome's total.
 struct Budget {
     limit: ChangeLimit,
+    cap: ChangeCap,
+    store: Arc<dyn UseStore>,
     remaining: AtomicU64,
     closed: AtomicBool,
+}
+
+impl fmt::Debug for Budget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Budget")
+            .field("limit", &self.limit)
+            .field("remaining", &self.remaining)
+            .field("closed", &self.closed)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Budget {
@@ -459,14 +519,17 @@ impl CappedSigner {
     }
 
     /// The view a scheme's `settle` gets: blind signatures worth at most
-    /// `cap` in all, for the outcome the cap was computed for, and only
-    /// until the returned [`SettleGuard`] is dropped.
+    /// `cap` in all, for the outcome the cap was computed for, each output
+    /// reserved in `store` first, and only until the returned
+    /// [`SettleGuard`] is dropped.
     ///
     /// Only bnap-core makes a [`ChangeCap`], from one committed outcome
     /// (`Pending::charge` for its own settle, `Recorded::refund_cap` for the
     /// refund of a timed-out one), and the cap carries that outcome's
-    /// `ReplayKey`, so the budget and the settlement the signer counts it
-    /// against always belong together.
+    /// `ReplayKey`, so the budget, the store's reservation and the
+    /// settlement the signer counts it against always belong together.
+    /// `store` is the gate's use store, the one that committed the outcome:
+    /// its record keeps the outcome's change ledger.
     ///
     /// Hold the guard while `settle` runs and drop it when `settle`
     /// returns. No plug or gate can make a cap of its own:
@@ -474,14 +537,21 @@ impl CappedSigner {
     /// ```compile_fail,E0624
     /// let _ = bnap_plug::ChangeCap::new;
     /// ```
-    pub fn for_change(inner: Arc<dyn Signer>, cap: &ChangeCap) -> (Self, SettleGuard) {
+    pub fn for_change(
+        inner: Arc<dyn Signer>,
+        store: Arc<dyn UseStore>,
+        cap: &ChangeCap,
+    ) -> (Self, SettleGuard) {
         let budget = Arc::new(Budget {
             limit: ChangeLimit {
                 replay_key: *cap.replay_key(),
                 status: cap.status(),
                 unit: cap.unit().to_owned(),
                 cap: cap.get(),
+                keep_until: cap.keep_until(),
             },
+            cap: cap.clone(),
+            store,
             remaining: AtomicU64::new(cap.get()),
             closed: AtomicBool::new(false),
         });
@@ -582,16 +652,27 @@ impl CappedSigner {
 
     /// Signs blinded outputs out of the change budget.
     ///
-    /// Before the signer is called, refuses when the view is verify-only,
-    /// when the batch is empty or holds an output of amount 0 (the budget
-    /// is not touched), or when the guard closed the budget, and takes the
-    /// outputs' sum out of
-    /// what is left with a compare-and-swap, refusing past 0; a sum that
-    /// overflows is above any cap. A call that fails afterwards keeps its
-    /// share spent, since the signer may have signed before failing. The
-    /// signer gets the settlement's [`ChangeLimit`] and enforces the
-    /// running total too. Refuses an answer that does not hold exactly one
-    /// signature per output, with the output's amount.
+    /// Before the signer is called, in this order:
+    ///
+    /// 1. refuses when the view is verify-only, or when the batch is empty
+    ///    or holds an output of amount 0 (the budget is not touched);
+    /// 2. refuses when the guard closed the budget, and takes the outputs'
+    ///    sum out of what is left with a compare-and-swap, refusing past 0;
+    ///    a sum that overflows is above any cap;
+    /// 3. reserves the outputs in the use store, against the outcome's one
+    ///    durable total ([`bnap_core::outcome::reserve_change`]): refused
+    ///    with [`SignerError::OverCap`] when they would take it past the
+    ///    cap or the outcome's value, whichever process, gate or signer
+    ///    instance signed before, and with [`SignerError::Refused`] when the
+    ///    outcome has no record. A store that cannot be reached is
+    ///    [`SignerError::Unavailable`]: nothing is signed unreserved.
+    ///
+    /// A call that fails after step 2 keeps its share spent, and one that
+    /// fails after step 3 keeps its reservation, since the signer may have
+    /// signed before failing. The signer gets the settlement's
+    /// [`ChangeLimit`] and keeps a total of its own too. Refuses an answer
+    /// that does not hold exactly one signature per output, with the
+    /// output's amount.
     pub async fn blind_sign(
         &self,
         keyset: &KeysetId,
@@ -607,6 +688,29 @@ impl CappedSigner {
             .iter()
             .try_fold(0u64, |acc, o| acc.checked_add(o.amount));
         budget.take(sum)?;
+        let reserved: Vec<ChangeOutput> = outputs
+            .iter()
+            .map(|o| ChangeOutput {
+                keyset: keyset.0.clone(),
+                amount: o.amount,
+                blinded: o.blinded.0,
+            })
+            .collect();
+        match reserve_change(&*budget.store, &budget.cap, &reserved).await {
+            Ok(Reserve::Reserved { .. }) => {}
+            Ok(Reserve::OverCap { total, cap }) => {
+                return Err(SignerError::OverCap { sum: total, cap });
+            }
+            Ok(Reserve::NoValue) => {
+                return Err(SignerError::Refused("no value to sign".into()));
+            }
+            Ok(Reserve::Unknown) => {
+                return Err(SignerError::Refused(
+                    "the outcome has no record to reserve change in".into(),
+                ));
+            }
+            Err(e) => return Err(SignerError::Unavailable(e.to_string())),
+        }
         let sigs = self
             .inner
             .blind_sign(keyset, outputs, &budget.limit)
