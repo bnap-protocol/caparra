@@ -7,6 +7,8 @@
 use std::cell::Cell;
 use std::sync::Arc;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use bnap_core::class::BindingClass;
 use bnap_core::credential::{Credential, OfferRef, SchemePart};
 use bnap_core::hash::{Context, Scope, sha256};
@@ -893,6 +895,42 @@ fn a_relabelled_signature_takes_no_quota_slot() {
     let next = Cred::bot("a", "q2").build(&gate);
     assert_eq!(new(gate.process(&next, NOW)).admission().price(), 0);
     assert_eq!(counter(), 2);
+}
+
+#[test]
+fn a_small_order_key_is_refused() {
+    // The identity point is a valid encoding, but under it the check
+    // [s]B = R + [k]A holds for R = B, s = 1 over any message: anyone can
+    // sign for it, and every such body is another Digest and ReplayKey over
+    // the same Context. ed25519-dalek's `verify_strict` refuses such keys.
+    let mut weak = [0u8; 32];
+    weak[0] = 1;
+    let gate = Gate::with(
+        NOW + 300,
+        None,
+        vec![AttestEntry::new(ID, Effect::Waive)],
+        Arc::new(StaticDirectory::new().with_held_key(weak)),
+    );
+    let cred = Cred {
+        agent: None,
+        ..Cred::bot("a", "n1")
+    }
+    .build(&gate);
+    let mut sig = vec![0x58];
+    sig.extend([0x66; 31]);
+    sig.push(1);
+    sig.extend([0; 31]);
+    let forged = with_field(&cred, |b| {
+        b.signature_input = b
+            .signature_input
+            .replacen(&keyid(&public("a")), &keyid(&weak), 1);
+        b.signature = format!("sig1=:{}:", STANDARD.encode(&sig));
+    });
+    rejected_with(gate.verify(&forged, NOW), codes::UNKNOWN_KEY);
+    assert_eq!(
+        gate.process(&forged, NOW).unwrap_err(),
+        ErrorCode::Underpaid
+    );
 }
 
 /// Verifies `cred` with one body field edited, and expects `code`.

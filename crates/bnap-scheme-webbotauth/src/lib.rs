@@ -60,7 +60,8 @@ pub mod codes {
     pub const BAD_AGENT: &str = "BAD_AGENT";
     /// `keyid` is not a base64url SHA-256 thumbprint.
     pub const BAD_KEYID: &str = "BAD_KEYID";
-    /// The directory does not list the key for this agent.
+    /// The directory does not list the key for this agent, or lists one
+    /// that is not a usable Ed25519 key (a small-order point included).
     pub const UNKNOWN_KEY: &str = "UNKNOWN_KEY";
     /// The directory's key does not have the thumbprint `keyid` names.
     pub const KEYID_MISMATCH: &str = "KEYID_MISMATCH";

@@ -510,10 +510,13 @@ impl CredentialScheme for WebBotAuthScheme {
                 "the key's thumbprint is not the keyid",
             ));
         }
-        if ed25519_dalek::VerifyingKey::from_bytes(&key).is_err() {
+        // The crate checks signatures with ed25519-dalek's non-strict
+        // `verify`, under which anyone can sign for a small-order key:
+        // refuse such keys, as `verify_strict` (used for DPoP) does.
+        if !ed25519_dalek::VerifyingKey::from_bytes(&key).is_ok_and(|k| !k.is_weak()) {
             return Err(reject(
                 codes::UNKNOWN_KEY,
-                "the directory key is not an Ed25519 key",
+                "the directory key is not a usable Ed25519 key",
             ));
         }
 
