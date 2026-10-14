@@ -1,0 +1,911 @@
+//! Pricing, attestations and metering (draft-00 section 7).
+//!
+//! The offer is the quote. At verification time the gate uses only what the
+//! offer says:
+//!
+//! ```text
+//! price(base):
+//!   p = base
+//!   for each verified attestation, in offer order, effect waive:     p = 0
+//!   for each verified attestation, in offer order, effect discount:  p = p - ⌊p × value / 10000⌋
+//!   if p > 0: for the first verified quota attestation, in offer order, whose counter has room:
+//!                                                                     p = 0, and add its counter to the commit
+//!   return p
+//!
+//! admit:
+//!   for each required attestation in the offer: if not verified -> POLICY
+//!   p = price(entry.amount, or 0 if the credential has no pay)
+//!   if p > 0 and no pay                                               -> UNDERPAID
+//!   if the scheme's verified value < p                                -> UNDERPAID
+//! ```
+//!
+//! **Without pay** the build does not use the literal base of 0. Read
+//! literally, `price(0)` is always 0, so `if p > 0 and no pay` can never
+//! fire and a credential with no `pay` and no verified waive (for example
+//! one carrying only a discount attestation, verified or not) would be
+//! admitted for free. [`admit`] instead prices a credential without pay at
+//! [`NO_PAY_BASE`] (2⁶⁴ − 1): it is admitted only when its verified
+//! attestations alone bring the price to 0, through a waive, a full
+//! discount or a quota with room (ERRATA N3b-1, owner decision needed).
+//!
+//! **The verified value is what the operator-trusted plugs confirmed.**
+//! Draft-00 compares the price with "the scheme's verified value", but a
+//! scheme is contained, not trusted (6.1), so [`admit`] does not take its
+//! word for it: the value it counts is the smaller of what the scheme
+//! claimed and what its [`Backing`] adds up to, in the pay entry's unit.
+//! Backing is a payment a rail confirmed as final, or a note the signer
+//! verified; each counts once, and every one is committed as a single use
+//! with the request ([`crate::store::CommitPlan`]), under an ID that
+//! does not depend on the scheme: its `RailId`, or [`note_id`] for a note,
+//! so one note or payment admits one action whichever scheme carries it
+//! (ERRATA N3b-19). A payment in a unit that does not convert to the
+//! entry's is refused (ERRATA N3b-15).
+//!
+//! [`admit`] makes the attestation and quota decision once, at admission,
+//! and returns it inside the [`Admission`]. [`Admission::settle`] reuses
+//! that decision for the charge, so settlement never consumes a quota
+//! again. Only attestations of binding class S, A or O change the price; a
+//! waive, discount or quota by a class None scheme has no effect.
+//!
+//! All arithmetic is exact. Metered charges are computed in 128 bits, which
+//! holds every `units × rate` product, so a product beyond 2⁶⁴ simply
+//! yields the ceiling.
+
+use std::collections::BTreeSet;
+
+use crate::class::BindingClass;
+use crate::error::ErrorCode;
+use crate::hash::{CounterKey, RailId, ReplayKey, UseId};
+use crate::ids::quota_key;
+use crate::offer::{AttestEntry, Effect, MAX_DISCOUNT_BP, OfferFields};
+use crate::response::Status;
+use crate::store::CounterUse;
+
+/// An attestation the credential carries that its scheme verified.
+///
+/// Attestations that failed verification are left out: one that is not
+/// required has no effect and causes no error (section 7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedAttest {
+    /// Scheme ID, as in the offer's attest entry.
+    pub scheme: String,
+    /// The scheme's binding class, from the registry.
+    pub class: BindingClass,
+    /// The socket `UseId` of the stable identity a quota counts against,
+    /// built from the local ID the registry declares as `quota_id`
+    /// ([`crate::ids::use_id`]). `None` for schemes that cannot carry a
+    /// quota.
+    pub quota_id: Option<UseId>,
+}
+
+impl VerifiedAttest {
+    /// A verified attestation without a quota identity.
+    #[must_use]
+    pub fn new(scheme: impl Into<String>, class: BindingClass) -> Self {
+        Self {
+            scheme: scheme.into(),
+            class,
+            quota_id: None,
+        }
+    }
+
+    /// The same, with the `UseId` a quota counts against.
+    #[must_use]
+    pub fn with_quota_id(mut self, id: UseId) -> Self {
+        self.quota_id = Some(id);
+        self
+    }
+}
+
+/// A quota attestation chosen at admission: its counter joins the commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuotaUse {
+    /// Scheme ID of the quota attestation.
+    pub scheme: String,
+    /// The counter, its limit (the entry's `value`) and when its epoch ends.
+    pub counter: CounterUse,
+}
+
+/// The attestation results and the quota decision fixed at admission.
+///
+/// [`PriceDecision::price`] is `price(base)` of section 7 under this
+/// decision, for any base: the entry amount at admission, the metered
+/// amount at settlement.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PriceDecision {
+    /// The first verified waive in offer order, if any.
+    pub waive: Option<String>,
+    /// Verified discounts in offer order: scheme ID and basis points.
+    pub discounts: Vec<(String, u64)>,
+    /// The quota chosen at admission, if the price was above 0 and a
+    /// verified quota had room.
+    pub quota: Option<QuotaUse>,
+    /// Verified attestations whose waive, discount or quota was ignored
+    /// because their binding class is None (section 7).
+    pub ignored: Vec<String>,
+}
+
+impl PriceDecision {
+    /// `price(base)` under this decision.
+    #[must_use]
+    pub fn price(&self, base: u64) -> u64 {
+        // price_wide never exceeds its input.
+        narrow(self.price_wide(u128::from(base)))
+    }
+
+    /// `price(base)` in 128 bits, for metered amounts beyond 2⁶⁴.
+    #[must_use]
+    pub fn price_wide(&self, base: u128) -> u128 {
+        let p = self.price_before_quota(base);
+        if p > 0 && self.quota.is_some() { 0 } else { p }
+    }
+
+    fn price_before_quota(&self, base: u128) -> u128 {
+        if self.waive.is_some() {
+            return 0;
+        }
+        self.discounts
+            .iter()
+            .fold(base, |p, (_, bp)| discount(p, *bp))
+    }
+
+    /// The counter to add to the commit, if a quota was chosen.
+    #[must_use]
+    pub fn quota_counter(&self) -> Option<&CounterUse> {
+        self.quota.as_ref().map(|q| &q.counter)
+    }
+}
+
+/// `p - ⌊p × bp / 10000⌋`, exact for every `p`: the product is split so it
+/// never overflows.
+fn discount(p: u128, bp: u64) -> u128 {
+    let bp = u128::from(bp.min(MAX_DISCOUNT_BP));
+    let off = (p / 10_000) * bp + (p % 10_000) * bp / 10_000;
+    p - off
+}
+
+/// A value at most `u64::MAX` back in 64 bits.
+fn narrow(v: u128) -> u64 {
+    u64::try_from(v).unwrap_or(u64::MAX)
+}
+
+/// The quota attestations that could apply, in offer order, with their
+/// counter keys at `now`.
+///
+/// [`crate::outcome::process`] reads these counters from the use store
+/// before it calls [`admit`], which picks the first one with room; the
+/// commit re-checks the chosen counter's limit atomically. Only verified
+/// quota attestations of class S, A or O that name a quota identity are
+/// listed.
+#[must_use]
+pub fn quota_candidates(
+    offer: &OfferFields,
+    verified: &[VerifiedAttest],
+    now: u64,
+) -> Vec<QuotaUse> {
+    offer
+        .attest
+        .iter()
+        .filter(|e| e.effect == Effect::Quota)
+        .filter_map(|e| {
+            let v = find(verified, &e.scheme)?;
+            if !v.class.may_affect_price() {
+                return None;
+            }
+            quota_use(e, v.quota_id.as_ref()?, now)
+        })
+        .collect()
+}
+
+fn quota_use(e: &AttestEntry, id: &UseId, now: u64) -> Option<QuotaUse> {
+    let (limit, epoch) = (e.value?, e.epoch?);
+    let key = quota_key(id, limit, epoch, now)?;
+    Some(QuotaUse {
+        scheme: e.scheme.clone(),
+        counter: CounterUse {
+            key,
+            limit,
+            resets_at: epoch_end(now, epoch),
+        },
+    })
+}
+
+/// The end of the epoch window that holds `now`: `(⌊now / epoch⌋ + 1) × epoch`.
+pub(crate) fn epoch_end(now: u64, epoch: u64) -> u64 {
+    let window = now.checked_div(epoch).unwrap_or(0);
+    window.saturating_add(1).saturating_mul(epoch)
+}
+
+fn find<'a>(verified: &'a [VerifiedAttest], scheme: &str) -> Option<&'a VerifiedAttest> {
+    verified.iter().find(|v| v.scheme == scheme)
+}
+
+/// Makes the attestation and quota decision of `price(base)` for `offer`.
+///
+/// `counter` returns a counter's current value, as read from the use store;
+/// a quota has room when its counter is below its limit.
+#[must_use]
+pub fn decide(
+    offer: &OfferFields,
+    verified: &[VerifiedAttest],
+    base: u64,
+    now: u64,
+    counter: impl Fn(&CounterKey) -> u64,
+) -> PriceDecision {
+    let mut d = PriceDecision::default();
+    for e in &offer.attest {
+        let Some(v) = find(verified, &e.scheme) else {
+            continue;
+        };
+        let affects = matches!(e.effect, Effect::Waive | Effect::Discount | Effect::Quota);
+        if affects && !v.class.may_affect_price() {
+            d.ignored.push(e.scheme.clone());
+            continue;
+        }
+        match e.effect {
+            Effect::Waive if d.waive.is_none() => d.waive = Some(e.scheme.clone()),
+            Effect::Discount => {
+                if let Some(bp) = e.value {
+                    d.discounts.push((e.scheme.clone(), bp));
+                }
+            }
+            _ => {}
+        }
+    }
+    if d.price_before_quota(u128::from(base)) > 0 {
+        d.quota = quota_candidates(offer, verified, now)
+            .into_iter()
+            .find(|q| counter(&q.counter.key) < q.counter.limit);
+    }
+    d
+}
+
+/// The base [`admit`] prices a credential without `pay` at: the largest
+/// amount, so only a waive, a full discount or a quota makes it 0
+/// (ERRATA N3b-1).
+pub const NO_PAY_BASE: u64 = u64::MAX;
+
+/// Which payment or note backs a pay part. Each counts once.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BackingSource {
+    /// A payment a rail confirmed as final, by the `RailId` bnap-core
+    /// computed from the rail's own kind and canonical bytes.
+    Rail(RailId),
+    /// A note the signer verified, by its `Y` (the 33-byte compressed
+    /// point `hash_to_curve(secret)`, [`crate::note::hash_to_curve`], as
+    /// the verify-only view derived it from the note's secret; never a
+    /// point a scheme names). The note is the operator's, not the scheme's:
+    /// every value scheme on a gate checks notes through the same signer,
+    /// so the note is consumed under [`note_id`], whichever scheme carried
+    /// it.
+    Note(Vec<u8>),
+}
+
+/// The tag of a signer-verified note's single use (ERRATA N3b-19).
+pub const NOTE_TAG: &str = "bnap/note";
+
+/// `H_"bnap/note"(Y)`: the single use a note the operator's signer verified
+/// is consumed under (ERRATA N3b-19).
+///
+/// Unlike a `UseId`, it does not depend on the scheme: the signer and its
+/// keysets are shared by every value scheme on the gate, so one note
+/// accepted under `bnap:notes` and again under a Cashu adapter is one note,
+/// spent once, the way a `RailId` makes one payment count once (6.1). Cashu
+/// keys its own spent state by `Y` alone, for the same reason.
+#[must_use]
+pub fn note_id(y: &[u8]) -> [u8; 32] {
+    crate::hash::tagged_hash(NOTE_TAG, y)
+}
+
+impl BackingSource {
+    /// The single use the commit consumes this backing under: a payment's
+    /// `RailId`, or a note's [`note_id`]. Neither depends on the scheme
+    /// that named it.
+    #[must_use]
+    pub fn single_id(&self) -> [u8; 32] {
+        match self {
+            Self::Rail(r) => r.0,
+            Self::Note(y) => note_id(y),
+        }
+    }
+}
+
+/// What an operator-trusted plug confirmed a pay part is worth: a rail's
+/// final payment (`bnap_plug::confirm_rail_id`) or a note the signer's
+/// verify-only view accepted (`CappedSigner::notes`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Backing {
+    /// The payment or note.
+    pub source: BackingSource,
+    /// What it is worth, in `unit`.
+    pub amount: u64,
+    /// The unit the rail or the signer reported.
+    pub unit: String,
+}
+
+/// A value scheme's registered `refund` property (section 11: `none`,
+/// `out-of-band` or `atomic`), as the registry entry states it. The gate
+/// passes it in, as it passes binding classes; a plug never describes
+/// itself.
+///
+/// Only an `atomic` scheme gets a change budget ([`ChangeCap`]) for a
+/// FAILED refund or for change: `none` keeps the value, and `out-of-band`
+/// returns it outside the socket, never in the operator's notes
+/// (ERRATA N3b-20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Refund {
+    /// `none`: the scheme cannot return value; any excess is kept.
+    None,
+    /// `out-of-band`: the scheme returns value by its own means, outside
+    /// the settlement.
+    OutOfBand,
+    /// `atomic`: the scheme returns value inside the settlement, such as
+    /// notes as change outputs.
+    Atomic,
+}
+
+impl Refund {
+    /// The property from its registry token. An unknown token is the
+    /// weakest, `none`, as every unknown property value is (section 11).
+    #[must_use]
+    pub fn from_token(token: &str) -> Self {
+        match token {
+            "atomic" => Self::Atomic,
+            "out-of-band" => Self::OutOfBand,
+            _ => Self::None,
+        }
+    }
+
+    /// The effective `refund` of a pay entry's vector; `none` when the
+    /// vector has none.
+    #[must_use]
+    pub fn of(vector: &crate::policy::EffectiveVector) -> Self {
+        vector.value("refund").map_or(Self::None, Self::from_token)
+    }
+
+    /// The registry token.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::OutOfBand => "out-of-band",
+            Self::Atomic => "atomic",
+        }
+    }
+
+    /// True only for `atomic`: the scheme may return value through the
+    /// operator's signer, so its settlement gets a change budget.
+    #[must_use]
+    pub fn returns_change(self) -> bool {
+        self == Self::Atomic
+    }
+}
+
+/// The value scheme the credential pays with: what its `verify` claimed,
+/// what the rails and the signer confirmed, and how its registry entry says
+/// it can return value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PayValue<'a> {
+    /// Scheme ID of the credential's `pay` part.
+    pub scheme: &'a str,
+    /// The value the scheme's `verify` returned, in the pay entry's unit.
+    /// Never counted beyond `backing`.
+    pub claimed: u64,
+    /// Every payment and note behind the part, as the rails and the signer
+    /// confirmed them.
+    pub backing: Vec<Backing>,
+    /// The scheme's registered `refund` property, from its registry entry
+    /// (or [`Refund::of`] its effective vector), never from the plug.
+    pub refund: Refund,
+}
+
+/// What [`admit`] needs.
+#[derive(Debug, Clone)]
+pub struct AdmitInput<'a> {
+    /// The offer the credential uses, already checked (4.4).
+    pub offer: &'a OfferFields,
+    /// The credential's value scheme, if it has `pay`.
+    pub pay: Option<PayValue<'a>>,
+    /// Every attestation that verified.
+    pub attest: &'a [VerifiedAttest],
+    /// The gate's clock, for quota epochs.
+    pub now: u64,
+}
+
+/// The chosen pay entry, as admitted.
+///
+/// Its fields are private and only [`admit`] makes one, so the value a
+/// [`ChangeCap`] is computed from is always the one admission checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdmittedPay {
+    index: usize,
+    scheme: String,
+    unit: String,
+    amount: u64,
+    rate: Option<u64>,
+    claimed: u64,
+    backed: u64,
+    value: u64,
+    backing: Vec<BackingSource>,
+    refund: Refund,
+}
+
+impl AdmittedPay {
+    /// Index of the entry in the offer's `pay`.
+    #[must_use]
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Scheme ID.
+    #[must_use]
+    pub fn scheme(&self) -> &str {
+        &self.scheme
+    }
+
+    /// The entry's unit; the Response's `unit`.
+    #[must_use]
+    pub fn unit(&self) -> &str {
+        &self.unit
+    }
+
+    /// The entry's amount; the ceiling in a metered offer.
+    #[must_use]
+    pub fn amount(&self) -> u64 {
+        self.amount
+    }
+
+    /// Price per 1,000 meter units, in a metered offer.
+    #[must_use]
+    pub fn rate(&self) -> Option<u64> {
+        self.rate
+    }
+
+    /// What the scheme's `verify` claimed.
+    #[must_use]
+    pub fn claimed(&self) -> u64 {
+        self.claimed
+    }
+
+    /// What the backing adds up to, in the entry's unit.
+    #[must_use]
+    pub fn backed(&self) -> u64 {
+        self.backed
+    }
+
+    /// The value admission counted, in the entry's unit: the smaller of
+    /// [`Self::claimed`] and [`Self::backed`]. The change cap comes from it.
+    #[must_use]
+    pub fn value(&self) -> u64 {
+        self.value
+    }
+
+    /// The payments and notes behind the value, each once, sorted. The
+    /// commit plan consumes every one of them as a single use.
+    #[must_use]
+    pub fn backing(&self) -> &[BackingSource] {
+        &self.backing
+    }
+
+    /// The scheme's registered `refund` property, as the gate passed it.
+    /// Only `atomic` gets a change cap above 0.
+    #[must_use]
+    pub fn refund(&self) -> Refund {
+        self.refund
+    }
+}
+
+/// The result of admission: the decision, the price and the pay entry.
+///
+/// Its fields are private and only [`admit`] makes one, so every
+/// [`Charge`], and the [`ChangeCap`] `outcome::Pending::charge` binds it
+/// to, is always computed from a value and a decision that admission
+/// checked. No crate can write one out:
+///
+/// ```compile_fail,E0451
+/// use bnap_core::pricing::{Admission, PriceDecision};
+/// let forged = Admission {
+///     decision: PriceDecision::default(),
+///     price: 0,
+///     pay: None,
+///     metered: false,
+/// };
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Admission {
+    decision: PriceDecision,
+    price: u64,
+    pay: Option<AdmittedPay>,
+    metered: bool,
+}
+
+impl Admission {
+    /// Attestation results and quota decision, reused at settlement.
+    #[must_use]
+    pub fn decision(&self) -> &PriceDecision {
+        &self.decision
+    }
+
+    /// `price(entry.amount)`, or `price(NO_PAY_BASE)` without pay (then
+    /// always 0): the effective price; the most a metered action can be
+    /// charged.
+    #[must_use]
+    pub fn price(&self) -> u64 {
+        self.price
+    }
+
+    /// The chosen pay entry, when the credential has `pay`.
+    #[must_use]
+    pub fn pay(&self) -> Option<&AdmittedPay> {
+        self.pay.as_ref()
+    }
+
+    /// The offer is metered.
+    #[must_use]
+    pub fn metered(&self) -> bool {
+        self.metered
+    }
+}
+
+/// Why admission failed.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum PriceError {
+    /// POLICY: a required attestation did not verify.
+    #[error("required attestation {0} did not verify")]
+    Policy(String),
+    /// UNDERPAID: the verified value is below the effective price, or the
+    /// price is above 0 and the credential has no pay.
+    #[error("value {value} below the effective price {price}")]
+    Underpaid {
+        /// The effective price.
+        price: u64,
+        /// The verified value (0 without pay).
+        value: u64,
+    },
+    /// `NOT_OFFERED`: the pay scheme has no entry in the offer.
+    #[error("scheme {0} is not offered")]
+    NotOffered(String),
+    /// `BAD_CREDENTIAL`: a payment or note in a unit that does not convert
+    /// to the pay entry's (ERRATA N3b-15).
+    #[error("backing in {got} for an entry in {want}")]
+    UnitMismatch {
+        /// The pay entry's unit.
+        want: String,
+        /// The unit the rail or signer reported.
+        got: String,
+    },
+}
+
+impl PriceError {
+    /// The draft-00 error code.
+    #[must_use]
+    pub fn code(&self) -> ErrorCode {
+        match self {
+            Self::Policy(_) => ErrorCode::Policy,
+            Self::Underpaid { .. } => ErrorCode::Underpaid,
+            Self::NotOffered(_) => ErrorCode::NotOffered,
+            Self::UnitMismatch { .. } => ErrorCode::BadCredential,
+        }
+    }
+}
+
+/// Admission (section 7): required attestations, `price`, and the value
+/// check; without pay, see [`NO_PAY_BASE`].
+///
+/// The value checked is `min(claimed, backed)` (see the module docs and
+/// [`backed_value`]). `counter` returns a counter's current value from the
+/// use store, for the quota candidates of [`quota_candidates`].
+pub fn admit(
+    input: &AdmitInput<'_>,
+    counter: impl Fn(&CounterKey) -> u64,
+) -> Result<Admission, PriceError> {
+    let offer = input.offer;
+    for e in offer.attest.iter().filter(|e| e.effect == Effect::Required) {
+        if find(input.attest, &e.scheme).is_none() {
+            return Err(PriceError::Policy(e.scheme.clone()));
+        }
+    }
+    let pay = match &input.pay {
+        None => None,
+        Some(pv) => {
+            let (index, e) = offer
+                .pay_entry(pv.scheme)
+                .ok_or_else(|| PriceError::NotOffered(pv.scheme.to_owned()))?;
+            let (backed, backing) = backed_value(&e.unit, &pv.backing)?;
+            Some(AdmittedPay {
+                index,
+                scheme: e.scheme.clone(),
+                unit: e.unit.clone(),
+                amount: e.amount,
+                rate: e.rate,
+                claimed: pv.claimed,
+                backed,
+                value: pv.claimed.min(backed),
+                backing,
+                refund: pv.refund,
+            })
+        }
+    };
+    let base = pay.as_ref().map_or(NO_PAY_BASE, |p| p.amount);
+    let decision = decide(offer, input.attest, base, input.now, counter);
+    let price = decision.price(base);
+    let value = pay.as_ref().map_or(0, |p| p.value);
+    if value < price {
+        return Err(PriceError::Underpaid { price, value });
+    }
+    Ok(Admission {
+        decision,
+        price,
+        pay,
+        metered: offer.metered,
+    })
+}
+
+/// Millisatoshis per unit, for the two Lightning units that convert
+/// exactly; `None` for every other unit.
+fn msat_per(unit: &str) -> Option<u128> {
+    match unit {
+        "sat" => Some(1000),
+        "msat" => Some(1),
+        _ => None,
+    }
+}
+
+/// What `backing` adds up to in `unit`, and its sources, each once.
+///
+/// A source named twice counts once. Amounts in the entry's own unit add
+/// as they are; `sat` and `msat` convert into each other exactly, summed in
+/// millisatoshis and rounded down to the entry's unit at the end. Any
+/// other unit is refused with [`PriceError::UnitMismatch`]. The sum
+/// saturates at `u64::MAX`.
+pub fn backed_value(
+    unit: &str,
+    backing: &[Backing],
+) -> Result<(u64, Vec<BackingSource>), PriceError> {
+    let scale = msat_per(unit).unwrap_or(1);
+    let mut seen = BTreeSet::new();
+    let mut total: u128 = 0;
+    for b in backing {
+        let per = if b.unit == unit {
+            scale
+        } else {
+            match (msat_per(unit), msat_per(&b.unit)) {
+                (Some(_), Some(per)) => per,
+                _ => {
+                    return Err(PriceError::UnitMismatch {
+                        want: unit.to_owned(),
+                        got: b.unit.clone(),
+                    });
+                }
+            }
+        };
+        if seen.insert(b.source.clone()) {
+            total = total.saturating_add(u128::from(b.amount) * per);
+        }
+    }
+    Ok((narrow(total / scale), seen.into_iter().collect()))
+}
+
+/// The most change a scheme may sign at the settlement of one committed
+/// outcome, in the pay entry's unit, for an OK or a FAILED settlement:
+/// `value - charged` for a scheme whose registered refund is `atomic`, and
+/// 0 for every other scheme ([`Refund`], ERRATA N3b-20), bound to the
+/// outcome's `ReplayKey`.
+///
+/// Only bnap-core makes one, and only for an outcome it committed:
+/// `outcome::Pending::charge` from the admission the commit was priced
+/// with, and `outcome::Recorded::refund_cap` from the cap the commit
+/// recorded. So the cap a signer enforces, and the `ReplayKey` it is
+/// enforced for, always come from the same outcome
+/// (`bnap_plug::CappedSigner::for_change` takes both from here). Every
+/// output signed under it is first reserved in the use store against the
+/// outcome's one running total (`crate::store::UseStore::reserve_change`),
+/// and the signer keeps a total of its own as a second line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeCap {
+    replay_key: ReplayKey,
+    amount: u64,
+    unit: String,
+    status: Status,
+    keep_until: u64,
+}
+
+impl ChangeCap {
+    /// A cap bnap-core computed for the outcome under `replay_key`, whose
+    /// record the store keeps at least until `keep_until`.
+    pub(crate) fn new(
+        replay_key: ReplayKey,
+        amount: u64,
+        unit: String,
+        status: Status,
+        keep_until: u64,
+    ) -> Self {
+        Self {
+            replay_key,
+            amount,
+            unit,
+            status,
+            keep_until,
+        }
+    }
+
+    /// The earliest time the store may purge the outcome's record: its
+    /// record window from commit, and a clock skew past its offer's
+    /// `expires + 60` (`crate::store::UseStore::purge`). Until then a replay
+    /// can still settle the outcome, so a signer that keeps its own total
+    /// for the `ReplayKey` keeps it at least this long.
+    #[must_use]
+    pub fn keep_until(&self) -> u64 {
+        self.keep_until
+    }
+
+    /// The outcome the cap is for: the change budget's settlement.
+    #[must_use]
+    pub fn replay_key(&self) -> &ReplayKey {
+        &self.replay_key
+    }
+
+    /// The cap in the pay entry's unit.
+    #[must_use]
+    pub fn get(&self) -> u64 {
+        self.amount
+    }
+
+    /// The pay entry's unit; empty without pay (the cap is then 0).
+    #[must_use]
+    pub fn unit(&self) -> &str {
+        &self.unit
+    }
+
+    /// The settlement the cap is for: OK pays change, FAILED a refund.
+    #[must_use]
+    pub fn status(&self) -> Status {
+        self.status
+    }
+}
+
+/// The charge of an admission for one outcome status: what settlement
+/// writes and the Response reports, and the change the scheme may return.
+///
+/// Pure pricing: it names no outcome, so it grants nothing. The gate gets
+/// the charge it settles with from `outcome::Pending::charge`, which binds
+/// this to the committed outcome and carries the [`ChangeCap`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Charge {
+    status: Status,
+    charged: u64,
+    metered_units: Option<u64>,
+    change: u64,
+    unit: String,
+}
+
+impl Charge {
+    /// OK or FAILED.
+    #[must_use]
+    pub fn status(&self) -> Status {
+        self.status
+    }
+
+    /// The Response's `charged`; 0 on FAILED.
+    #[must_use]
+    pub fn charged(&self) -> u64 {
+        self.charged
+    }
+
+    /// The Response's `metered_units`, in metered offers.
+    #[must_use]
+    pub fn metered_units(&self) -> Option<u64> {
+        self.metered_units
+    }
+
+    /// The change the scheme may return: `value - charged` for an `atomic`
+    /// scheme, 0 otherwise.
+    #[must_use]
+    pub fn change(&self) -> u64 {
+        self.change
+    }
+
+    /// The pay entry's unit; empty without pay.
+    #[must_use]
+    pub fn unit(&self) -> &str {
+        &self.unit
+    }
+
+    /// The change cap of this charge for the outcome under `replay_key`,
+    /// whose record is kept at least until `keep_until`.
+    pub(crate) fn cap_for(&self, replay_key: ReplayKey, keep_until: u64) -> ChangeCap {
+        ChangeCap::new(
+            replay_key,
+            self.change,
+            self.unit.clone(),
+            self.status,
+            keep_until,
+        )
+    }
+}
+
+impl Admission {
+    /// The charge for an outcome (sections 6.4 and 7).
+    ///
+    /// - OK, not metered: the effective price. Overpayment is returned as
+    ///   change only by a scheme that can return change; otherwise the
+    ///   excess is kept (section 7).
+    /// - OK, metered: `min(price(⌈units × rate / 1000⌉), price(amount))`,
+    ///   under the decision made at admission; `units` is reported as
+    ///   `metered_units`. An `upto` scheme that is not `atomic` settles the
+    ///   lower amount itself and signs no change.
+    /// - FAILED: 0. The scheme refunds as its registered refund property
+    ///   allows (6.4).
+    ///
+    /// The cap is `value - charged` when the scheme's registered refund is
+    /// `atomic`, and 0 otherwise, for change and refund alike: a `none`
+    /// scheme keeps the value, and an `out-of-band` scheme refunds outside
+    /// the socket, so neither may sign the operator's notes (ERRATA N3b-20).
+    ///
+    /// `units` is the meter's count and is ignored in non-metered offers.
+    #[must_use]
+    pub fn settle(&self, status: Status, units: u64) -> Charge {
+        let metered_units = self.metered.then_some(units);
+        let charged = match status {
+            Status::Failed => 0,
+            Status::Ok if !self.metered => self.price,
+            Status::Ok => self.metered_charge(units),
+        };
+        let change = match &self.pay {
+            Some(p) if p.refund.returns_change() => p.value.saturating_sub(charged),
+            _ => 0,
+        };
+        Charge {
+            status,
+            charged,
+            metered_units,
+            change,
+            unit: self
+                .pay
+                .as_ref()
+                .map_or_else(String::new, |p| p.unit.clone()),
+        }
+    }
+
+    fn metered_charge(&self, units: u64) -> u64 {
+        let Some(p) = &self.pay else {
+            return 0;
+        };
+        let rate = u128::from(p.rate.unwrap_or(0));
+        let used = (u128::from(units) * rate).div_ceil(1000);
+        let used = self.decision.price_wide(used);
+        let ceiling = self.decision.price_wide(u128::from(p.amount));
+        narrow(used.min(ceiling))
+    }
+}
+
+/// Draft-00 section 7: a pay entry may appear in a metered offer only if
+/// its scheme's registry entry has `refund = "atomic"` or `upto = true`.
+#[must_use]
+pub fn metered_entry_allowed(refund: &str, upto: bool) -> bool {
+    Refund::from_token(refund) == Refund::Atomic || upto
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discount_is_exact_for_wide_values() {
+        assert_eq!(discount(10_000, 2000), 8000);
+        assert_eq!(discount(9_999, 2000), 8000);
+        assert_eq!(discount(1, 9999), 1);
+        assert_eq!(discount(1, 10_000), 0);
+        let big = u128::MAX;
+        assert_eq!(discount(big, 10_000), 0);
+        assert_eq!(discount(big, 5000), big - big / 2);
+    }
+
+    #[test]
+    fn epoch_end_is_the_next_window_start() {
+        assert_eq!(epoch_end(0, 60), 60);
+        assert_eq!(epoch_end(59, 60), 60);
+        assert_eq!(epoch_end(60, 60), 120);
+    }
+}

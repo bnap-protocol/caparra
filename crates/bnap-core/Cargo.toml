@@ -8,5 +8,48 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[dependencies]
+# BIP-340 Schnorr comes from the secp256k1 that `bitcoin` re-exports, so the
+# tree keeps a single secp256k1.
+bitcoin = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_json_canonicalizer = { workspace = true }
+thiserror = { workspace = true }
+# The UseStore plug trait lives here so the outcome state machine can be
+# generic over it; async-trait is a compile-time macro and brings no I/O.
+async-trait = { workspace = true }
+
+[features]
+# The in-memory UseStore and a minimal block_on, for tests in this and
+# downstream crates. Not durable: never use it in a gate.
+test-support = []
+
+[dev-dependencies]
+proptest = { workspace = true }
+base64 = { workspace = true }
+
 [lints]
 workspace = true
+
+# These targets sign Response fields outside any recorded outcome, which
+# only `test_support` offers (a gate signs a receipt only through
+# `Recorded::unsigned_receipt`).
+[[test]]
+name = "negative"
+required-features = ["test-support"]
+
+[[test]]
+name = "props"
+required-features = ["test-support"]
+
+[[test]]
+name = "sign"
+required-features = ["test-support"]
+
+[[test]]
+name = "vectors"
+required-features = ["test-support"]
