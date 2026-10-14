@@ -83,6 +83,12 @@ axum = "0.8.9"
 tower = "0.5.3"
 tower-http = { version = "0.7.1", features = ["trace"] }
 hyper = "1.12.0"
+# HTTP types for the HTTP carrier and the gate. All already in the tree
+# through axum, hyper and reqwest.
+http = "1.5.0"
+bytes = "1.12.1"
+http-body = "1.1.0"
+http-body-util = "0.1.5"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "http2", "charset"] }
 # Named directly only to install the process-wide crypto provider (aws-lc-rs,
 # the one reqwest's rustls feature uses) before an LND or NWC connection.
