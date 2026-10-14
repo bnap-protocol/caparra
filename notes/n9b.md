@@ -283,4 +283,42 @@ See "Checker" below for the final verdict.
 
 ## Checker
 
-(filled in after the quality gate)
+Three rounds of independent checkers (no code changed by them).
+
+- Round 1: FAIL, one MEDIUM (`inputResponses` / `requestState` outside the
+  scope), fixed in repair round 1 with the LOWs listed there.
+- Round 2: FAIL, one MEDIUM (a priced tool answering as a Task), fixed in
+  repair round 2.
+- **Round 3 (HEAD `c7428d4`): PASS**, no HIGH or MEDIUM. 33 tests passed,
+  clippy `-D warnings` and fmt clean. The checker also fed the gate's real
+  output to the `mpp` 0.15.1 crate: `is_payment_required`,
+  `extract_challenges` (1 MPP challenge, the BNAP entry skipped),
+  `McpPaymentErrorData`, `extract_credential` and `McpReceipt` all parse.
+
+### LOW findings (open)
+
+1. **A replay after the offer expired is STALE** (`gate.rs`, the 4.4 check
+   before `process`), so a missed receipt, or the refund of an outcome that
+   timed out after a post-commit UNAVAILABLE, can be fetched only while the
+   offer lives. This is the open core erratum N3b-22 (`notes/n3-core.md`);
+   the literal 4.4 order is kept until the owner decides.
+2. **Integers beyond the u64 range, or written with `.0`, pass the 2⁵³
+   rule**: serde reads them as doubles, so `18446744073709551616` and
+   `18446744073709551617` share a scope. They are the same I-JSON double
+   and the tool receives the canonical value, so the paid action is the one
+   that runs; the documented rule covers only integer literals within u64.
+3. **Free tools still see credential keys** in `_meta`: they are stripped
+   only for priced calls. A client should not send a credential to a free
+   tool.
+4. **The denied-task list** holds the last 4096 IDs in memory. The client
+   never learns a priced call's task ID (the gate replaces the answer), so
+   no path to it was found; refusing task-capable priced calls before
+   commit would be sturdier.
+5. **No per-address limit on offer minting** (DECISIONS row 24): a flood
+   can evict a cached offer that an MPP-native payer still needs, who then
+   gets BAD_OFFER after paying (refund `none`). Deployment's job for now
+   (Known gaps).
+6. **Payable refusals carry a fresh offer** beyond the four codes 8.2 names
+   (N9b-2); for SPENT a new payment cannot fix the original credential.
+7. From round 1, still open: non-credential `_meta` keys are outside the
+   scope (like unlisted HTTP headers); a candidate for the MCP carrier note.
