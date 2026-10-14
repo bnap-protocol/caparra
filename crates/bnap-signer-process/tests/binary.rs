@@ -252,13 +252,15 @@ async fn ask(stream: &mut UnixStream, req: Request) -> Option<Reply> {
 }
 
 fn refused(reply: Option<Reply>) -> bool {
-    matches!(
-        reply,
-        Some(Reply::Error {
-            kind: ErrorKind::Refused,
-            ..
-        })
-    )
+    reply.is_some_and(|r| {
+        matches!(
+            r,
+            Reply::Error {
+                kind: ErrorKind::Refused,
+                ..
+            }
+        )
+    })
 }
 
 async fn closed(stream: &mut UnixStream) -> bool {
@@ -271,46 +273,58 @@ async fn closed(stream: &mut UnixStream) -> bool {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn only_objects_bnap_core_builds_are_signed() {
-    let p = start();
+    let running = start();
     let fx = testkit::fixture();
-    let mut f = OfferFields::new(Scope([1; 32]), 1_999_999_999, fx.offer_key, [0; 16]);
-    f.pay.push(PayEntry::new("bnap:notes", 21, "sat"));
-    let offer = UnsignedOffer::new(&f, Some(&[7; 32])).unwrap();
-    let s = offer.message().signed_bytes().to_vec();
+    let mut fields = OfferFields::new(Scope([1; 32]), 1_999_999_999, fx.offer_key, [0; 16]);
+    fields.pay.push(PayEntry::new("bnap:notes", 21, "sat"));
+    let offer = UnsignedOffer::new(&fields, Some(&[7; 32])).unwrap();
+    let signed = offer.message().signed_bytes().to_vec();
     let schnorr = |purpose, key: bnap_core::Key, signed: Vec<u8>| Request::Schnorr {
         purpose,
         key: key.0,
         signed,
     };
-    let mut c = UnixStream::connect(&p.socket).await.unwrap();
+    let mut conn = UnixStream::connect(&running.socket).await.unwrap();
     // The digest itself, or any 32 bytes, under the offer key.
-    let digest = tagged_hash(Purpose::OfferSig.tag(), &s).to_vec();
+    let digest = tagged_hash(Purpose::OfferSig.tag(), &signed).to_vec();
     assert!(refused(
-        ask(&mut c, schnorr(WirePurpose::OfferSig, fx.offer_key, digest)).await
+        ask(
+            &mut conn,
+            schnorr(WirePurpose::OfferSig, fx.offer_key, digest)
+        )
+        .await
     ));
     assert!(refused(
         ask(
-            &mut c,
+            &mut conn,
             schnorr(WirePurpose::OfferSig, fx.offer_key, vec![0; 32])
         )
         .await
     ));
     // The offer as an ack, and under the receipt key the signer holds.
     assert!(refused(
-        ask(&mut c, schnorr(WirePurpose::Ack, fx.offer_key, s.clone())).await
-    ));
-    assert!(refused(
-        ask(&mut c, schnorr(WirePurpose::Ack, fx.receipt_key, s.clone())).await
+        ask(
+            &mut conn,
+            schnorr(WirePurpose::Ack, fx.offer_key, signed.clone())
+        )
+        .await
     ));
     assert!(refused(
         ask(
-            &mut c,
-            schnorr(WirePurpose::OfferSig, fx.receipt_key, s.clone())
+            &mut conn,
+            schnorr(WirePurpose::Ack, fx.receipt_key, signed.clone())
+        )
+        .await
+    ));
+    assert!(refused(
+        ask(
+            &mut conn,
+            schnorr(WirePurpose::OfferSig, fx.receipt_key, signed.clone())
         )
         .await
     ));
     // A Response that names the offer key.
-    let fields = ResponseFields {
+    let response = ResponseFields {
         status: Status::Ok,
         replayed: false,
         charged: 1,
@@ -323,17 +337,24 @@ async fn only_objects_bnap_core_builds_are_signed() {
         settled_at: 1,
         unknown: Vec::new(),
     };
-    let r = unsigned_response(&fields)
+    let resp_bytes = unsigned_response(&response)
         .unwrap()
         .message()
         .signed_bytes()
         .to_vec();
     assert!(refused(
-        ask(&mut c, schnorr(WirePurpose::Ack, fx.offer_key, r)).await
+        ask(
+            &mut conn,
+            schnorr(WirePurpose::Ack, fx.offer_key, resp_bytes)
+        )
+        .await
     ));
     // The connection still serves the real thing.
-    let Some(Reply::Signature { sig }) =
-        ask(&mut c, schnorr(WirePurpose::OfferSig, fx.offer_key, s)).await
+    let Some(Reply::Signature { sig }) = ask(
+        &mut conn,
+        schnorr(WirePurpose::OfferSig, fx.offer_key, signed),
+    )
+    .await
     else {
         panic!("the offer is signed");
     };
