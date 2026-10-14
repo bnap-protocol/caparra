@@ -641,6 +641,65 @@ pub fn change_reservations_keep_one_total<S: UseStore + ?Sized>(store: &S, exec:
     }
 }
 
+/// A change output is told apart from the ledger's by its whole identity,
+/// `(keyset, amount, blinded)`, never by part of it. On an outcome worth
+/// 96 sat for a 50 sat entry, under the FAILED cap (96), with one blinded
+/// message `B_` throughout: `(k, 1, B_)` is reserved (total 1); `(k, 95,
+/// B_)` is fresh, though its `B_` is in the ledger (total 96); `(k2, 1,
+/// B_)` is fresh too, so over the cap (97 > 96); `(k, 1_000_000, B_)` is
+/// over the cap; batches of known outputs add nothing, a batch with one
+/// fresh output is over the cap; re-reserving `(k, 1, B_)` adds nothing
+/// and leaves the record as it was. A store that loads only the ledger's
+/// outputs the request names (to save reading a long ledger) and matches
+/// them on part of their identity would count a fresh output as reserved,
+/// so the signer would mint it past the cap.
+pub fn change_outputs_are_matched_whole<S: UseStore + ?Sized>(store: &S, exec: &impl Executor) {
+    let p = new(exec.block_on(Req::note(1, &note(400), 96, 50, None).process(store)));
+    let rk = *p.replay_key();
+    let failed = p.charge(Status::Failed, 0);
+    assert_eq!(failed.cap().get(), 96);
+    let blinded = output(7, 0, 1).blinded;
+    let out = |keyset: &[u8], amount: u64| ChangeOutput {
+        keyset: keyset.to_vec(),
+        amount,
+        blinded,
+    };
+    let reserve =
+        |outs: &[ChangeOutput]| exec.block_on(outcome::reserve_change(store, failed.cap(), outs));
+    let over = |total| Ok(Reserve::OverCap { total, cap: 96 });
+    let (k, k2) = (b"keyset-0".as_slice(), b"keyset-1".as_slice());
+
+    assert_eq!(reserve(&[out(k, 1)]), Ok(Reserve::Reserved { total: 1 }));
+    assert_eq!(
+        reserve(&[out(k, 95)]),
+        Ok(Reserve::Reserved { total: 96 }),
+        "the same B_ under another amount is a fresh output"
+    );
+    let full = record(store, exec, &rk);
+    assert_eq!(full.change_total, 96);
+    assert_eq!(full.change_outputs.len(), 2, "{full:?}");
+    assert!(full.change_outputs.contains(&out(k, 1)));
+    assert!(full.change_outputs.contains(&out(k, 95)));
+    assert_eq!(
+        reserve(&[out(k2, 1)]),
+        over(97),
+        "the same B_ and amount under another keyset is a fresh output"
+    );
+    assert_eq!(reserve(&[out(k, 1_000_000)]), over(1_000_096));
+    assert_eq!(
+        reserve(&[out(k, 1), out(k, 95)]),
+        Ok(Reserve::Reserved { total: 96 }),
+        "known outputs add nothing"
+    );
+    assert_eq!(reserve(&[out(k, 95), out(k2, 95)]), over(191));
+    assert_eq!(reserve(&[out(k, 1)]), Ok(Reserve::Reserved { total: 96 }));
+    assert_eq!(
+        record(store, exec, &rk),
+        full,
+        "nothing past the first two reservations was written"
+    );
+}
+
 /// What the gate loops of [`gate`] saw, for the checks after them.
 #[derive(Debug, Clone, Default)]
 pub struct Log {
@@ -837,6 +896,7 @@ pub fn run<S: UseStore>(make: impl Fn() -> S, exec: &impl Executor) {
     concurrent_replays_get_one_answer(&make(), exec);
     counters_never_pass_their_limit(&make(), exec);
     change_reservations_keep_one_total(&make(), exec);
+    change_outputs_are_matched_whole(&make(), exec);
     mixed_load_moves_each_outcome_once(&make(), exec);
 }
 

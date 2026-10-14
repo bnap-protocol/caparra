@@ -141,6 +141,12 @@ fn change_reservations_keep_one_total() {
 }
 
 #[test]
+fn change_outputs_are_matched_whole() {
+    let exec = Tokio::new();
+    scenarios::change_outputs_are_matched_whole(&fresh(&exec), &exec);
+}
+
+#[test]
 fn mixed_load_moves_each_outcome_once() {
     let exec = Tokio::new();
     scenarios::mixed_load_moves_each_outcome_once(&fresh(&exec), &exec);

@@ -259,6 +259,13 @@ fn change_reservations_keep_one_total() {
 }
 
 #[test]
+fn change_outputs_are_matched_whole() {
+    let Some(url) = database_url() else { return };
+    let exec = Tokio::new();
+    scenarios::change_outputs_are_matched_whole(&fresh(&exec, &url), &exec);
+}
+
+#[test]
 fn mixed_load_moves_each_outcome_once() {
     let Some(url) = database_url() else { return };
     let exec = Tokio::new();
