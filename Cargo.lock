@@ -657,6 +657,7 @@ dependencies = [
  "bnap-core",
  "bnap-plug",
  "bnap-signer-file",
+ "bnap-store-sqlite",
  "cashu",
  "clap",
  "hex",

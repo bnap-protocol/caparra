@@ -7,6 +7,7 @@
 //!
 //! ```text
 //! request  {"v":1,"req":{"schnorr":{"purpose":"offer_sig","key":"..","signed":".."}}}
+//!          {"v":1,"req":{"schnorr":{"purpose":"ack","key":"..","signed":"..","replay_key":".."}}}
 //!          {"v":1,"req":{"verify_unblinded":{"keyset":"..","unit":"sat","amount":8,"secret":"..","c":".."}}}
 //!          {"v":1,"req":{"blind_sign":{"keyset":"..","outputs":[{"amount":8,"blinded":".."}],
 //!                                      "limit":{"replay_key":"..","status":"ok","unit":"sat","cap":43,"keep_until":..}}}}
@@ -74,6 +75,28 @@ mod hex_point_opt {
             return Ok(None);
         };
         let mut b = [0u8; 33];
+        hex::decode_to_slice(s, &mut b).map_err(D::Error::custom)?;
+        Ok(Some(b))
+    }
+}
+
+/// Hex for an optional 32-byte value.
+mod hex_key_opt {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    #[allow(clippy::ref_option)]
+    pub fn serialize<S: Serializer>(b: &Option<[u8; 32]>, s: S) -> Result<S::Ok, S::Error> {
+        match b {
+            Some(b) => s.serialize_some(&hex::encode(b)),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<[u8; 32]>, D::Error> {
+        let Some(s) = <Option<&str> as Deserialize>::deserialize(d)? else {
+            return Ok(None);
+        };
+        let mut b = [0u8; 32];
         hex::decode_to_slice(s, &mut b).map_err(D::Error::custom)?;
         Ok(Some(b))
     }
@@ -209,6 +232,12 @@ pub enum Request {
         /// [`bnap_core::CoreMessage::signed_bytes`].
         #[serde(with = "hex_vec")]
         signed: Vec<u8>,
+        /// For an ack, [`bnap_core::CoreMessage::replay_key`]: the outcome
+        /// the Response answers. A signer that reads the use store
+        /// (`bnap-signer --store`) refuses an ack without it. Absent from
+        /// the frame when `None`, so older signers keep reading offers.
+        #[serde(default, skip_serializing_if = "Option::is_none", with = "hex_key_opt")]
+        replay_key: Option<[u8; 32]>,
     },
     /// Check an unblinded note.
     VerifyUnblinded {

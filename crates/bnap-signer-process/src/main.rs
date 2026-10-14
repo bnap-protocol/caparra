@@ -77,6 +77,16 @@ mod unix {
         /// Milliseconds a connection may wait between requests.
         #[arg(long, default_value_t = 30_000)]
         idle_timeout_ms: u64,
+        /// The gate's SQLite use store. With it, change is signed only for
+        /// outputs the store reserved for the outcome, and an ack only for a
+        /// Response that states its settled outcome record: reaching the
+        /// socket is then no longer enough to mint change or receipts.
+        #[arg(long, env = "BNAP_SIGNER_STORE")]
+        store: Option<PathBuf>,
+        /// Seconds a change ledger entry may be kept after now, whatever
+        /// `keep_until` a request names.
+        #[arg(long, default_value_t = bnap_signer_process::DEFAULT_MAX_KEEP.as_secs())]
+        max_keep_s: u64,
     }
 
     pub fn main() -> ExitCode {
@@ -117,11 +127,25 @@ mod unix {
                 return ExitCode::FAILURE;
             }
         };
+        let store: Option<Arc<dyn bnap_core::store::UseStore>> = match &args.store {
+            None => None,
+            Some(path) => match runtime.block_on(bnap_store_sqlite::SqliteStore::open(path)) {
+                Ok(s) => {
+                    tracing::info!(store = %path.display(), "checking change and acks against the use store");
+                    Some(Arc::new(s))
+                }
+                Err(e) => {
+                    tracing::error!("use store {}: {e}", path.display());
+                    return ExitCode::from(2);
+                }
+            },
+        };
         let options = ServeOptions {
             io_timeout: Duration::from_millis(args.io_timeout_ms),
             idle_timeout: Duration::from_millis(args.idle_timeout_ms),
             max_connections: args.max_connections,
-            store: None,
+            store,
+            max_keep: Duration::from_secs(args.max_keep_s),
         };
         let access = match args.socket_group {
             Some(gid) => SocketAccess::Group {

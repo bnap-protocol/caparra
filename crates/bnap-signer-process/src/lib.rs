@@ -74,4 +74,7 @@ mod trust;
 pub mod wire;
 
 pub use client::{DEFAULT_TIMEOUT, ProcessSigner};
-pub use server::{BindError, ServeOptions, Server, SignerSocket, SocketAccess, check_reserved};
+pub use server::{
+    BindError, DEFAULT_MAX_KEEP, ServeOptions, Server, SignerSocket, SocketAccess, check_ack,
+    check_reserved,
+};
