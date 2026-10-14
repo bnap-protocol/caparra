@@ -39,7 +39,10 @@ use bnap_plug::{
     Verified, VerifyCtx, confirm_rail_id,
 };
 
-/// How long the offers this gate issues live, in seconds.
+/// How long the offers this gate issues live, in seconds. The rail's
+/// invoices must not live longer (beyond the 60 s skew): the Lightning
+/// schemes refuse to offer such an invoice, so [`Gate::issue`] fails
+/// UNAVAILABLE.
 pub const OFFER_LIFETIME: u64 = 300;
 
 /// What the registry says about a scheme, as the gate reads it: binding
