@@ -1429,14 +1429,63 @@ fn a_record_is_kept_while_its_offer_can_be_presented() {
         r.at(T0 + 1_000).process_in(&store, &short),
         Err(ProcessError::Spent)
     );
-    // Past keep_until the record goes, and the offer is stale.
-    let after = r.offer.expires + 61;
+    // A clock skew past keep_until the record goes, and the offer is
+    // stale.
+    let after = r.offer.expires + 121;
+    assert_eq!(
+        block_on(sweep(&store, after - 1, &short)).unwrap().purged,
+        0
+    );
     assert_eq!(block_on(sweep(&store, after, &short)).unwrap().purged, 1);
     assert_eq!(
         r.at(after).process_in(&store, &long),
         Err(ProcessError::Stale(Stale::Expired))
     );
     store.inspect(|t| assert_eq!(t.outcomes_len(), 0));
+}
+
+#[test]
+fn a_lagging_clock_never_readmits_a_purged_credential() {
+    // The checker's LOW probe: a reusable-only credential on an offer with
+    // expires = T0 + replay_window - 60, committed and settled OK. Purge
+    // deleted the record as soon as keep_until (expires + 60) < now, and a
+    // fresh commit is refused only when now > expires + 60, so a request
+    // whose clock read even 1 s behind the sweep's (taken before a slow
+    // attestation check, or on another gate instance) missed the record and
+    // ran the action again: sweep at keep_until + 1 purged 1, then process
+    // at keep_until answered New. Purge now keeps a clock skew of margin.
+    let l = limits();
+    for lag in [1, 30, 60] {
+        let store = MemoryStore::new();
+        let mut r = Req::note(1, b"", T0).with_uses(vec![(
+            "httpsig:web-bot-auth",
+            UseModel::Reusable,
+            vec![b"bot key".to_vec()],
+        )]);
+        r.offer.expires = T0 + l.replay_window - 60;
+        let keep = r.offer.expires + 60;
+        let p = new(r.process(&store));
+        block_on(settle(&store, &p, &settlement(Status::Ok, 0, T0 + 1), &l)).unwrap();
+        // The checker's sweep, at keep_until + 1, deletes nothing now, and
+        // the lagging request is answered from the record.
+        assert_eq!(block_on(sweep(&store, keep + 1, &l)).unwrap().purged, 0);
+        assert!(
+            !matches!(r.at(keep + 1 - lag).process(&store), Ok(Admitted::New(_))),
+            "lag {lag}"
+        );
+        // The first sweep that may purge runs at keep_until + 61; a request
+        // lagging it by up to a clock skew is past the offer's expiry, so it
+        // is STALE, never New.
+        let first = keep + crate::limits::CLOCK_SKEW + 1;
+        assert_eq!(block_on(sweep(&store, first - 1, &l)).unwrap().purged, 0);
+        assert_eq!(block_on(sweep(&store, first, &l)).unwrap().purged, 1);
+        assert_eq!(
+            r.at(first - lag).process(&store),
+            Err(ProcessError::Stale(Stale::Expired)),
+            "lag {lag}"
+        );
+        store.inspect(|t| assert_eq!(t.outcomes_len(), 0));
+    }
 }
 
 #[test]

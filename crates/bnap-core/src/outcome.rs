@@ -601,8 +601,9 @@ pub struct Sweep {
 
 /// The maintenance sweep: PENDING past `pending_timeout` moves to FAILED,
 /// and settled records past `replay_window` ([`Limits::record_window`]) are
-/// deleted once their offer can no longer be presented. Single-use records
-/// are never deleted here (section 12, "Retention").
+/// deleted once their offer can no longer be presented, with a clock skew
+/// of margin for the gate's other clocks ([`UseStore::purge`]). Single-use
+/// records are never deleted here (section 12, "Retention").
 pub async fn sweep<S: UseStore + ?Sized>(
     store: &S,
     now: u64,

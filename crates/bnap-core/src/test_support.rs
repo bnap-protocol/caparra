@@ -449,8 +449,8 @@ pub mod conformance {
     }
 
     /// Section 12 "Retention", 6.1: purge deletes settled records past the
-    /// window and past `keep_until`, never PENDING ones and never `used`
-    /// entries.
+    /// window and a clock skew past `keep_until`, never PENDING ones and
+    /// never `used` entries.
     pub fn purge_keeps_what_must_stay<S: UseStore + ?Sized>(store: &S, exec: &impl Executor) {
         let settled = plan(1, &[b"s"], None, T0);
         let pending = plan(2, &[b"p"], None, T0);
@@ -462,10 +462,12 @@ pub mod conformance {
             TIMEOUT,
         ))
         .unwrap();
-        // The window has passed but the offer is still valid: kept.
+        // The window has passed but the offer is still valid, to this
+        // clock or to one a skew behind it: kept.
         let keep = settled.keep_until();
         assert_eq!(exec.block_on(store.purge(T0 + 1, keep)).unwrap(), 0);
-        assert_eq!(exec.block_on(store.purge(T0 + 1, keep + 1)).unwrap(), 1);
+        assert_eq!(exec.block_on(store.purge(T0 + 1, keep + 60)).unwrap(), 0);
+        assert_eq!(exec.block_on(store.purge(T0 + 1, keep + 61)).unwrap(), 1);
         assert!(
             exec.block_on(store.outcome(settled.replay_key()))
                 .unwrap()

@@ -90,10 +90,13 @@ pub struct OutcomeRecord {
     /// The refund of a timed-out outcome was recorded, with or without a
     /// `scheme_result` (a scheme may have nothing to refund). Set once.
     pub refund_recorded: bool,
-    /// The offer's `expires + 60`, from the commit: [`UseStore::purge`]
-    /// never deletes the record before this, whatever window it is given,
-    /// so a credential without single uses cannot be admitted again while
-    /// its offer is still valid (6.1).
+    /// The offer's `expires + 60`, from the commit: past it, a fresh commit
+    /// on the offer is STALE. [`UseStore::purge`] never deletes the record
+    /// until `keep_until + 60 < now`, whatever window it is given: one more
+    /// clock skew, for a request whose clock reads behind the sweep's (taken
+    /// before a slow check, or on another gate instance), so a credential
+    /// without single uses cannot be admitted again while any of the gate's
+    /// clocks still finds its offer valid (6.1).
     pub keep_until: u64,
     /// The most the refund of a timed-out outcome may sign, fixed at commit
     /// ([`CommitPlan::refund_cap`]).
@@ -316,7 +319,8 @@ impl CommitPlan {
     ///   ([`Admission::settle`]), so a replay that times the outcome out
     ///   refunds what this commit consumed, never a value priced again, and
     ///   `keep_until = expires + 60`: the store never deletes the record
-    ///   while its offer can still be presented.
+    ///   while its offer can still be presented, with one more clock skew
+    ///   of margin ([`UseStore::purge`]).
     pub(crate) fn build(
         uses: Uses,
         admission: &Admission,
@@ -383,7 +387,8 @@ impl CommitPlan {
         self.now
     }
 
-    /// The offer's `expires + 60`: the record stays at least until then.
+    /// The offer's `expires + 60`: the record stays at least a clock skew
+    /// past it ([`UseStore::purge`]).
     #[must_use]
     pub fn keep_until(&self) -> u64 {
         self.keep_until
@@ -560,9 +565,10 @@ pub trait UseStore: Send + Sync {
     ) -> Result<Option<OutcomeRecord>, StoreError>;
 
     /// Deletes OK and FAILED outcome records created before `created_before`
-    /// (the replay window has passed) whose `keep_until` is before `now`
-    /// (their offer can no longer be presented). PENDING records and every
-    /// `used` entry stay. Returns how many were deleted.
+    /// (the replay window has passed) whose `keep_until + 60` is before
+    /// `now`: their offer can no longer be presented, even to a gate clock a
+    /// skew behind this one. PENDING records and every `used` entry stay.
+    /// Returns how many were deleted.
     async fn purge(&self, created_before: u64, now: u64) -> Result<u64, StoreError>;
 }
 
@@ -595,7 +601,8 @@ pub trait UseTable {
 /// abort consumes nothing.
 pub mod logic {
     use super::{
-        Commit, CommitPlan, OutcomeRecord, OutcomeStatus, ReplayKey, Settle, Settlement, UseTable,
+        CLOCK_SKEW, Commit, CommitPlan, OutcomeRecord, OutcomeStatus, ReplayKey, Settle,
+        Settlement, UseTable,
     };
     use crate::response::Status;
 
@@ -731,18 +738,21 @@ pub mod logic {
     }
 
     /// Deletes settled outcome records created before `created_before`,
-    /// but never one whose offer can still be presented: `keep_until` must
-    /// be before `now`. This holds whatever window the caller computed
-    /// `created_before` from, so a sweep run with a shorter `replay_window`
-    /// than the commit saw cannot let a credential without single uses be
-    /// admitted again (6.1).
+    /// but never one whose offer can still be presented:
+    /// `keep_until + CLOCK_SKEW` must be before `now`. This holds whatever
+    /// window the caller computed `created_before` from, so a sweep run with
+    /// a shorter `replay_window` than the commit saw cannot let a credential
+    /// without single uses be admitted again (6.1). The extra skew covers a
+    /// request whose clock reads up to 60 s behind the sweep's: its fresh
+    /// commit is STALE once its `now > keep_until`, and until then it still
+    /// finds the record, as `REFUND_MARGIN` assumes of the gate's clocks.
     pub fn purge(t: &mut impl UseTable, created_before: u64, now: u64) -> u64 {
         let mut n = 0;
         for rk in t.outcome_keys() {
             let old = t.outcome(&rk).is_some_and(|r| {
                 r.status != OutcomeStatus::Pending
                     && r.created < created_before
-                    && r.keep_until < now
+                    && r.keep_until.saturating_add(CLOCK_SKEW) < now
             });
             if old {
                 t.delete_outcome(&rk);
