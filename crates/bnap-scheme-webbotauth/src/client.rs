@@ -76,7 +76,10 @@ fn component(name: &str, key: Option<&str>) -> Result<sfv::Item, SignError> {
 /// Signs `p` with `key` and returns the attest body.
 pub fn sign(key: &ed25519_dalek::SigningKey, p: &SignParams<'_>) -> Result<WbaBody, SignError> {
     let context = URL_SAFE_NO_PAD.encode(p.context.0);
-    let mut items = vec![component("@authority", None)?, component(CONTEXT_FIELD, None)?];
+    let mut items = vec![
+        component("@authority", None)?,
+        component(CONTEXT_FIELD, None)?,
+    ];
     let mut values = vec![p.authority.to_ascii_lowercase(), context];
     let mut agent_field = None;
     if let Some(url) = p.agent {

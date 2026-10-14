@@ -96,7 +96,11 @@ impl WbaBody {
         if let Some((t, _)) = s.records().iter().find(|(t, _)| !known.contains(t)) {
             return Err(BodyError::UnknownRecord(*t));
         }
-        let required = |t: u64| s.get(t).ok_or(BodyError::Missing(t)).and_then(|v| field(t, v));
+        let required = |t: u64| {
+            s.get(t)
+                .ok_or(BodyError::Missing(t))
+                .and_then(|v| field(t, v))
+        };
         Ok(Self {
             signature: required(types::SIGNATURE)?,
             signature_input: required(types::SIGNATURE_INPUT)?,

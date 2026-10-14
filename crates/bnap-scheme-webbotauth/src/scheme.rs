@@ -10,7 +10,9 @@ use bnap_plug::{
     CredentialScheme, Entry, OfferCtx, OfferRole, SchemeError, SchemeOffer, Verified, VerifyCtx,
 };
 use sfv::SerializeValue as _;
-use web_bot_auth::components::{CoveredComponent, DerivedComponent, HTTPField, HTTPFieldParameters};
+use web_bot_auth::components::{
+    CoveredComponent, DerivedComponent, HTTPField, HTTPFieldParameters,
+};
 use web_bot_auth::keyring::{Algorithm, KeyRing};
 use web_bot_auth::message_signatures::SignedMessage;
 
@@ -46,14 +48,13 @@ enum Component {
     Context,
     /// `"signature-agent"`, the whole field (the legacy String form).
     AgentField,
-    /// `"signature-agent";key="<label>"`, the member keyed to the label.
-    AgentMember,
+    /// `"signature-agent";key="<key>"`, one member of the dictionary.
+    AgentMember(String),
 }
 
 /// What [`parse`] read from a canonical body.
 #[derive(Debug)]
 struct Parsed {
-    label: String,
     components: Vec<Component>,
     created: u64,
     expires: u64,
@@ -114,24 +115,22 @@ fn time_param(p: &sfv::Parameters, name: &str) -> Result<u64, SchemeError> {
 
 /// Reads the covered components: only `@authority`, `bnap-context` and the
 /// agent, each once, the first two always.
-fn components(items: &[sfv::Item], label: &str) -> Result<Vec<Component>, SchemeError> {
+fn components(items: &[sfv::Item]) -> Result<Vec<Component>, SchemeError> {
     let mut out = Vec::with_capacity(items.len());
     for item in items {
         let name = item.bare_item.as_string().ok_or_else(|| {
-            reject(codes::BAD_SIGNATURE_INPUT, "a component that is not a String")
+            reject(
+                codes::BAD_SIGNATURE_INPUT,
+                "a component that is not a String",
+            )
         })?;
         let c = match (name.as_str(), item.params.len()) {
             ("@authority", 0) => Component::Authority,
             (CONTEXT_FIELD, 0) => Component::Context,
             ("signature-agent", 0) => Component::AgentField,
-            ("signature-agent", 1)
-                if item
-                    .params
-                    .get("key")
-                    .and_then(|k| k.as_string())
-                    .is_some_and(|k| k.as_str() == label) =>
-            {
-                Component::AgentMember
+            ("signature-agent", 1) if item.params.contains_key("key") => {
+                let key = string_param(&item.params, "key")?.unwrap_or_default();
+                Component::AgentMember(key.to_owned())
             }
             (other, _) => {
                 return Err(reject(
@@ -142,9 +141,12 @@ fn components(items: &[sfv::Item], label: &str) -> Result<Vec<Component>, Scheme
                 ));
             }
         };
-        let agent = |c: &Component| matches!(c, Component::AgentField | Component::AgentMember);
+        let agent = |c: &Component| matches!(c, Component::AgentField | Component::AgentMember(_));
         if out.contains(&c) || (agent(&c) && out.iter().any(agent)) {
-            return Err(reject(codes::BAD_SIGNATURE_INPUT, "a component named twice"));
+            return Err(reject(
+                codes::BAD_SIGNATURE_INPUT,
+                "a component named twice",
+            ));
         }
         out.push(c);
     }
@@ -162,19 +164,21 @@ fn components(items: &[sfv::Item], label: &str) -> Result<Vec<Component>, Scheme
     Ok(out)
 }
 
-/// Reads the agent the signature covers: the member keyed to the label, or
-/// the legacy String form of the whole field.
+/// Reads the agent the signature covers: the one member of the dictionary
+/// form, which must be the member the component names, or the legacy String
+/// form of the whole field.
 fn agent(
     field: &str,
     covered: &Component,
-    label: &str,
 ) -> Result<(Option<String>, Option<SignatureAgent>), SchemeError> {
     let bad = |d: &str| reject(codes::BAD_AGENT, d.to_owned());
     let (item, member) = match covered {
-        Component::AgentMember => {
+        Component::AgentMember(covered_key) => {
             let (key, entry) = single_member(field, "Signature-Agent")?;
-            if key != label {
-                return Err(bad("the Signature-Agent member is not keyed to the label"));
+            if key != *covered_key {
+                return Err(bad(
+                    "the covered Signature-Agent member is not the one sent",
+                ));
             }
             let sfv::ListEntry::Item(item) = entry else {
                 return Err(bad("the Signature-Agent member is not an Item"));
@@ -253,10 +257,13 @@ fn parse(body: &WbaBody) -> Result<Parsed, SchemeError> {
             "Signature-Input is not an Inner List",
         ));
     };
-    let components = components(&input.items, &label)?;
+    let components = components(&input.items)?;
     let p = &input.params;
     if string_param(p, "tag")? != Some(TAG) {
-        return Err(reject(codes::BAD_SIGNATURE_INPUT, "tag is not web-bot-auth"));
+        return Err(reject(
+            codes::BAD_SIGNATURE_INPUT,
+            "tag is not web-bot-auth",
+        ));
     }
     if let Some(alg) = string_param(p, "alg")?
         && alg != "ed25519"
@@ -272,10 +279,10 @@ fn parse(body: &WbaBody) -> Result<Parsed, SchemeError> {
 
     let covered_agent = components
         .iter()
-        .find(|c| matches!(c, Component::AgentField | Component::AgentMember));
+        .find(|c| matches!(c, Component::AgentField | Component::AgentMember(_)));
     let (agent_member, agent) = match (&body.signature_agent, covered_agent) {
         (None, None) => (None, None),
-        (Some(field), Some(c)) => agent(field, c, &label)?,
+        (Some(field), Some(c)) => agent(field, c)?,
         (Some(_), None) => {
             return Err(reject(
                 codes::BAD_AGENT,
@@ -290,7 +297,6 @@ fn parse(body: &WbaBody) -> Result<Parsed, SchemeError> {
         }
     };
     Ok(Parsed {
-        label,
         components,
         created,
         expires,
@@ -305,10 +311,12 @@ fn parse(body: &WbaBody) -> Result<Parsed, SchemeError> {
 /// the HTTP request (draft-00 5.1).
 struct Message<'a> {
     authority: &'a str,
-    context: String,
+    /// The `bnap-context` value; `None` signs nothing over a Context (only
+    /// for checking the draft's own vectors).
+    context: Option<String>,
     body: &'a WbaBody,
-    label: &'a str,
-    agent_member: Option<&'a str>,
+    /// The covered member's key and its strictly serialized value.
+    agent_member: Option<(&'a str, &'a str)>,
 }
 
 impl SignedMessage for Message<'_> {
@@ -322,13 +330,14 @@ impl SignedMessage for Message<'_> {
                 match (name.as_str(), parameters.0.as_slice()) {
                     ("signature", []) => one(&self.body.signature),
                     ("signature-input", []) => one(&self.body.signature_input),
-                    (CONTEXT_FIELD, []) => one(&self.context),
-                    ("signature-agent", []) => {
-                        self.body.signature_agent.iter().cloned().collect()
-                    }
-                    ("signature-agent", [HTTPFieldParameters::Key(k)]) if k == self.label => {
-                        self.agent_member.map(str::to_owned).into_iter().collect()
-                    }
+                    (CONTEXT_FIELD, []) => self.context.iter().cloned().collect(),
+                    ("signature-agent", []) => self.body.signature_agent.iter().cloned().collect(),
+                    ("signature-agent", [HTTPFieldParameters::Key(k)]) => self
+                        .agent_member
+                        .filter(|(key, _)| key == k)
+                        .map(|(_, v)| v.to_owned())
+                        .into_iter()
+                        .collect(),
                     _ => Vec::new(),
                 }
             }
@@ -348,7 +357,7 @@ impl SignedMessage for Message<'_> {
 /// with (the manifest origin's), `bnap-context` is the base64url Context
 /// the gate computed, and the agent comes from the body. A signature may
 /// therefore cover exactly `@authority`, `bnap-context` and, when sent,
-/// the agent (the member keyed to its label, or the legacy String form):
+/// the agent (its one dictionary member, or the legacy String form):
 /// any other component, such as `@path`, is refused, since the Context
 /// already binds the method, target, content and listed headers through
 /// the action scope. It then asks the [`KeyDirectory`] for the key the
@@ -451,7 +460,8 @@ impl CredentialScheme for WebBotAuthScheme {
                 "another scheme's part, or a witness, which class A has not",
             ));
         }
-        let body = WbaBody::parse(&part.body).map_err(|e| reject(codes::BAD_BODY, e.to_string()))?;
+        let body =
+            WbaBody::parse(&part.body).map_err(|e| reject(codes::BAD_BODY, e.to_string()))?;
         let p = parse(&body)?;
         self.check_time(&p, cx.now)?;
         let keyid: [u8; 32] = URL_SAFE_NO_PAD
@@ -459,7 +469,12 @@ impl CredentialScheme for WebBotAuthScheme {
             .ok()
             .filter(|k| URL_SAFE_NO_PAD.encode(k) == p.keyid)
             .and_then(|k| k.try_into().ok())
-            .ok_or_else(|| reject(codes::BAD_KEYID, "keyid is not a base64url SHA-256 thumbprint"))?;
+            .ok_or_else(|| {
+                reject(
+                    codes::BAD_KEYID,
+                    "keyid is not a base64url SHA-256 thumbprint",
+                )
+            })?;
 
         let key = self
             .directory
@@ -470,21 +485,35 @@ impl CredentialScheme for WebBotAuthScheme {
             })
             .await
             .map_err(|e| SchemeError::Unavailable(e.to_string()))?
-            .ok_or_else(|| reject(codes::UNKNOWN_KEY, "the directory does not list this key for this agent"))?;
+            .ok_or_else(|| {
+                reject(
+                    codes::UNKNOWN_KEY,
+                    "the directory does not list this key for this agent",
+                )
+            })?;
         let local = thumbprint(&key);
         if local != keyid {
-            return Err(reject(codes::KEYID_MISMATCH, "the key's thumbprint is not the keyid"));
+            return Err(reject(
+                codes::KEYID_MISMATCH,
+                "the key's thumbprint is not the keyid",
+            ));
         }
         if ed25519_dalek::VerifyingKey::from_bytes(&key).is_err() {
-            return Err(reject(codes::UNKNOWN_KEY, "the directory key is not an Ed25519 key"));
+            return Err(reject(
+                codes::UNKNOWN_KEY,
+                "the directory key is not an Ed25519 key",
+            ));
         }
 
+        let member_key = p.components.iter().find_map(|c| match c {
+            Component::AgentMember(k) => Some(k.as_str()),
+            _ => None,
+        });
         let message = Message {
             authority: &self.authority,
-            context: URL_SAFE_NO_PAD.encode(cx.context.0),
+            context: Some(URL_SAFE_NO_PAD.encode(cx.context.0)),
             body: &body,
-            label: &p.label,
-            agent_member: p.agent_member.as_deref(),
+            agent_member: member_key.zip(p.agent_member.as_deref()),
         };
         let verifier = web_bot_auth::WebBotAuthVerifier::parse(&message)
             .map_err(|e| reject(codes::BAD_SIGNATURE_INPUT, e.to_string()))?;
@@ -500,5 +529,127 @@ impl CredentialScheme for WebBotAuthScheme {
             value: 0,
             quota_id: Some(local.to_vec()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Ed25519 key of RFC 9421 appendix B.1.4, which the Web Bot Auth
+    /// draft's vectors use.
+    fn test_key() -> [u8; 32] {
+        URL_SAFE_NO_PAD
+            .decode("JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs")
+            .unwrap()
+            .try_into()
+            .unwrap()
+    }
+
+    const KEYID: &str = "poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U";
+
+    /// Verifies a body with the crate over this module's signature base,
+    /// with no Context (the draft's vectors cover none).
+    fn verify_vector(body: &WbaBody, member: Option<(&str, &str)>) -> bool {
+        let m = Message {
+            authority: "example.com",
+            context: None,
+            body,
+            agent_member: member,
+        };
+        let mut ring = KeyRing::default();
+        ring.import_raw(KEYID.into(), Algorithm::Ed25519, test_key().to_vec());
+        web_bot_auth::WebBotAuthVerifier::parse(&m)
+            .and_then(|v| v.verify(&ring, Some(KEYID.into())))
+            .is_ok()
+    }
+
+    /// draft-ietf-webbotauth-httpsig-protocol-00 appendix E.2.1.
+    fn e21() -> WbaBody {
+        WbaBody {
+            signature: "sig2=:RdNFx5Bj6au3YgAMQL/RzmUlZE8QZLIaXGRpw985hWnwPfMxT228NMk6ehRS1PSl4e8PhbNZACSanGdhEwYCCg==:".into(),
+            signature_input: concat!(
+                r#"sig2=("@authority" "signature-agent";key="agent2")"#,
+                r#";created=1735689600;keyid="poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U""#,
+                r#";alg="ed25519";expires=4889289600"#,
+                r#";nonce="n9p433xm+NJ3ph3upfBIGmsuwHw387YV7Q/F+6BSpGCVjYCqQw6rznNA8PVVLySrAWsv0hQtFioQb6E1YsauiA==""#,
+                r#";tag="web-bot-auth""#
+            )
+            .into(),
+            signature_agent: Some(r#"agent2="https://signature-agent.test""#.into()),
+        }
+    }
+
+    /// Appendix E.2.2, the legacy String form of `Signature-Agent`.
+    fn e22() -> WbaBody {
+        WbaBody {
+            signature: "sig2=:jdq0SqOwHdyHr9+r5jw3iYZH6aNGKijYp/EstF4RQTQdi5N5YYKrD+mCT1HA1nZDsi6nJKuHxUi/5Syp3rLWBA==:".into(),
+            signature_input: concat!(
+                r#"sig2=("@authority" "signature-agent")"#,
+                r#";created=1735689600;keyid="poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U""#,
+                r#";alg="ed25519";expires=1735693200"#,
+                r#";nonce="e8N7S2MFd/qrd6T2R3tdfAuuANngKI7LFtKYI/vowzk4lAZYadIX6wW25MwG7DCT9RUKAJ0qVkU0mEeLElW1qg==""#,
+                r#";tag="web-bot-auth""#
+            )
+            .into(),
+            signature_agent: Some(r#""https://signature-agent.test""#.into()),
+        }
+    }
+
+    #[test]
+    fn the_signature_base_matches_the_draft_vectors() {
+        // Both vectors verify over the base this module's lookups build,
+        // and only with the member value the component names.
+        let member = r#""https://signature-agent.test""#;
+        assert!(verify_vector(&e21(), Some(("agent2", member))));
+        assert!(!verify_vector(
+            &e21(),
+            Some(("agent2", r#""https://other.test""#))
+        ));
+        assert!(!verify_vector(&e21(), Some(("agent1", member))));
+        assert!(verify_vector(&e22(), None));
+
+        // The canonical-form checks accept both bodies as they are.
+        for b in [e21(), e22()] {
+            let (label, _) = single_member(&b.signature_input, "Signature-Input").unwrap();
+            assert_eq!(label, "sig2");
+            single_member(&b.signature, "Signature").unwrap();
+        }
+        // Read as BNAP attestations they are refused: they do not cover
+        // bnap-context, so they embed no Context and are not class A.
+        for b in [e21(), e22()] {
+            let err = parse(&b).unwrap_err();
+            assert_eq!(
+                err.to_error_object().scheme_code.as_deref(),
+                Some("httpsig:web-bot-auth/MISSING_COMPONENT")
+            );
+        }
+    }
+
+    #[test]
+    fn the_agent_is_the_covered_member() {
+        let p = Component::AgentMember("agent2".into());
+        let (member, found) = agent(r#"agent2="https://signature-agent.test""#, &p).unwrap();
+        assert_eq!(member.as_deref(), Some(r#""https://signature-agent.test""#));
+        assert_eq!(
+            found,
+            Some(SignatureAgent {
+                url: "https://signature-agent.test".into(),
+                kind: AgentType::Directory,
+            })
+        );
+        // Another member than the covered one, two members, http, a type
+        // this verifier ignores, a directory that is not an origin.
+        assert!(agent(r#"agent3="https://signature-agent.test""#, &p).is_err());
+        assert!(agent(r#"agent2="https://a.test", agent3="https://b.test""#, &p).is_err());
+        assert!(agent(r#"agent2="http://signature-agent.test""#, &p).is_err());
+        let ignored = agent(r#"agent2="https://a.test";type=carrier-pigeon"#, &p).unwrap();
+        assert_eq!(ignored.1, None);
+        let not_origin = agent(r#"agent2="https://a.test/keys""#, &p).unwrap();
+        assert_eq!(not_origin.1, None);
+        let jwks = agent(r#"agent2="https://a.test/keys";type=jwks_uri"#, &p).unwrap();
+        assert_eq!(jwks.1.map(|a| a.kind), Some(AgentType::JwksUri));
+        // Whitespace the strict serialization does not have.
+        assert!(agent(r#"agent2 = "https://a.test""#, &p).is_err());
     }
 }
