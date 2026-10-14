@@ -315,6 +315,17 @@ version = "0.0.0"
 [[package]]
 name = "bnap-scheme-notes"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bitcoin",
+ "bnap-core",
+ "bnap-plug",
+ "bnap-scheme-notes",
+ "cashu",
+ "hex",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "bnap-scheme-webbotauth"

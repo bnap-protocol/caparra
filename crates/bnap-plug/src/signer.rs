@@ -650,6 +650,27 @@ impl CappedSigner {
             .collect()
     }
 
+    /// The outputs the use store already reserved as this outcome's change
+    /// or refund, under either status ([`UseStore::reserve_change`]), read
+    /// from the outcome's record; empty for a verify-only view or an
+    /// outcome without a record.
+    ///
+    /// Read-only. It lets an atomic scheme make its refund a superset of
+    /// what was reserved before (a late OK settle that lost to the timeout,
+    /// or a settle whose signer failed after the reservation), so that the
+    /// refund re-signs those outputs at no cost instead of being refused by
+    /// the outcome's change ledger.
+    pub async fn reserved(&self) -> Result<Vec<ChangeOutput>, SignerError> {
+        let Mode::Change(budget) = &self.mode else {
+            return Ok(Vec::new());
+        };
+        match budget.store.outcome(budget.cap.replay_key()).await {
+            Ok(Some(rec)) => Ok(rec.change_outputs.into_iter().collect()),
+            Ok(None) => Ok(Vec::new()),
+            Err(e) => Err(SignerError::Unavailable(e.to_string())),
+        }
+    }
+
     /// Signs blinded outputs out of the change budget.
     ///
     /// Before the signer is called, in this order:
