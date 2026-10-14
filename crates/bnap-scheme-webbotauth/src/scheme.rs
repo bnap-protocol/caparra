@@ -172,29 +172,26 @@ fn agent(
     covered: &Component,
 ) -> Result<(Option<String>, Option<SignatureAgent>), SchemeError> {
     let bad = |d: &str| reject(codes::BAD_AGENT, d.to_owned());
-    let (item, member) = match covered {
-        Component::AgentMember(covered_key) => {
-            let (key, entry) = single_member(field, "Signature-Agent")?;
-            if key != *covered_key {
-                return Err(bad(
-                    "the covered Signature-Agent member is not the one sent",
-                ));
-            }
-            let sfv::ListEntry::Item(item) = entry else {
-                return Err(bad("the Signature-Agent member is not an Item"));
-            };
-            let member = item.serialize_value();
-            (item, Some(member))
+    let (item, member) = if let Component::AgentMember(covered_key) = covered {
+        let (key, entry) = single_member(field, "Signature-Agent")?;
+        if key != *covered_key {
+            return Err(bad(
+                "the covered Signature-Agent member is not the one sent",
+            ));
         }
-        _ => {
-            let item = sfv::Parser::new(field)
-                .parse_item()
-                .map_err(|e| bad(&format!("Signature-Agent: {e}")))?;
-            if item.serialize_value() != field {
-                return Err(bad("Signature-Agent is not in its strict serialization"));
-            }
-            (item, None)
+        let sfv::ListEntry::Item(item) = entry else {
+            return Err(bad("the Signature-Agent member is not an Item"));
+        };
+        let member = item.serialize_value();
+        (item, Some(member))
+    } else {
+        let item = sfv::Parser::new(field)
+            .parse_item()
+            .map_err(|e| bad(&format!("Signature-Agent: {e}")))?;
+        if item.serialize_value() != field {
+            return Err(bad("Signature-Agent is not in its strict serialization"));
         }
+        (item, None)
     };
     let url = item
         .bare_item

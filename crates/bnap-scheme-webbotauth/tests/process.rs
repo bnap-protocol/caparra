@@ -57,7 +57,9 @@ struct NoSigner;
 #[async_trait::async_trait]
 impl Signer for NoSigner {
     async fn schnorr(&self, _msg: &CoreMessage) -> Result<Signature, SignerError> {
-        Err(SignerError::Refused("attestation tests sign nothing".into()))
+        Err(SignerError::Refused(
+            "attestation tests sign nothing".into(),
+        ))
     }
 
     async fn verify_unblinded(
@@ -68,7 +70,9 @@ impl Signer for NoSigner {
         _secret: &[u8],
         _c: &Point,
     ) -> Result<Option<Point>, SignerError> {
-        Err(SignerError::Refused("attestation tests check no notes".into()))
+        Err(SignerError::Refused(
+            "attestation tests check no notes".into(),
+        ))
     }
 
     async fn blind_sign(
@@ -77,7 +81,9 @@ impl Signer for NoSigner {
         _outputs: &[BlindedOutput],
         _limit: &ChangeLimit,
     ) -> Result<Vec<BlindSignature>, SignerError> {
-        Err(SignerError::Refused("attestation tests sign nothing".into()))
+        Err(SignerError::Refused(
+            "attestation tests sign nothing".into(),
+        ))
     }
 }
 
@@ -115,7 +121,12 @@ impl CredentialScheme for StubNotes {
             return Err(bad("body"));
         }
         let key = Key(b[..32].try_into().unwrap());
-        let sig = Signature(part.witness.as_slice().try_into().map_err(|_| bad("witness"))?);
+        let sig = Signature(
+            part.witness
+                .as_slice()
+                .try_into()
+                .map_err(|_| bad("witness"))?,
+        );
         key.verify(&cx.digest.0, &sig)
             .map_err(|_| bad("the witness does not sign this Digest"))?;
         Ok(Verified {
@@ -535,7 +546,10 @@ fn a_discount_takes_its_basis_points_and_a_failed_signature_takes_none() {
     assert_eq!(new(gate.process(&paid, NOW)).admission().price(), 1680);
     // A bot the operator does not honour: no effect, no error, full price.
     let stranger = Cred::bot("z", "n2").with_notes("b", 1680).build(&gate);
-    assert_eq!(gate.process(&stranger, NOW).unwrap_err(), ErrorCode::Underpaid);
+    assert_eq!(
+        gate.process(&stranger, NOW).unwrap_err(),
+        ErrorCode::Underpaid
+    );
     let full = Cred::bot("z", "n3").with_notes("c", 2100).build(&gate);
     assert_eq!(new(gate.process(&full, NOW)).admission().price(), 2100);
 }
@@ -569,7 +583,10 @@ fn waive_and_discount_apply_only_for_classes_s_a_and_o() {
     // And no gate can offer it as a class none waive or discount.
     let mut f = OfferFields::new(Scope([1; 32]), NOW + 300, offer_key().public_key(), [5; 16]);
     f.attest = vec![AttestEntry::discount(ID, 2000)];
-    assert!(f.check_binding_classes(|_| Some(BindingClass::None)).is_err());
+    assert!(
+        f.check_binding_classes(|_| Some(BindingClass::None))
+            .is_err()
+    );
     assert!(f.check_binding_classes(|s| Some(registry(s).0)).is_ok());
 }
 
@@ -615,17 +632,26 @@ fn a_stripped_or_altered_attestation_breaks_the_digest() {
     stripped.attest.clear();
     assert_ne!(gate.context(&stripped), ctx);
     assert_ne!(stripped.digest(&gate.context(&stripped)), digest);
-    assert_eq!(gate.process(&stripped, NOW).unwrap_err(), ErrorCode::BadCredential);
+    assert_eq!(
+        gate.process(&stripped, NOW).unwrap_err(),
+        ErrorCode::BadCredential
+    );
 
     // Swapped for another valid signature over the same Context (another
     // nonce): the Context holds, the Digest does not.
     let mut swapped = cred.clone();
-    let other = Cred { nonce: "n2", ..c.clone() };
+    let other = Cred {
+        nonce: "n2",
+        ..c.clone()
+    };
     set_body(&mut swapped, other.sign("a", &ctx, AUTHORITY).to_bytes());
     assert_eq!(gate.context(&swapped), ctx);
     assert_ne!(swapped.digest(&ctx), digest);
     assert!(gate.verify(&swapped, NOW).is_ok());
-    assert_eq!(gate.process(&swapped, NOW).unwrap_err(), ErrorCode::BadCredential);
+    assert_eq!(
+        gate.process(&swapped, NOW).unwrap_err(),
+        ErrorCode::BadCredential
+    );
 
     // A flipped bit anywhere in the body.
     let body = cred.attest[0].body.clone();
@@ -636,7 +662,10 @@ fn a_stripped_or_altered_attestation_breaks_the_digest() {
         set_body(&mut flipped, b);
         assert_ne!(flipped.digest(&ctx), digest);
         assert!(gate.verify(&flipped, NOW).is_err(), "byte {i}");
-        assert_eq!(gate.process(&flipped, NOW).unwrap_err(), ErrorCode::BadCredential);
+        assert_eq!(
+            gate.process(&flipped, NOW).unwrap_err(),
+            ErrorCode::BadCredential
+        );
     }
     assert_eq!(new(gate.process(&cred, NOW)).admission().price(), 1680);
 }
@@ -651,7 +680,11 @@ fn a_quota_counts_down_and_refuses_past_its_limit() {
     );
     let counter = |now: u64| {
         let id = ids::use_id(ID, &thumbprint(&public("a")));
-        block_on(gate.store.counter(&ids::quota_key(&id, 2, 3600, now).unwrap())).unwrap()
+        block_on(
+            gate.store
+                .counter(&ids::quota_key(&id, 2, 3600, now).unwrap()),
+        )
+        .unwrap()
     };
     for (n, nonce) in ["q1", "q2"].into_iter().enumerate() {
         let p = new(gate.process(&Cred::bot("a", nonce).build(&gate), NOW));
@@ -674,7 +707,12 @@ fn a_quota_counts_down_and_refuses_past_its_limit() {
     let mut later = Cred::bot("a", "q5");
     later.created = NOW + 3600;
     later.expires = NOW + 7200;
-    assert_eq!(new(gate.process(&later.build(&gate), NOW + 3600)).admission().price(), 0);
+    assert_eq!(
+        new(gate.process(&later.build(&gate), NOW + 3600))
+            .admission()
+            .price(),
+        0
+    );
 }
 
 #[test]
@@ -732,8 +770,14 @@ fn keys_resolve_on_the_agent_and_keyid_pair() {
         Arc::new(Down),
     );
     let cred = Cred::bot("a", "n1").build(&down);
-    assert!(matches!(down.verify(&cred, NOW), Err(SchemeError::Unavailable(_))));
-    assert_eq!(down.process(&cred, NOW).unwrap_err(), ErrorCode::Unavailable);
+    assert!(matches!(
+        down.verify(&cred, NOW),
+        Err(SchemeError::Unavailable(_))
+    ));
+    assert_eq!(
+        down.process(&cred, NOW).unwrap_err(),
+        ErrorCode::Unavailable
+    );
 }
 
 #[test]
@@ -748,11 +792,17 @@ fn signatures_live_from_created_to_expires() {
         .build(&gate)
     };
     assert!(gate.verify(&at(NOW + 60, NOW + 600), NOW).is_ok());
-    rejected_with(gate.verify(&at(NOW + 61, NOW + 600), NOW), codes::STALE_SIGNATURE);
+    rejected_with(
+        gate.verify(&at(NOW + 61, NOW + 600), NOW),
+        codes::STALE_SIGNATURE,
+    );
     let short = at(NOW - 100, NOW - 60);
     assert!(gate.verify(&short, NOW).is_ok());
     rejected_with(gate.verify(&short, NOW + 1), codes::STALE_SIGNATURE);
-    rejected_with(gate.verify(&at(NOW, NOW - 1), NOW), codes::BAD_SIGNATURE_INPUT);
+    rejected_with(
+        gate.verify(&at(NOW, NOW - 1), NOW),
+        codes::BAD_SIGNATURE_INPUT,
+    );
     rejected_with(
         gate.verify(&at(NOW, NOW + 86_401), NOW),
         codes::LIFETIME_TOO_LONG,
@@ -769,121 +819,120 @@ fn signatures_live_from_created_to_expires() {
     assert!(lax.verify(&long, NOW).is_ok());
 }
 
+/// Verifies `cred` with one body field edited, and expects `code`.
+fn refused_after(gate: &Gate, cred: &Credential, edit: impl Fn(&mut WbaBody), code: &str) {
+    rejected_with(gate.verify(&with_field(cred, edit), NOW), code);
+}
+
+/// Replaces the first `from` in `Signature-Input` with `to`.
+fn input_edit(from: &'static str, to: &'static str) -> impl Fn(&mut WbaBody) {
+    move |b| b.signature_input = b.signature_input.replacen(from, to, 1)
+}
+
 #[test]
 fn only_the_canonical_body_verifies() {
     let gate = waive_gate();
     let cred = Cred::bot("a", "n1").build(&gate);
     assert!(gate.verify(&cred, NOW).is_ok());
-    let body = WbaBody::parse(&cred.attest[0].body).unwrap();
-    let input = body.signature_input.clone();
-    let sig = body.signature.clone();
-
     // Whitespace the strict serialization does not have, a second
     // signature, labels that disagree.
-    let spaced = input.replacen(' ', "  ", 1);
-    let cases: Vec<(Box<dyn Fn(&mut WbaBody)>, &str)> = vec![
-        (Box::new(move |b| b.signature_input.clone_from(&spaced)), codes::BAD_BODY),
-        (
-            Box::new(move |b| b.signature = format!("{sig}, sig2=:AAAA:")),
-            codes::BAD_BODY,
-        ),
-        (
-            Box::new(|b| b.signature = b.signature.replacen("sig1", "sig9", 1)),
-            codes::BAD_BODY,
-        ),
-        // The agent sent but not covered, and covered but not sent.
-        (
-            Box::new(|b| {
-                b.signature_input = b
-                    .signature_input
-                    .replacen(r#" "signature-agent";key="sig1""#, "", 1);
-            }),
+    refused_after(&gate, &cred, input_edit(" ", "  "), codes::BAD_BODY);
+    refused_after(
+        &gate,
+        &cred,
+        |b| b.signature.push_str(", sig2=:AAAA:"),
+        codes::BAD_BODY,
+    );
+    refused_after(
+        &gate,
+        &cred,
+        |b| b.signature = b.signature.replacen("sig1", "sig9", 1),
+        codes::BAD_BODY,
+    );
+    // The agent sent but not covered, covered but not sent, over http,
+    // keyed to a member the signature does not cover.
+    refused_after(
+        &gate,
+        &cred,
+        input_edit(r#" "signature-agent";key="sig1""#, ""),
+        codes::BAD_AGENT,
+    );
+    refused_after(&gate, &cred, |b| b.signature_agent = None, codes::BAD_AGENT);
+    for agent in [
+        r#"sig1="http://bot.example""#,
+        r#"sig2="https://bot.example""#,
+    ] {
+        refused_after(
+            &gate,
+            &cred,
+            |b| b.signature_agent = Some(agent.into()),
             codes::BAD_AGENT,
-        ),
-        (Box::new(|b| b.signature_agent = None), codes::BAD_AGENT),
-        // Components and parameters the scheme does not take.
-        (
-            Box::new(|b| {
-                b.signature_input = b
-                    .signature_input
-                    .replacen(r#""@authority""#, r#""@authority" "@path""#, 1);
-            }),
-            codes::UNSUPPORTED_COMPONENT,
-        ),
-        (
-            Box::new(|b| {
-                b.signature_input = b
-                    .signature_input
-                    .replacen(r#" "bnap-context""#, "", 1);
-            }),
-            codes::MISSING_COMPONENT,
-        ),
-        (
-            Box::new(|b| {
-                b.signature_input = b
-                    .signature_input
-                    .replacen(r#""@authority" "#, "", 1);
-            }),
-            codes::MISSING_COMPONENT,
-        ),
-        (
-            Box::new(|b| {
-                b.signature_input = b
-                    .signature_input
-                    .replacen(r#""bnap-context""#, r#""bnap-context" "bnap-context""#, 1);
-            }),
-            codes::BAD_SIGNATURE_INPUT,
-        ),
-        (
-            Box::new(|b| {
-                b.signature_input = b
-                    .signature_input
-                    .replacen(r#"tag="web-bot-auth""#, r#"tag="other""#, 1);
-            }),
-            codes::BAD_SIGNATURE_INPUT,
-        ),
-        (
-            Box::new(|b| b.signature_input.push_str(r#";alg="rsa-pss-sha512""#)),
-            codes::UNSUPPORTED_ALG,
-        ),
-        (
-            Box::new(|b| {
-                b.signature_input = b.signature_input.replacen(";created=", ";made=", 1);
-            }),
-            codes::BAD_SIGNATURE_INPUT,
-        ),
-        // The agent over http, and keyed to a member the signature does not
-        // cover.
-        (
-            Box::new(|b| b.signature_agent = Some(r#"sig1="http://bot.example""#.into())),
-            codes::BAD_AGENT,
-        ),
-        (
-            Box::new(|b| b.signature_agent = Some(r#"sig2="https://bot.example""#.into())),
-            codes::BAD_AGENT,
-        ),
-    ];
-    for (i, (edit, code)) in cases.into_iter().enumerate() {
-        let c = with_field(&cred, edit);
-        let r = gate.verify(&c, NOW);
-        match &r {
-            Err(SchemeError::Rejected { scheme_code, .. }) => {
-                assert_eq!(*scheme_code, format!("{ID}/{code}"), "case {i}");
-            }
-            other => panic!("case {i}: expected {code}, got {other:?}"),
-        }
+        );
     }
-    // A keyid that is not a thumbprint.
-    let bad_keyid = with_field(&cred, |b| {
-        b.signature_input = b
-            .signature_input
-            .replacen(&keyid(&public("a")), "not-a-thumbprint", 1);
-    });
-    rejected_with(gate.verify(&bad_keyid, NOW), codes::BAD_KEYID);
-    // A witness, or the scheme used as a pay entry.
+    // A witness.
     let mut w = cred.clone();
     w.attest[0].witness = vec![1; 64];
     rejected_with(gate.verify(&w, NOW), codes::BAD_BODY);
+}
+
+#[test]
+fn only_the_gates_components_and_web_bot_auth_parameters_verify() {
+    let gate = waive_gate();
+    let cred = Cred::bot("a", "n1").build(&gate);
+    let cases = [
+        (
+            r#""@authority""#,
+            r#""@authority" "@path""#,
+            codes::UNSUPPORTED_COMPONENT,
+        ),
+        (
+            r#""@authority""#,
+            r#""@authority";req"#,
+            codes::UNSUPPORTED_COMPONENT,
+        ),
+        (r#" "bnap-context""#, "", codes::MISSING_COMPONENT),
+        (r#""@authority" "#, "", codes::MISSING_COMPONENT),
+        (
+            r#""bnap-context""#,
+            r#""bnap-context" "bnap-context""#,
+            codes::BAD_SIGNATURE_INPUT,
+        ),
+        (
+            r#"tag="web-bot-auth""#,
+            r#"tag="other""#,
+            codes::BAD_SIGNATURE_INPUT,
+        ),
+        (";created=", ";made=", codes::BAD_SIGNATURE_INPUT),
+        (";expires=", ";until=", codes::BAD_SIGNATURE_INPUT),
+        (
+            r#"tag="web-bot-auth""#,
+            r#"tag="web-bot-auth";alg="rsa-pss-sha512""#,
+            codes::UNSUPPORTED_ALG,
+        ),
+    ];
+    for (from, to, code) in cases {
+        refused_after(&gate, &cred, input_edit(from, to), code);
+    }
+    // alg="ed25519" is allowed, but it is signed: adding it after the fact
+    // breaks the signature.
+    refused_after(
+        &gate,
+        &cred,
+        input_edit(
+            r#"tag="web-bot-auth""#,
+            r#"tag="web-bot-auth";alg="ed25519""#,
+        ),
+        codes::BAD_SIGNATURE,
+    );
+    // A keyid that is not a thumbprint.
+    let id = keyid(&public("a"));
+    refused_after(
+        &gate,
+        &cred,
+        move |b| b.signature_input = b.signature_input.replacen(&id, "not-a-thumbprint", 1),
+        codes::BAD_KEYID,
+    );
+    // The scheme used as a pay entry.
     let entry = PayEntry::new(ID, 0, "sat");
     let ctx = gate.context(&cred);
     let digest = cred.digest(&ctx);
