@@ -48,6 +48,10 @@ exceptions = [
   # hex_lit is a required dependency of bitcoin (and so of bnap-core). Its
   # MITNFA license is MIT plus a clause against false attribution.
   { crate = "hex_lit", allow = ["MITNFA"] },
+  # minicbor is a required dependency of cashu (through ur), which the notes
+  # signer uses for BDHKE and DLEQ. BlueOak-1.0.0 is an OSI-approved
+  # permissive license (use, change and distribute, keep the notice).
+  { crate = "minicbor", allow = ["BlueOak-1.0.0"] },
 ]
 
 [licenses.private]
