@@ -97,9 +97,11 @@ mod tests {
 
     #[test]
     fn cheapest_total_wins_and_fees_count() {
-        let mut p = Policy::default();
-        p.linkable = Linkability::Allow;
-        p.linkable_penalty_sat = 0;
+        let p = Policy {
+            linkable: Linkability::Allow,
+            linkable_penalty_sat: 0,
+            ..Policy::default()
+        };
         let r = rank(
             vec![
                 c(0, 0, "a", 20, 5, false),
@@ -142,9 +144,11 @@ mod tests {
 
     #[test]
     fn the_penalty_ranks_linkable_schemes_lower() {
-        let mut p = Policy::default();
-        p.linkable = Linkability::Allow;
-        p.linkable_penalty_sat = 10;
+        let mut p = Policy {
+            linkable: Linkability::Allow,
+            linkable_penalty_sat: 10,
+            ..Policy::default()
+        };
         let r = rank(
             vec![c(0, 0, "l402", 15, 0, true), c(0, 1, "notes", 20, 0, false)],
             &p,
@@ -158,7 +162,7 @@ mod tests {
         assert_eq!(order(&r), ["l402", "notes"]);
         p.linkable = Linkability::Never;
         let r = rank(vec![c(0, 0, "l402", 1, 0, true)], &p);
-        assert!(r.is_empty());
+        assert_eq!(r.len(), 0);
     }
 
     #[test]

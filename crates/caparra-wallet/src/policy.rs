@@ -451,10 +451,7 @@ mod tests {
         let e = check(&caps, &ledger, "https://b.example", "t1", 10, NOW).unwrap_err();
         assert_eq!((e.cap, e.remaining), (Some(CapKind::PerTask), Some(0)));
         // a.example got 180 in the last 24 hours; the old 500 is outside.
-        let e = check(&caps, &ledger, "https://a.example", "t9", 100, NOW)
-            .map(|()| 0)
-            .unwrap_or(1);
-        assert_eq!(e, 0);
+        assert!(check(&caps, &ledger, "https://a.example", "t9", 100, NOW).is_ok());
         let ledger2 = [
             ledger.clone(),
             vec![entry("https://a.example", "t3", NOW - 1, 100)],

@@ -1,5 +1,5 @@
 //! Attestation bodies the wallet signs over a credential's Context:
-//! Web Bot Auth (Ed25519) and DPoP (ES256, a key registered with the
+//! Web Bot Auth (`Ed25519`) and `DPoP` (ES256, a key registered with the
 //! operator, no access token).
 //!
 //! The Context covers the scheme IDs but no body, so the bodies are signed

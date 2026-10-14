@@ -123,13 +123,13 @@ impl std::fmt::Debug for Secret {
     }
 }
 
-/// Attestation keys: Web Bot Auth (Ed25519) and DPoP (ES256).
+/// Attestation keys: Web Bot Auth (`Ed25519`) and `DPoP` (`ES256`).
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttestKeys {
     /// The Ed25519 secret of the Web Bot Auth key.
     #[serde(with = "hexser")]
     pub wba: [u8; 32],
-    /// The P-256 secret of the DPoP key.
+    /// The `P-256` secret of the `DPoP` key.
     #[serde(with = "hexser")]
     pub dpop: [u8; 32],
     /// The Signature-Agent URL to name in Web Bot Auth signatures.

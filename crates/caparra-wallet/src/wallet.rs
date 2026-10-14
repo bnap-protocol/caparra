@@ -86,6 +86,7 @@ pub struct Wallet {
     pub(crate) clock: Clock,
     pub(crate) task: String,
     session: Mutex<SessionCaps>,
+    pin_lock: tokio::sync::Mutex<()>,
     pub(crate) registry: &'static Registry,
 }
 
@@ -222,6 +223,7 @@ impl Wallet {
             clock: opts.clock.clone(),
             task: opts.task.clone(),
             session: Mutex::new(SessionCaps::default()),
+            pin_lock: tokio::sync::Mutex::new(()),
             registry: Registry::embedded(),
         }
     }
@@ -368,7 +370,7 @@ impl Wallet {
         self.store.put(kind::ATTEST_KEYS, "main", &k).await
     }
 
-    /// The public Web Bot Auth key and the DPoP key's thumbprint, to
+    /// The public Web Bot Auth key and the `DPoP` key's thumbprint, to
     /// register with an operator.
     pub async fn attest_public(&self) -> Result<(String, String)> {
         let k = self.attest_keys().await?;
@@ -479,6 +481,15 @@ impl Wallet {
         let stored: Option<PinRecord> = self.store.get(kind::PIN, origin).await?;
         let live = stored.clone().filter(|p| p.until >= now);
         if live.is_some() && !refetch {
+            return Ok(live);
+        }
+        // One fetch at a time: a request that waited here reads the pin the
+        // other one wrote.
+        let _guard = self.pin_lock.lock().await;
+        let seen = stored.as_ref().map(|p| p.seq);
+        let stored: Option<PinRecord> = self.store.get(kind::PIN, origin).await?;
+        let live = stored.clone().filter(|p| p.until >= now);
+        if live.is_some() && (!refetch || live.as_ref().map(|p| p.seq) != seen) {
             return Ok(live);
         }
         if !origin.starts_with("https://") {

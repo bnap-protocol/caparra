@@ -422,6 +422,7 @@ impl Wallet {
     /// three empty batches past the highest counter recorded; then keeps
     /// the notes NUT-07 reports unspent. Counters move past everything
     /// scanned, so no restored output is ever sent again.
+    #[allow(clippy::too_many_lines)]
     pub async fn restore(
         &self,
         origins: &[String],

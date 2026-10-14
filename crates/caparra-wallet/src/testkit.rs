@@ -15,6 +15,11 @@
     clippy::too_many_lines,
     clippy::unwrap_used,
     clippy::cast_possible_truncation,
+    clippy::struct_excessive_bools,
+    clippy::unused_self,
+    clippy::needless_pass_by_value,
+    clippy::single_match_else,
+    clippy::redundant_closure,
     missing_docs
 )]
 
@@ -331,6 +336,8 @@ pub struct Knobs {
     pub strip_bnap: bool,
     /// Funding in the 402.
     pub max_fund: Option<u64>,
+    /// Flip a bit of every offer's `offer_sig`.
+    pub bad_offer_sig: bool,
 }
 
 struct Keys {
@@ -848,9 +855,16 @@ impl TestServer {
         let mut headers = Vec::new();
         if !knobs.strip_bnap {
             for o in &offers {
+                let mut b = o.bytes().to_vec();
+                if knobs.bad_offer_sig {
+                    let sig = o.offer_sig().0;
+                    if let Some(i) = b.windows(64).position(|w| w == sig) {
+                        b[i] ^= 1;
+                    }
+                }
                 headers.push((
                     "WWW-Authenticate".into(),
-                    format!("BNAP offer=\"{}\"", URL_SAFE_NO_PAD.encode(o.bytes())),
+                    format!("BNAP offer=\"{}\"", URL_SAFE_NO_PAD.encode(b)),
                 ));
             }
         }
@@ -871,7 +885,7 @@ impl TestServer {
     }
 
     fn error(&self, e: &ErrorObject) -> HttpResponse {
-        let status = e.socket_code().map_or(503, |c| c.http_status());
+        let status = e.socket_code().map_or(503, ErrorCode::http_status);
         resp(
             status,
             vec![(

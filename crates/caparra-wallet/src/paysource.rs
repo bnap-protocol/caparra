@@ -145,7 +145,7 @@ pub struct CommandSource {
 #[async_trait::async_trait]
 impl PaySource for CommandSource {
     async fn pay_invoice(&self, invoice: &str, _amount_sat: u64, max_fee_sat: u64) -> Result<Paid> {
-        let mut argv: Vec<String> = self
+        let mut words: Vec<String> = self
             .argv
             .iter()
             .map(|a| {
@@ -154,19 +154,19 @@ impl PaySource for CommandSource {
             })
             .collect();
         if !self.argv.iter().any(|a| a.contains("{invoice}")) {
-            argv.push(invoice.to_owned());
+            words.push(invoice.to_owned());
         }
-        let (prog, args) = argv
+        let (program, args) = words
             .split_first()
             .ok_or_else(|| Refusal::new(Code::NoPaySource, "The pay command is empty."))?;
-        let mut child = tokio::process::Command::new(prog)
+        let mut child = tokio::process::Command::new(program)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| failed(format!("cannot run {prog}: {e}")))?;
+            .map_err(|e| failed(format!("cannot run {program}: {e}")))?;
         let mut out = Vec::new();
         if let Some(mut s) = child.stdout.take() {
             s.read_to_end(&mut out).await.map_err(failed)?;
@@ -176,7 +176,7 @@ impl PaySource for CommandSource {
             .map_err(|_| failed("the pay command timed out"))?
             .map_err(failed)?;
         if !status.success() {
-            return Err(failed(format!("{prog} exited with {status}")));
+            return Err(failed(format!("{program} exited with {status}")));
         }
         parse_command_output(&out)
     }

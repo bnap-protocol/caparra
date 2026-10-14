@@ -515,6 +515,7 @@ impl Wallet {
 
     /// Builds every candidate, applies the policy, ranks, and returns the
     /// best one that fits the caps.
+    #[allow(clippy::too_many_lines)]
     async fn choose(&self, cx: &Ctx<'_>, offers: &[(Offer, Scope)]) -> Result<Plan> {
         let p = &cx.cfg.policy;
         let notes: Vec<NoteRecord> = self.store.list(kind::NOTE).await?;
@@ -602,10 +603,10 @@ impl Wallet {
                         })
                         .cloned()
                         .collect();
-                    let plain: Vec<_> = mine.iter().map(NoteRecord::note).collect();
+                    let held_notes: Vec<_> = mine.iter().map(NoteRecord::note).collect();
                     let fee = |ks: &[u8; 33]| params.keyset(ks).map(|k| k.input_fee_ppk);
                     let max_in = usize::try_from(params.max_inputs()).unwrap_or(usize::MAX);
-                    if let Some(sel) = notes::select_notes(&plain, fee, pr, max_in) {
+                    if let Some(sel) = notes::select_notes(&held_notes, fee, pr, max_in) {
                         let chosen: Vec<NoteRecord> =
                             sel.notes.iter().map(|&i| mine[i].clone()).collect();
                         let face: u64 = chosen.iter().map(|n| n.amount).sum();
@@ -798,7 +799,7 @@ impl Wallet {
         Ok(r)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn pay_notes(
         &self,
         cx: &Ctx<'_>,
@@ -873,12 +874,12 @@ impl Wallet {
         }
         self.record_site(&mut tx, &cx.origin, &params.issuer, &active.id, cx.cfg.slot)
             .await?;
-        let plain: Vec<_> = held.iter().map(NoteRecord::note).collect();
+        let inputs: Vec<_> = held.iter().map(NoteRecord::note).collect();
         let outs: Vec<_> = outputs.iter().map(|p| p.output).collect();
-        let (body, ordered) = notes::build_body(&plain, &outs, fund.map(|(q, _)| q.quote.as_str()))
-            .map_err(|e| {
-                Refusal::new(Code::BadInput, format!("cannot build the notes body: {e}"))
-            })?;
+        let (body, ordered) =
+            notes::build_body(&inputs, &outs, fund.map(|(q, _)| q.quote.as_str())).map_err(
+                |e| Refusal::new(Code::BadInput, format!("cannot build the notes body: {e}")),
+            )?;
         let body_bytes = body.to_bytes().map_err(|e| {
             Refusal::new(Code::BadInput, format!("cannot build the notes body: {e}"))
         })?;
@@ -1060,6 +1061,7 @@ impl Wallet {
     /// Funds inside the 402 (bnap:notes 8): asks again with `BNAP-Fund`,
     /// checks the quote in the offer, saves it with its key and the offer,
     /// pays it, and redeems it in the credential.
+    #[allow(clippy::too_many_lines)]
     async fn pay_funded(&self, cx: &Ctx<'_>, plan: &Plan) -> Result<Step> {
         let pay = self
             .pay_source(cx.cfg)
@@ -1378,6 +1380,7 @@ impl Wallet {
         tx.commit().await
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn settle_receipt(
         &self,
         op: &mut OpRecord,
@@ -1431,9 +1434,9 @@ impl Wallet {
             let issuer = op.issuer.clone().unwrap_or_default();
             let mut table = notes::KeyTable::new();
             for o in &op.outputs {
-                if !table.contains_key(&o.keyset) {
+                if let std::collections::btree_map::Entry::Vacant(e) = table.entry(o.keyset) {
                     let k = self.keyset_keys(&op.origin, &issuer, &o.keyset).await?;
-                    table.insert(o.keyset, k.points());
+                    e.insert(k.points());
                 }
             }
             let charged_value = if f.status == Status::Ok { charged } else { 0 };
@@ -1552,6 +1555,7 @@ impl Wallet {
     /// (draft-00 9.3 "always"): the client has no signed offer to compare
     /// it with, so it pays exactly what the invoice asks, within the
     /// policy and the caps.
+    #[allow(clippy::too_many_lines)]
     async fn pay_native(
         &self,
         cfg: &Config,
@@ -1723,13 +1727,10 @@ impl Wallet {
                 continue;
             }
             let r = match self.transport.send(op.request.clone()).await {
-                Ok(resp) => self
-                    .settle_op(&mut op, &resp, None)
-                    .await
-                    .and_then(|s| match s {
-                        Step::Done(r) => Ok(r.payment),
-                        Step::Retry(_) => Ok(None),
-                    }),
+                Ok(resp) => self.settle_op(&mut op, &resp, None).await.map(|s| match s {
+                    Step::Done(r) => r.payment,
+                    Step::Retry(_) => None,
+                }),
                 Err(e) => Err(Refusal::network(e)),
             };
             out.push(ResumeOutcome {

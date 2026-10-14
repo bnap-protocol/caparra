@@ -12,6 +12,7 @@
 //! codes.
 
 use std::fmt;
+use std::fmt::Write as _;
 
 use bnap_core::error::{ErrorCode, ErrorObject};
 use serde::Serialize;
@@ -362,9 +363,10 @@ impl Refusal {
     pub fn with_paid(mut self, sat: u64) -> Self {
         if sat > 0 {
             self.paid = Some(sat);
-            self.message.push_str(&format!(
+            let _ = write!(
+                self.message,
                 " {sat} sat already went out over Lightning and are not refunded."
-            ));
+            );
         }
         self
     }

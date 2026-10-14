@@ -7,6 +7,11 @@
 //! the bnap:notes client module, and the L402 and MPP clients over a
 //! Lightning pay source.
 
+// `Refusal` is the wallet's one error and carries the facts a script needs
+// (cap, remaining, scheme, property); every path that returns it does I/O,
+// so its size is not worth boxing.
+#![allow(clippy::result_large_err)]
+
 pub mod attest;
 pub mod error;
 pub mod invoice;
