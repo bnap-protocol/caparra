@@ -57,6 +57,7 @@ struct Fixture {
 
 fn fixture() -> Fixture {
     let fake = Arc::new(FakeRail::new([4; 32]));
+    fake.set_now(NOW);
     let rail: Arc<dyn FundingRail> = Arc::new(OfferInvoices::new(fake.clone()));
     Fixture {
         fake,
@@ -351,6 +352,45 @@ fn natives_need_sat_and_a_live_rail() {
     let sat = PayEntry::new(SCHEME_ID, 21, "sat");
     let e = block_on(fx.scheme.native(&NativeCtx { entry: &sat, ..cx })).unwrap_err();
     assert!(matches!(e, SchemeError::Unavailable(_)));
+}
+
+#[test]
+fn an_invoice_that_outlives_the_offer_is_never_offered() {
+    // The gate takes a credential until the offer, or the entry's quote,
+    // expires, with 60 s of skew (4.4 step 4). An invoice still payable
+    // after that takes a payment the gate refuses STALE, and L402 refunds
+    // nothing.
+    let id = bnap_core::hash::OfferId([1; 32]);
+    let native = |ttl: u64, entry: &PayEntry| {
+        let fake = FakeRail::new([4; 32]).with_ttl(ttl);
+        fake.set_now(NOW);
+        let rail: Arc<dyn FundingRail> = Arc::new(fake);
+        let scheme = L402::new(MacaroonKeys::new([1; 32]), rail);
+        block_on(scheme.native(&NativeCtx {
+            now: NOW,
+            offer_id: &id,
+            entry,
+            pay_index: 0,
+            expires: NOW + 300,
+        }))
+    };
+    let outlives = |r: Result<Option<NativeArtifact>, SchemeError>| match r {
+        Err(SchemeError::Unavailable(m)) => m.contains("outlives the offer"),
+        _ => false,
+    };
+    let entry = PayEntry::new(SCHEME_ID, 21, "sat");
+    // The invoice may end with the offer, or within the skew after it.
+    assert!(native(300, &entry).unwrap().is_some());
+    assert!(native(360, &entry).unwrap().is_some());
+    // Not later: the rail defaults of the past (600 s, 3600 s) included.
+    for ttl in [361, 600, 3_600] {
+        assert!(outlives(native(ttl, &entry)), "ttl {ttl}");
+    }
+    // A shorter quote bounds it too.
+    let mut quoted = entry.clone();
+    quoted.quote_expires = Some(NOW + 120);
+    assert!(native(180, &quoted).unwrap().is_some());
+    assert!(outlives(native(181, &quoted)));
 }
 
 #[test]

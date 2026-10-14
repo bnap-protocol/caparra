@@ -50,6 +50,7 @@ use std::sync::Arc;
 use bnap_core::credential::SchemePart;
 use bnap_core::hash::sha256;
 use bnap_core::ids::rail;
+use bnap_core::limits::CLOCK_SKEW;
 use bnap_plug::{
     CredentialScheme, Entry, FundingRail, NativeArtifact, NativeCredential, NativeCtx, OfferCtx,
     OfferRole, RailRef, SchemeError, SchemeOffer, Verified, VerifyCtx,
@@ -134,7 +135,11 @@ impl CredentialScheme for L402 {
     }
 
     /// Mints the invoice (description hash = `OfferID`) and the macaroon,
-    /// and returns the challenge as the `l402-macaroon` artifact.
+    /// and returns the challenge as the `l402-macaroon` artifact. Refuses
+    /// ([`SchemeError::Unavailable`]) an invoice that stays payable after
+    /// the offer or the entry's quote expires (plus the 60 s skew): a
+    /// client only sees the invoice's expiry, and a payment the gate then
+    /// refuses STALE is not refunded.
     async fn native(&self, cx: &NativeCtx<'_>) -> Result<Option<NativeArtifact>, SchemeError> {
         if cx.entry.unit != UNIT {
             return Err(SchemeError::Unsupported);
@@ -147,6 +152,18 @@ impl CredentialScheme for L402 {
         if req.rail_kind != rail::LN || req.amount != cx.entry.amount || req.unit != UNIT {
             return Err(SchemeError::Unavailable(
                 "the rail made another kind of payment request".into(),
+            ));
+        }
+        // The gate takes a credential until the offer, or the entry's
+        // quote, expires, with the skew (4.4 step 4). An invoice still
+        // payable after that takes a payment the gate refuses STALE, and
+        // L402 refunds nothing: fail closed rather than offer it.
+        let deadline = cx.entry.effective_quote_expires(cx.expires).min(cx.expires);
+        if req.expires > deadline.saturating_add(CLOCK_SKEW) {
+            return Err(SchemeError::Unavailable(
+                "the invoice outlives the offer: set the rail's invoice expiry \
+                 to the offer lifetime or less"
+                    .into(),
             ));
         }
         let hash: [u8; 32] = req.id.0.as_slice().try_into().map_err(|_| {
