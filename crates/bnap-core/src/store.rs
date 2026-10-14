@@ -842,7 +842,7 @@ impl StoreError {
 /// commits of one plan and of plans sharing a single, commits against one
 /// counter, settles racing the timeout on an outcome that shares its
 /// counter, concurrent refunds of one timed-out outcome, and change
-/// reservations racing a settle and a sweep on one record
+/// reservations racing settles, or sweeps, on one record
 /// ([`Self::reserve_change`]).
 #[async_trait::async_trait]
 pub trait UseStore: Send + Sync {

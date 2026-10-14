@@ -236,7 +236,7 @@ pub fn unsigned_response(fields: &ResponseFields) -> Result<UnsignedResponse, Si
 /// write of the money path: commits of one plan, commits sharing a single,
 /// commits against one counter, settles racing the timeout on an outcome
 /// that shares its rate counter with another, refunds of one timed-out
-/// outcome, and change reservations racing a settle and a sweep on one
+/// outcome, and change reservations racing settles, or sweeps, on one
 /// record. Only a store whose every method decides and writes in one
 /// serializable step passes them; the tests of this module show a store
 /// that splits any one of those writes in two failing.
@@ -912,12 +912,28 @@ pub mod conformance {
         assert_eq!(reserve(store, exec, &failed, &superset), Reserve::Unknown);
     }
 
+    /// What one call of [`concurrent_reservations_keep_one_total`] got.
+    #[derive(Debug)]
+    enum Call {
+        /// A settle, and the store's answer.
+        Settle(Box<Settle>),
+        /// A sweep; true when it timed the outcome out.
+        Expire(bool),
+        /// A reservation of this output, and the store's answer.
+        Reserve(Reserve, ChangeOutput),
+    }
+
     /// The change ledger, concurrently: on an outcome worth 96 sat, four
-    /// calls each reserve a fresh 32 sat output for its refund while a
-    /// settle and a sweep move the record, all behind a barrier, the roles
-    /// rotating each round. Exactly three reservations are let through, and
-    /// the record holds all three and their total: a reservation is never
-    /// lost to a write that read the record before it. A store whose
+    /// calls each reserve a fresh 32 sat output for its refund while four
+    /// others move the record, all behind a barrier. The rounds alternate:
+    /// in one, settles race the reservations (OK, at the deadline, still in
+    /// time); in the next, sweeps past the deadline do; never both, so a
+    /// settle always finds the outcome PENDING and overlaps the
+    /// reservations, and so does a sweep. Which threads move the record
+    /// rotates from one round of a kind to the next. Exactly one call moves
+    /// the outcome, exactly three reservations are let through, and the
+    /// record holds all three and their total: a reservation is never lost
+    /// to a write that read the record before it. A store whose
     /// reservation, or whose settle or timeout, decides on a snapshot and
     /// writes in a second step fails here.
     pub fn concurrent_reservations_keep_one_total<S: UseStore + ?Sized>(
@@ -926,41 +942,54 @@ pub mod conformance {
     ) {
         for round in 0..ROUNDS {
             let (p, _, failed) = valued(round, 96, 50);
+            let rk = *p.replay_key();
             exec.block_on(store.commit(&p)).unwrap();
-            let answers = race(THREADS, |i| match (i + usize::from(round)) % 4 {
-                0 => {
-                    exec.block_on(store.expire_pending(&past_the_deadline()))
-                        .unwrap();
-                    None
-                }
-                1 => {
-                    settle(store, exec, &settlement(&p, Status::Ok, T0 + TIMEOUT));
-                    None
-                }
-                _ => {
-                    let out = outs(round, &[32])
-                        .into_iter()
-                        .map(|mut o| {
-                            o.blinded[3] = u8::try_from(i).unwrap();
-                            o
-                        })
-                        .collect::<Vec<_>>();
-                    let r = reserve(store, exec, &failed, &out);
-                    Some((r, out))
+            let settles = round % 2 == 0;
+            let answers = race(THREADS, |i| {
+                if (i + usize::from(round / 2)) % 2 == 0 {
+                    if settles {
+                        let s = settlement(&p, Status::Ok, T0 + TIMEOUT);
+                        Call::Settle(Box::new(settle(store, exec, &s)))
+                    } else {
+                        let expired = exec
+                            .block_on(store.expire_pending(&past_the_deadline()))
+                            .unwrap();
+                        Call::Expire(expired.contains(&rk))
+                    }
+                } else {
+                    let mut out = outs(round, &[32]).remove(0);
+                    out.blinded[3] = u8::try_from(i).unwrap();
+                    let r = reserve(store, exec, &failed, std::slice::from_ref(&out));
+                    Call::Reserve(r, out)
                 }
             });
+            let moved = answers
+                .iter()
+                .filter(|a| match a {
+                    Call::Settle(s) => matches!(**s, Settle::Settled(_)),
+                    Call::Expire(timed_out) => *timed_out,
+                    Call::Reserve(..) => false,
+                })
+                .count();
+            assert_eq!(moved, 1, "exactly one transition: {answers:?}");
             let reserved: Vec<&ChangeOutput> = answers
                 .iter()
-                .flatten()
-                .filter(|(r, _)| matches!(r, Reserve::Reserved { .. }))
-                .flat_map(|(_, out)| out)
+                .filter_map(|a| match a {
+                    Call::Reserve(Reserve::Reserved { .. }, out) => Some(out),
+                    _ => None,
+                })
                 .collect();
             assert_eq!(reserved.len(), 3, "three of four fit in 96: {answers:?}");
-            let rec = outcome(store, exec, p.replay_key());
+            let rec = outcome(store, exec, &rk);
             assert_eq!(rec.change_total, 96, "no reservation lost: {rec:?}");
             assert_eq!(rec.change_outputs.len(), 3);
             assert!(reserved.iter().all(|o| rec.change_outputs.contains(*o)));
-            assert_ne!(rec.status, OutcomeStatus::Pending);
+            let status = if settles {
+                OutcomeStatus::Ok
+            } else {
+                OutcomeStatus::Failed
+            };
+            assert_eq!(rec.status, status);
         }
     }
 
@@ -1196,12 +1225,16 @@ mod tests {
         // Two reservations that read one total and each add to it let a
         // hoarding scheme past the value; a settle or timeout that writes a
         // record it read before a reservation loses that reservation.
+        // Each round races only settles or only sweeps against the
+        // reservations, so a split settle or timeout always finds the
+        // outcome PENDING; a few attempts make a missed interleaving under
+        // load negligible.
         let exec = &conformance::Spin;
         for split in [Split::Reserve, Split::Settle, Split::Timeout] {
             assert!(
-                fails(|| {
+                (0..8).any(|_| fails(|| {
                     conformance::concurrent_reservations_keep_one_total(&TwoStep::new(split), exec);
-                }),
+                })),
                 "{split:?}"
             );
         }

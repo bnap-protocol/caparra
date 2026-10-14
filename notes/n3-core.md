@@ -549,8 +549,8 @@ refuses a `replay_window` below `pending_timeout + 120`, and calls
   commits of one plan, commits sharing a single, commits against one
   counter, settles racing the timeout on an outcome that shares its rate
   counter with an OK one (roles rotated each round), refunds of one
-  timed-out outcome, and change reservations racing a settle and a sweep
-  on one record. A store that splits any one of commit, settle, timeout,
+  timed-out outcome, and change reservations racing settles, or sweeps
+  (alternate rounds), on one record. A store that splits any one of commit, settle, timeout,
   refund or reservation into a snapshot decision and a later write fails
   the scenario that covers it (`TwoStep` in the module's tests).
 - **`Verified.rail_ids` are rail references** (`RailRef { kind, reference }`)
