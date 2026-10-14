@@ -143,6 +143,15 @@ checks checksums); add `0002_...`.
      under OK cap 46 and FAILED cap 96 at once: the ledger holds exactly the
      outputs let through, total at most 96, at most 5 under OK; re-reserving
      adds nothing.
+   - `change_outputs_are_matched_whole` (sequential, repair round 1): one
+     blinded message `B_` throughout, 96 sat outcome under the FAILED cap:
+     `(k,1,B_)` gives total 1, `(k,95,B_)` total 96 (another amount is a
+     fresh output), `(k2,1,B_)` is `OverCap {97, 96}` (another keyset is
+     fresh), `(k,1000000,B_)` is over the cap, a known batch adds nothing, a
+     batch with one fresh output is over the cap, re-reserving `(k,1,B_)`
+     gives 96 and leaves the record unchanged. It pins the SQL stores'
+     partial ledger load (`sql::outputs_among`), which `MemoryStore` does
+     not have and the conformance suite does not reach.
    - `mixed_load_moves_each_outcome_once`: 8 gate loops x 60 rounds
      (admit, settle OK, reserve then settle, settle FAILED, leave PENDING,
      sweep): every outcome is exactly what the one call that moved it
@@ -170,6 +179,16 @@ checks checksums); add `0002_...`.
 5. `the_schema_is_applied_once_...`: reopen or reconnect, replay a settled
    outcome, assert WAL + `synchronous = FULL` (SQLite) and
    `synchronous_commit = on` (Postgres).
+6. `pruning_spares_live_counters` (repair round 1; the generic body is
+   `scenarios::pruning_spares_live_counters`, which takes the store's
+   `prune_counters` and a raw row writer as closures, since pruning is not
+   on the trait): commits at `T0` under `rate(10, 60)` (`resets_at` =
+   `ceil(T0/60)*60`) and under a one-hour quota, plants raw rows with
+   `resets_at` NULL, 2^63 and `u64::MAX`. `prune_counters` deletes nothing
+   at 0, `T0`, `resets_at` and `resets_at + 60` (both counters still 1);
+   at `resets_at + 61` exactly one (the rate counter reads 0, the live
+   quota counter 1); the quota counter goes at its own epoch end + 61; at
+   `u64::MAX` nothing more, and every planted row still reads 1.
 
 Unit tests in each store crate: `TxTable` (miss guard, diff, counter
 deletes at 0, refused updates) and `sql` (u64 round trip, `below`
@@ -188,6 +207,9 @@ superset), plus `backoff` bounds for Postgres.
 | SQLite writes committed in two halves (outcome, then `used` and counters) | `a_pool_dropped_mid_transaction...` (2 of 3; the third tripped the probe's own pool hack) and `a_killed_writer...` (2 of 3) |
 | Postgres `settle` split | conformance, `settle_and_sweep_race...`, crash test |
 | Postgres `READ COMMITTED` instead of `SERIALIZABLE` | 6 of 9 Postgres tests. The two double-spend scenarios still passed: the `used` primary key turns the second insert into a `23505`, retried into SPENT |
+| Repair round 1, both backends: `prune_counters` DELETE also takes live epochs (`resets_at <= ? OR 1 = 1`) | `pruning_spares_live_counters` only (before it, every test passed) |
+| Same: no `resets_at >= 0` guard; NULL read as 0 (`coalesce`); `<` for `<=`; no clock skew subtracted from `now` | `pruning_spares_live_counters` (4 of 4 per backend) |
+| Repair round 1, both backends: `outputs_among` matches on `replay_key` and `blinded` only; without `amount`; without `keyset` | `change_outputs_are_matched_whole` (3 of 3 per backend). The conformance suite still passes under all three |
 
 ### Running
 
@@ -276,7 +298,10 @@ admin connections. The tests need `CREATE SCHEMA` rights on the database.
   within the skew can read or increment again; a FAILED give-back on a
   pruned counter changes nothing. Only a commit creates a counter row, and
   it always writes `resets_at`; a row with `NULL` there (written by other
-  means) is never pruned.
+  means) is never pruned, nor is one whose `resets_at` is at or above 2^63
+  (stored negative; only an absurd registry epoch makes one), at any `now`:
+  keeping a counter is the safe side. `pruning_spares_live_counters` pins
+  the boundary on both backends.
 - **Counter rows are deleted at 0**, as `MemoryTable` does.
 - **Schema per store on Postgres** comes from `search_path`; the store does
   not qualify table names.
@@ -315,7 +340,8 @@ admin connections. The tests need `CREATE SCHEMA` rights on the database.
   `outcome::process`, `outcome::settle`, `record_refund`,
   `outcome::sweep` and to `CappedSigner::for_change`. Call
   `outcome::sweep(&store, now, &limits)` periodically and, with it,
-  `store.prune_counters(now)`. Every `StoreError` is UNAVAILABLE. Size
+  `store.prune_counters(now)` (it never touches a live epoch: the boundary
+  is `resets_at + 60 < now`, tested). Every `StoreError` is UNAVAILABLE. Size
   `max_connections` for concurrent requests; SQLite writes serialize
   regardless. Keep the SQLite file on local disk.
 - **Wallet (N10)**: the use store is the gate's; nothing here is
@@ -326,7 +352,8 @@ admin connections. The tests need `CREATE SCHEMA` rights on the database.
   as `tests/postgres.rs` does (`Schema`).
 - Another `UseStore` implementation can reuse the whole harness:
   `conformance::run(make, &Tokio::new())` and `scenarios::run(make,
-  &exec)`, plus the crash tests' pattern.
+  &exec)`, plus the crash tests' pattern, and, if it prunes counters,
+  `scenarios::pruning_spares_live_counters`.
 
 ## ERRATA candidates (literal draft-00 reading taken)
 
@@ -346,3 +373,16 @@ connection that just committed take the lock again before sleepers wake.
 `bnap-store-tests` catches it with `mixed_load_moves_each_outcome_once`
 and the crash tests. Core may want a sustained mixed-load scenario of its
 own in `conformance::run`.
+
+## Proposal for the core owner: a whole-identity change case in conformance
+
+(Repair round 1; no change to bnap-core made.) The SQL stores load only
+the ledger outputs a `reserve_change` request names, which `MemoryStore`
+does not do, and `conformance::run` did not notice when that lookup
+matched an output on part of its identity (probes above). Any store with a
+partial load can make the same mistake, so the case of
+`scenarios::change_outputs_are_matched_whole` belongs in
+`conformance::run`: one blinded message, a 96 sat outcome under the FAILED
+cap, `(k,1,B_)` then `(k,95,B_)` reserved to 96, `(k2,1,B_)` and
+`(k,1000000,B_)` over the cap, re-reserving `(k,1,B_)` gives 96 and leaves
+the record unchanged. It is a few lines over `UseStore` alone.
