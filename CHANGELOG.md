@@ -77,5 +77,18 @@ Caparra tracks BNAP draft-00, and every interface can change.
   (`bnap-plug`) lets one pay entry carry several artifacts; carriers and
   the wallet build the L402 challenge from both entries.
 
+### Fixed
+
+- `caparra-gate`: the issuer's key endpoints are matched on the path as
+  routes are (percent-decoded, dot-segments removed, a trailing slash
+  ignored) and answer HEAD as well as GET; the gate refuses to start when
+  the `bnap:notes` issuer URL is the origin's root or a route lies under
+  `{issuer}/v1/keys` or `{issuer}/v1/keysets`.
+- `e2e`: the conformance test no longer passes silently without
+  `BNAP_CONFORMANCE`; it is ignored by default and the CI regtest job runs
+  it against bnap `develop`.
+- The embedded registry export carries the corrected MPP native entry
+  wording (bnap ERRATA row 35).
+
 [Unreleased]: https://github.com/bnap-protocol/caparra/compare/v0.1.0-alpha...develop
 [0.1.0-alpha]: https://github.com/bnap-protocol/caparra/releases/tag/v0.1.0-alpha
