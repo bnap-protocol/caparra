@@ -84,6 +84,7 @@ pub struct CoreMessage {
     key: Key,
     digest: [u8; 32],
     signed: Vec<u8>,
+    replay_key: Option<crate::hash::ReplayKey>,
 }
 
 impl CoreMessage {
@@ -93,7 +94,18 @@ impl CoreMessage {
             key,
             digest: tagged_hash(purpose.tag(), signed),
             signed: signed.to_vec(),
+            replay_key: None,
         }
+    }
+
+    /// For an ack: the `ReplayKey` of the recorded outcome the Response
+    /// answers, set by [`crate::outcome::Recorded::unsigned_receipt`]. A
+    /// signer that can read the use store checks the outcome record against
+    /// the Response before it signs, so access to the signer alone does not
+    /// mint receipts. `None` for an offer.
+    #[must_use]
+    pub fn replay_key(&self) -> Option<&crate::hash::ReplayKey> {
+        self.replay_key.as_ref()
     }
 
     /// What the message is for.
@@ -235,6 +247,13 @@ impl UnsignedResponse {
         let stream = fields.to_stream()?;
         let message = CoreMessage::new(Purpose::Ack, fields.receipt_key, &stream.to_bytes());
         Ok(Self { stream, message })
+    }
+
+    /// Names the outcome this Response answers (see
+    /// [`CoreMessage::replay_key`]).
+    pub(crate) fn for_outcome(mut self, rk: crate::hash::ReplayKey) -> Self {
+        self.message.replay_key = Some(rk);
+        self
     }
 
     /// The message the receipt key signs.

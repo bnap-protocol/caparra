@@ -409,7 +409,8 @@ impl Recorded {
         &self,
         r: &ReceiptInput,
     ) -> Option<Result<UnsignedResponse, SignError>> {
-        self.receipt(r).map(|f| UnsignedResponse::new(&f))
+        self.receipt(r)
+            .map(|f| UnsignedResponse::new(&f).map(|u| u.for_outcome(self.replay_key)))
     }
 }
 

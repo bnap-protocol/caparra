@@ -191,6 +191,7 @@ impl Signer for ProcessSigner {
                 purpose: msg.purpose().into(),
                 key: msg.key().0,
                 signed: msg.signed_bytes().to_vec(),
+                replay_key: msg.replay_key().map(|rk| rk.0),
             })
             .await?;
         let Reply::Signature { sig } = reply else {

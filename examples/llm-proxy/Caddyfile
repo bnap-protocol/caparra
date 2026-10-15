@@ -1,0 +1,32 @@
+# Caddy in front, caparra-gate as the authorizer (front = "forward_auth").
+# The gate sees the method, URI and fields, never the content or the
+# answer: it admits and settles each paid request at once, so only
+# non-metered routes whose requests carry no content can be paid here.
+api.example {
+	# The manifest comes from the gate (9.1).
+	handle /.well-known/bnap {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle {
+		forward_auth 127.0.0.1:8080 {
+			uri /auth
+			# The gate refuses paid requests with content it cannot see.
+			header_up X-Original-Content-Length {http.request.header.Content-Length}
+			header_up X-Original-Transfer-Encoding {http.request.header.Transfer-Encoding}
+			# The receipt travels from the gate's answer to the client's.
+			copy_headers BNAP-Receipt Payment-Receipt
+		}
+		# The credential is the payment, not the application's (10.2).
+		request_header -BNAP-Credential
+		request_header -BNAP-Context
+		request_header -BNAP-Fund
+		# Every answer to a paid request is private and never stored (10.2),
+		# with the receipt on it.
+		header Cache-Control "private, no-store"
+		header BNAP-Receipt {http.request.header.BNAP-Receipt}
+		header Payment-Receipt {http.request.header.Payment-Receipt}
+		request_header -BNAP-Receipt
+		request_header -Payment-Receipt
+		reverse_proxy 127.0.0.1:9000
+	}
+}

@@ -16,6 +16,7 @@ path = "src/main.rs"
 bnap-core.workspace = true
 bnap-plug.workspace = true
 bnap-signer-file.workspace = true
+bnap-store-sqlite.workspace = true
 async-trait.workspace = true
 clap.workspace = true
 hex.workspace = true

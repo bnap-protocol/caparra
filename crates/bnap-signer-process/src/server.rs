@@ -32,9 +32,19 @@ pub struct ServeOptions {
     /// The gate's use store, when the signer process can reach it: then a
     /// blind signature is made only for outputs the store reserved in the
     /// outcome's record ([`UseStore::reserve_change`]), on top of the
-    /// signer's own ledger.
+    /// signer's own ledger; and an ack is made only for a Response that
+    /// matches its settled outcome record ([`check_ack`]).
     pub store: Option<Arc<dyn UseStore>>,
+    /// The longest a change ledger entry is kept after now, whatever
+    /// `keep_until` a request names: a client cannot make the signer's
+    /// in-memory ledger keep entries forever. The use store's reservation
+    /// stays the bound across restarts.
+    pub max_keep: Duration,
 }
+
+/// The default [`ServeOptions::max_keep`]: 31 days, past the longest
+/// manifest lifetime and route-offer lifetime with a replay window of days.
+pub const DEFAULT_MAX_KEEP: Duration = Duration::from_hours(31 * 24);
 
 impl Default for ServeOptions {
     fn default() -> Self {
@@ -43,6 +53,7 @@ impl Default for ServeOptions {
             idle_timeout: Duration::from_secs(30),
             max_connections: 64,
             store: None,
+            max_keep: DEFAULT_MAX_KEEP,
         }
     }
 }
@@ -54,6 +65,7 @@ impl std::fmt::Debug for ServeOptions {
             .field("idle_timeout", &self.idle_timeout)
             .field("max_connections", &self.max_connections)
             .field("store", &self.store.is_some())
+            .field("max_keep", &self.max_keep)
             .finish()
     }
 }
@@ -315,6 +327,59 @@ pub async fn check_reserved(
     Ok(())
 }
 
+/// Checks an ack against the use store: the Response's outcome (`rk`)
+/// must have a settled record, and the Response must state that record's
+/// status, charge, unit, metered units, scheme result and settlement time.
+/// So a process that reaches the socket but not the store cannot mint a
+/// receipt for an outcome that never settled, or one that misstates its
+/// settlement. It cannot check the Response's `digest` or `offer_id`, which
+/// the record does not hold.
+pub async fn check_ack(
+    store: &dyn UseStore,
+    rk: Option<[u8; 32]>,
+    signed: &[u8],
+) -> Result<(), SignerError> {
+    use bnap_core::response::types as t;
+    use bnap_core::store::OutcomeStatus;
+    let refuse = |m: &str| SignerError::Refused(format!("ack: {m}"));
+    let rk = rk.ok_or_else(|| refuse("no outcome named"))?;
+    let record = store
+        .outcome(&bnap_core::hash::ReplayKey(rk))
+        .await
+        .map_err(|e| SignerError::Unavailable(format!("use store: {e}")))?
+        .ok_or_else(|| refuse("the outcome has no record in the use store"))?;
+    let stream = bnap_core::tlv::TlvStream::parse(signed, bnap_core::tlv::StreamKind::TopLevel)
+        .map_err(|_| refuse("not a Response"))?;
+    let tu64 = |typ: u64| -> Result<Option<u64>, SignerError> {
+        stream
+            .get(typ)
+            .map(|v| bnap_core::encoding::read_tu64(v, typ))
+            .transpose()
+            .map_err(|_| refuse("not a Response"))
+    };
+    let status = match record.status {
+        OutcomeStatus::Pending => return Err(refuse("the outcome is not settled")),
+        OutcomeStatus::Ok => 0,
+        OutcomeStatus::Failed => 1,
+    };
+    if record.needs_refund() {
+        return Err(refuse("the outcome's refund is not recorded"));
+    }
+    let same = tu64(t::STATUS)? == Some(status)
+        && tu64(t::CHARGED)?.unwrap_or(0) == record.charged.unwrap_or(0)
+        && tu64(t::METERED_UNITS)? == record.metered_units
+        && tu64(t::SETTLED_AT)? == record.settled_at
+        && stream
+            .get(t::UNIT)
+            .is_none_or(|u| u == record.unit.as_bytes())
+        && stream.get(t::SCHEME_RESULT).filter(|r| !r.is_empty())
+            == record.scheme_result.as_deref().filter(|r| !r.is_empty());
+    if !same {
+        return Err(refuse("the Response does not state the recorded outcome"));
+    }
+    Ok(())
+}
+
 /// A [`FileSigner`] served on a [`SignerSocket`].
 #[derive(Debug)]
 pub struct Server {
@@ -435,10 +500,19 @@ impl Server {
                 purpose,
                 key,
                 signed,
-            } => match self.signer.sign_object(purpose.into(), &Key(key), &signed) {
-                Ok(sig) => Reply::Signature { sig: sig.0 },
-                Err(e) => (&e).into(),
-            },
+                replay_key,
+            } => {
+                if let Some(store) = &self.options.store
+                    && purpose == crate::wire::WirePurpose::Ack
+                    && let Err(e) = check_ack(&**store, replay_key, &signed).await
+                {
+                    return (&e).into();
+                }
+                match self.signer.sign_object(purpose.into(), &Key(key), &signed) {
+                    Ok(sig) => Reply::Signature { sig: sig.0 },
+                    Err(e) => (&e).into(),
+                }
+            }
             Request::VerifyUnblinded {
                 keyset,
                 unit,
@@ -466,12 +540,17 @@ impl Server {
                         blinded: Point(o.blinded),
                     })
                     .collect();
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs());
                 let limit = ChangeLimit {
                     replay_key: bnap_core::hash::ReplayKey(limit.replay_key),
                     status: limit.status.into(),
                     unit: limit.unit,
                     cap: limit.cap,
-                    keep_until: limit.keep_until,
+                    keep_until: limit
+                        .keep_until
+                        .min(now.saturating_add(self.options.max_keep.as_secs())),
                 };
                 if let Some(store) = &self.options.store
                     && let Err(e) = check_reserved(&**store, &keyset, &outputs, &limit).await

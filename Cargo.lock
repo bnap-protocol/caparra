@@ -475,6 +475,21 @@ dependencies = [
 [[package]]
 name = "bnap-carrier-http"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "bnap-core",
+ "bnap-plug",
+ "bytes",
+ "http",
+ "http-body",
+ "http-body-util",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tower",
+ "tracing",
+]
 
 [[package]]
 name = "bnap-carrier-mcp"
@@ -708,6 +723,7 @@ dependencies = [
  "bnap-core",
  "bnap-plug",
  "bnap-signer-file",
+ "bnap-store-sqlite",
  "cashu",
  "clap",
  "hex",
@@ -806,6 +822,45 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 [[package]]
 name = "caparra-gate"
 version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "bnap-carrier-http",
+ "bnap-core",
+ "bnap-plug",
+ "bnap-rail-fake",
+ "bnap-rail-lnd",
+ "bnap-rail-nwc",
+ "bnap-rail-phoenixd",
+ "bnap-scheme-dpop",
+ "bnap-scheme-l402",
+ "bnap-scheme-mpp",
+ "bnap-scheme-notes",
+ "bnap-scheme-webbotauth",
+ "bnap-signer-file",
+ "bnap-signer-process",
+ "bnap-store-sqlite",
+ "bytes",
+ "clap",
+ "hex",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rand 0.10.3",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "caparra-wallet"

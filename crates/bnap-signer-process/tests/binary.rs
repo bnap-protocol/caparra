@@ -285,6 +285,7 @@ async fn only_objects_bnap_core_builds_are_signed() {
         purpose,
         key: key.0,
         signed,
+        replay_key: None,
     };
     let mut conn = UnixStream::connect(&running.socket).await.unwrap();
     // The digest itself, or any 32 bytes, under the offer key.
