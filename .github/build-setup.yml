@@ -1,8 +1,10 @@
 # Extra steps dist runs in every release build job, before cargo builds.
 # fedimint-tonic-lnd (bnap-rail-lnd) needs protoc 3.15 or newer; the apt
 # package on ubuntu-22.04 is too old.
+# Pinned to the v3.0.0 commit: the build jobs hold id-token and
+# attestations write, so a moved tag must not run code there.
 - name: Install protoc
-  uses: arduino/setup-protoc@v3
+  uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b
   with:
     version: "29.3"
     repo-token: ${{ secrets.GITHUB_TOKEN }}
