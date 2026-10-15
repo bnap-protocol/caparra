@@ -5,7 +5,7 @@ members = ["crates/*"]
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0-alpha"
 edition = "2024"
 rust-version = "1.94"
 license = "MIT OR Apache-2.0"
@@ -25,28 +25,28 @@ missing_errors_doc = "allow"
 # `name = { workspace = true }` and may add features on top.
 [workspace.dependencies]
 # Internal crates (path + version, so cargo-deny and crates.io accept them).
-bnap-core = { path = "crates/bnap-core", version = "0.0.0" }
-bnap-plug = { path = "crates/bnap-plug", version = "0.0.0" }
-bnap-carrier-http = { path = "crates/bnap-carrier-http", version = "0.0.0" }
-bnap-carrier-mcp = { path = "crates/bnap-carrier-mcp", version = "0.0.0" }
-bnap-cli = { path = "crates/bnap-cli", version = "0.0.0" }
-bnap-mcp = { path = "crates/bnap-mcp", version = "0.0.0" }
-bnap-rail-fake = { path = "crates/bnap-rail-fake", version = "0.0.0" }
-bnap-rail-lnd = { path = "crates/bnap-rail-lnd", version = "0.0.0" }
-bnap-rail-nwc = { path = "crates/bnap-rail-nwc", version = "0.0.0" }
-bnap-rail-phoenixd = { path = "crates/bnap-rail-phoenixd", version = "0.0.0" }
-bnap-scheme-dpop = { path = "crates/bnap-scheme-dpop", version = "0.0.0" }
-bnap-scheme-l402 = { path = "crates/bnap-scheme-l402", version = "0.0.0" }
-bnap-scheme-mpp = { path = "crates/bnap-scheme-mpp", version = "0.0.0" }
-bnap-scheme-notes = { path = "crates/bnap-scheme-notes", version = "0.0.0" }
-bnap-scheme-webbotauth = { path = "crates/bnap-scheme-webbotauth", version = "0.0.0" }
-bnap-signer-file = { path = "crates/bnap-signer-file", version = "0.0.0" }
-bnap-signer-process = { path = "crates/bnap-signer-process", version = "0.0.0" }
-bnap-store-postgres = { path = "crates/bnap-store-postgres", version = "0.0.0" }
-bnap-store-sqlite = { path = "crates/bnap-store-sqlite", version = "0.0.0" }
-bnap-store-tests = { path = "crates/bnap-store-tests", version = "0.0.0" }
-caparra-gate = { path = "crates/caparra-gate", version = "0.0.0" }
-caparra-wallet = { path = "crates/caparra-wallet", version = "0.0.0" }
+bnap-core = { path = "crates/bnap-core", version = "0.1.0-alpha" }
+bnap-plug = { path = "crates/bnap-plug", version = "0.1.0-alpha" }
+bnap-carrier-http = { path = "crates/bnap-carrier-http", version = "0.1.0-alpha" }
+bnap-carrier-mcp = { path = "crates/bnap-carrier-mcp", version = "0.1.0-alpha" }
+bnap-cli = { path = "crates/bnap-cli", version = "0.1.0-alpha" }
+bnap-mcp = { path = "crates/bnap-mcp", version = "0.1.0-alpha" }
+bnap-rail-fake = { path = "crates/bnap-rail-fake", version = "0.1.0-alpha" }
+bnap-rail-lnd = { path = "crates/bnap-rail-lnd", version = "0.1.0-alpha" }
+bnap-rail-nwc = { path = "crates/bnap-rail-nwc", version = "0.1.0-alpha" }
+bnap-rail-phoenixd = { path = "crates/bnap-rail-phoenixd", version = "0.1.0-alpha" }
+bnap-scheme-dpop = { path = "crates/bnap-scheme-dpop", version = "0.1.0-alpha" }
+bnap-scheme-l402 = { path = "crates/bnap-scheme-l402", version = "0.1.0-alpha" }
+bnap-scheme-mpp = { path = "crates/bnap-scheme-mpp", version = "0.1.0-alpha" }
+bnap-scheme-notes = { path = "crates/bnap-scheme-notes", version = "0.1.0-alpha" }
+bnap-scheme-webbotauth = { path = "crates/bnap-scheme-webbotauth", version = "0.1.0-alpha" }
+bnap-signer-file = { path = "crates/bnap-signer-file", version = "0.1.0-alpha" }
+bnap-signer-process = { path = "crates/bnap-signer-process", version = "0.1.0-alpha" }
+bnap-store-postgres = { path = "crates/bnap-store-postgres", version = "0.1.0-alpha" }
+bnap-store-sqlite = { path = "crates/bnap-store-sqlite", version = "0.1.0-alpha" }
+bnap-store-tests = { path = "crates/bnap-store-tests", version = "0.1.0-alpha" }
+caparra-gate = { path = "crates/caparra-gate", version = "0.1.0-alpha" }
+caparra-wallet = { path = "crates/caparra-wallet", version = "0.1.0-alpha" }
 # Bitcoin, ecash and Lightning. secp256k1 is taken through the `bitcoin`
 # re-export (`bitcoin::secp256k1`) so the tree carries a single secp256k1.
 cashu = "0.18.1"

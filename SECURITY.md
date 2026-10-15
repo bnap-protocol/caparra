@@ -20,5 +20,6 @@ exploited.
 
 ## Supported versions
 
-The project is pre-alpha (draft-00). Only the latest commit on `develop` is
-supported, and no release carries security guarantees yet.
+The project is alpha (0.1.0-alpha, draft-00) and has not been audited.
+Only the latest commit on `develop` is supported, and no release carries
+security guarantees yet.
