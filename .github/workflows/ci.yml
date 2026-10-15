@@ -213,6 +213,10 @@ jobs:
           tool: cargo-nextest
       - name: Start the regtest stack
         run: docker compose -f devenv/regtest/compose.yml up -d
+      # tests/gate.rs starts these binaries as processes (the gate, the
+      # signer with --store, the bnap CLI); build them once up front.
+      - name: Build the gate, signer and CLI binaries
+        run: cargo build --locked --bins -p caparra-gate -p bnap-signer-process -p bnap-cli
       - run: cargo nextest run -p e2e --features regtest --locked
       - name: Show the regtest logs
         if: failure()

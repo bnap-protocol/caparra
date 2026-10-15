@@ -16,7 +16,9 @@
 //! `tests/lightning.rs` runs one Lightning payment through L402 and
 //! `payment:lightning/charge` against the fake rail. With the `regtest`
 //! feature, `tests/regtest.rs` runs the LND rail against the network of
-//! `devenv/regtest`.
+//! `devenv/regtest`, and `tests/gate.rs` runs the real binaries end to end:
+//! `caparra-gate run` (LND rail, SQLite store, process signer),
+//! `bnap-signer --store`, and the `bnap` CLI behind a TLS front.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};

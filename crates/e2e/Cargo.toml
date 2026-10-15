@@ -12,7 +12,24 @@ authors.workspace = true
 [features]
 # Tests against the Lightning regtest network of devenv/regtest. Without
 # this feature they are compiled out, so the normal test job skips them.
-regtest = ["dep:bnap-rail-lnd", "dep:tokio", "dep:serde_json", "dep:hex"]
+# The gate tests (tests/gate.rs) start the real binaries: caparra-gate,
+# bnap-signer and bnap, built on first use.
+regtest = [
+    "dep:bnap-rail-lnd",
+    "dep:bnap-carrier-http",
+    "dep:bnap-scheme-notes",
+    "dep:bnap-signer-file",
+    "dep:tokio",
+    "dep:serde_json",
+    "dep:hex",
+    "dep:axum",
+    "dep:http",
+    "dep:rand",
+    "dep:reqwest",
+    "dep:rustls",
+    "dep:tempfile",
+    "dep:tokio-rustls",
+]
 
 [dependencies]
 bnap-core = { workspace = true, features = ["test-support"] }
@@ -25,6 +42,16 @@ bnap-rail-lnd = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
+bnap-carrier-http = { workspace = true, optional = true }
+bnap-scheme-notes = { workspace = true, optional = true }
+bnap-signer-file = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
 
 [lints]
 workspace = true
