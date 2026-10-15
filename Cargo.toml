@@ -81,7 +81,7 @@ zeroize = "1.9.1"
 # passphrase, XChaCha20-Poly1305 seals every record. BIP-39 for the seed.
 argon2 = { version = "0.5.3", default-features = false, features = ["alloc"] }
 chacha20poly1305 = "0.10.1"
-bip39 = "2.2.2"
+bip39 = "3.0.0"
 
 # Async runtime, HTTP and MCP
 tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "net", "time", "sync", "signal"] }
