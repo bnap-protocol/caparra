@@ -2,13 +2,19 @@
 
 All notable changes to this workspace are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The crates are
-pre-alpha (version 0.0.0) and do not follow semantic versioning yet. When
-releases start, release-plz also writes a changelog per crate under
+alpha and do not follow semantic versioning yet. Once crates are
+published, release-plz also writes a changelog per crate under
 `crates/<name>/CHANGELOG.md`.
 
 ## [Unreleased]
 
-Nothing has been released. What exists on `develop`:
+## [0.1.0-alpha] - 2026-10-15
+
+The first alpha. It is **not audited** and is meant for regtest and test
+use only: do not use it with mainnet money. The crates are **not on
+crates.io yet**; the release consists of the binaries `caparra-gate`,
+`bnap` and `bnap-mcp`, built by dist with GitHub artifact attestations.
+Caparra tracks BNAP draft-00, and every interface can change.
 
 ### Added
 
@@ -42,14 +48,34 @@ Nothing has been released. What exists on `develop`:
   funding and restore from a mnemonic, receipts, and encrypted storage.
 - `bnap` (crate `bnap-cli`) and `bnap-mcp` (an MCP server with the
   `fetch_paid`, `budget` and `receipts` tools).
-- `e2e` tests and a regtest Lightning network in `devenv/regtest/`.
+- `e2e` tests and a regtest Lightning network in `devenv/regtest/`: the
+  real gate, process signer and `bnap` CLI end to end over LND on regtest
+  (notes funded inside the 402, metered, replayed and spent; one Lightning
+  payment through L402 and MPP admitting one action; the CLI paying through
+  a TLS front), plus a conformance run with bnap's runner.
+- `bnap-signer-process`: a `keysets` request that serves the public half of
+  each notes keyset, so the gate runs `bnap:notes` with the process signer.
+- `caparra-gate`: the issuer's NUT-02 `GET {issuer}/v1/keysets` and NUT-01
+  `GET {issuer}/v1/keys[/{id}]`, answered by the gate when the issuer URL is
+  on its origin, so a wallet funding inside the 402 can spend its change.
 - Examples: `examples/quickstart/` (fake rail) and `examples/llm-proxy/`
   (an OpenAI-compatible endpoint, with Caddy and nginx fronts).
 - Fuzzing: twelve cargo-fuzz targets in `fuzz/`, run weekly in CI.
 - Security review B5 (`SECURITY-REVIEW.md`) with its MEDIUM findings
   fixed; open LOW findings in `KNOWN-ISSUES.md`.
 - CI (leak guard, DCO, rustfmt, clippy, tests on Linux and macOS, MSRV
-  1.94, cargo-deny, book, regtest), the mdBook guide and release plumbing
-  that publishes nothing yet.
+  1.94, cargo-deny, book, regtest), the mdBook guide, and a dist release
+  workflow that builds the binaries on a `v*` tag and publishes no crate.
 
-[Unreleased]: https://github.com/bnap-protocol/caparra/commits/develop
+### Changed
+
+- `caparra-gate`: fund offers on metered routes are metered too, so a
+  client funding inside the 402 pays the metered charge, not the route's
+  ceiling.
+- L402 native entries: one entry per artifact, `l402-macaroon` (the binary
+  V2 macaroon) and `bolt11` (the invoice). `CredentialScheme::natives`
+  (`bnap-plug`) lets one pay entry carry several artifacts; carriers and
+  the wallet build the L402 challenge from both entries.
+
+[Unreleased]: https://github.com/bnap-protocol/caparra/compare/v0.1.0-alpha...develop
+[0.1.0-alpha]: https://github.com/bnap-protocol/caparra/releases/tag/v0.1.0-alpha
