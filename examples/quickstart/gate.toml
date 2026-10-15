@@ -1,0 +1,47 @@
+# The quickstart gate: one priced route, the fake rail, a file signer and
+# a SQLite use store. Paths are relative to the directory you run the gate
+# from. For local testing only: the fake rail moves no money and its
+# invoices can be paid only by a test that holds the rail in process.
+
+[gate]
+origin = "http://127.0.0.1:8080"   # the manifest origin, RFC 6454
+listen = "127.0.0.1:8080"
+front = "proxy"
+upstream = "http://127.0.0.1:9000" # the service being protected
+mac_key_file = "mac.key"           # `caparra-gate key new --out mac.key`
+
+[manifest]
+file = "manifest.json"             # made by `caparra-gate manifest sign`
+
+[store]
+kind = "sqlite"
+path = "use.db"
+
+[signer]
+kind = "file"
+keys = "keys.toml"                 # offer and receipt keys, mode 0600
+
+[[rail]]
+id = "ln"
+kind = "fake"                      # in memory, never use with real money
+registry = "ln:lnd"                # the registry entry whose properties it claims
+invoice_expiry_s = 300
+
+[[scheme]]
+id = "httpauth:L402"
+rail = "ln"
+secret_file = "l402.key"
+
+[[scheme]]
+id = "payment:lightning/charge"
+rail = "ln"
+secret_file = "mpp.key"
+network = "regtest"
+
+[[route]]
+id = "hello"
+match = "GET /hello.txt"
+scope = "exact"
+price = { sat = 21 }
+accept = ["httpauth:L402", "payment:lightning/charge"]
+allow_experimental = true          # every Lightning scheme is experimental in the registry
