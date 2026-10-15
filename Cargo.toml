@@ -142,16 +142,16 @@ opt-level = 3
 opt-level = 3
 
 # Binary releases with dist (https://opensource.axo.dev/cargo-dist/).
-# Written by hand for dist 0.33; `dist init` was not run. Releases are
-# owner-gated: .github/workflows/release.yml is a placeholder until the owner
-# replaces it with the output of `dist generate --mode ci` and drops "ci"
-# from allow-dirty.
+# .github/workflows/v-release.yml is generated from this table by
+# `dist generate --mode ci` (dist 0.33); regenerate it after any change here.
+# A pushed v<version> tag builds the binaries and creates the GitHub Release
+# (a prerelease for versions such as 0.1.0-alpha). dist publishes no crate.
 [workspace.metadata.dist]
 cargo-dist-version = "0.33.0"
 ci = "github"
 # Exactly these packages ship binaries: caparra-gate, bnap (from bnap-cli)
-# and bnap-mcp. Every other member is a library and is never distributed.
-packages = ["caparra-gate", "bnap-cli", "bnap-mcp"]
+# and bnap-mcp. dist picks every member with a binary, so the other one,
+# bnap-signer-process, opts out with `[package.metadata.dist] dist = false`.
 targets = [
   "aarch64-apple-darwin",
   "x86_64-unknown-linux-gnu",
@@ -162,10 +162,21 @@ targets = [
 installers = []
 install-path = "CARGO_HOME"
 github-attestations = true
-pr-run-mode = "plan"
-# The release workflow is a hand-written placeholder, so dist must not insist
-# that it matches the generated one.
-allow-dirty = ["ci"]
+# No release run on pull requests: the CI workflow runs `dist plan` instead,
+# so the release workflow has a single trigger.
+pr-run-mode = "skip"
+# Only tags that start with "v" (v0.1.0-alpha) trigger a release, never the
+# per-crate <crate>-v<version> tags of release-plz. dist names the generated
+# workflow after the namespace: v-release.yml.
+tag-namespace = "v"
+
+# fedimint-tonic-lnd (bnap-rail-lnd, in caparra-gate) compiles LND's .proto
+# files in its build script, which needs protoc on the build runners.
+[workspace.metadata.dist.dependencies.apt]
+protobuf-compiler = "*"
+
+[workspace.metadata.dist.dependencies.homebrew]
+protobuf = "*"
 
 # The profile dist builds release binaries with.
 [profile.dist]

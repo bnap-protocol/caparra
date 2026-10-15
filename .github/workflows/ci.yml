@@ -162,6 +162,19 @@ jobs:
         with:
           command: check ${{ matrix.checks }}
 
+  dist-plan:
+    name: Release plan (dist)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install || rustup show
+      - name: Install dist 0.33.0
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.33.0/cargo-dist-installer.sh | sh
+      # Fails when .github/workflows/v-release.yml no longer matches
+      # [workspace.metadata.dist], and shows what a v<version> tag would ship.
+      - run: dist plan
+
   book:
     name: Book
     runs-on: ubuntu-latest

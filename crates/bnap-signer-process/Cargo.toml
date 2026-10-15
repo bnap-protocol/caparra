@@ -12,6 +12,10 @@ authors.workspace = true
 name = "bnap-signer"
 path = "src/main.rs"
 
+# Not in the binary release: dist ships caparra-gate, bnap and bnap-mcp only.
+[package.metadata.dist]
+dist = false
+
 [dependencies]
 bnap-core.workspace = true
 bnap-plug.workspace = true
