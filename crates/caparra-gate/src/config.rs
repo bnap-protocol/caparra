@@ -732,7 +732,73 @@ impl Config {
             }
             plans.push(self.plan_route(registry, r)?);
         }
+        self.check_issuer(&plans)?;
         Ok(plans)
+    }
+
+    /// The `bnap:notes` issuer URL, when notes are enabled and some route
+    /// accepts them: `issuer_url`, or `<origin>/cashu`.
+    #[must_use]
+    pub fn notes_issuer_url(&self, plans: &[RoutePlan]) -> Option<String> {
+        let used = plans.iter().any(|p| {
+            p.pay
+                .iter()
+                .any(|e| e.scheme == bnap_scheme_notes::SCHEME_ID)
+        });
+        let s = self
+            .schemes
+            .iter()
+            .find(|s| s.enabled && s.id == bnap_scheme_notes::SCHEME_ID)
+            .filter(|_| used)?;
+        Some(
+            s.issuer_url
+                .clone()
+                .unwrap_or_else(|| format!("{}/cashu", self.gate.origin)),
+        )
+    }
+
+    /// The gate answers the issuer's NUT-01 and NUT-02 endpoints itself,
+    /// before routing, when the issuer URL is on this origin. Refuse an
+    /// issuer at the origin's root, whose endpoints would take `/v1/keys`
+    /// and `/v1/keysets` of the whole origin, and any route under those
+    /// endpoints, which could never be reached.
+    fn check_issuer(&self, plans: &[RoutePlan]) -> Result<(), ConfigError> {
+        let Some(url) = self.notes_issuer_url(plans) else {
+            return Ok(());
+        };
+        let Some(prefix) = issuer_path(&self.gate.origin, &url) else {
+            return Ok(());
+        };
+        if prefix.is_empty() {
+            return Err(invalid(format!(
+                "bnap:notes issuer_url {url:?} is the origin's root: its /v1/keys and /v1/keysets would shadow the whole origin; give the issuer a path such as {}/cashu",
+                self.gate.origin
+            )));
+        }
+        let ends = [format!("{prefix}/v1/keys"), format!("{prefix}/v1/keysets")];
+        let under = |p: &str| {
+            let p = crate::gate::route_path(p);
+            let p = p.trim_end_matches('/');
+            ends.iter().any(|e| {
+                p == e
+                    || p.strip_prefix(e.as_str())
+                        .is_some_and(|r| r.starts_with('/'))
+            })
+        };
+        for p in plans {
+            let path = p.section.match_.split_once(' ').map_or("", |(_, p)| p);
+            let path = path
+                .strip_suffix('*')
+                .filter(|w| w.ends_with('/'))
+                .unwrap_or(path);
+            if under(path) {
+                return Err(invalid(format!(
+                    "route {:?}: {:?} is under the bnap:notes issuer's key endpoints ({prefix}/v1/keys, {prefix}/v1/keysets), which the gate answers itself",
+                    p.section.id, p.section.match_
+                )));
+            }
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -995,6 +1061,23 @@ fn check_effect(a: &RouteAttestSection) -> Result<(), String> {
         },
         Effect::Required | Effect::Waive => Ok(()),
     }
+}
+
+/// The path of an issuer URL on `origin` (bnap:notes 5.1), normalized as
+/// routes are matched and without a trailing slash: `""` for the origin's
+/// root, `None` when the URL is on another origin.
+#[must_use]
+pub fn issuer_path(origin: &str, url: &str) -> Option<String> {
+    let rest = url.strip_prefix(origin)?;
+    if !(rest.is_empty() || rest.starts_with('/')) {
+        return None;
+    }
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    Some(
+        crate::gate::route_path(rest)
+            .trim_end_matches('/')
+            .to_owned(),
+    )
 }
 
 /// Checks an RFC 6454 origin serialization: `http` or `https`, lower case,

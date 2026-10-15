@@ -18,9 +18,9 @@ settlement rails, storage, signers and carriers) is a Rust trait, so an
 operator can mix the parts they need without forking the core.
 
 > [!WARNING]
-> Caparra is pre-alpha and tracks BNAP draft-00. Nothing is published to
-> crates.io, every interface in this guide can change without notice, and
-> it is not ready for mainnet money. Open findings are listed in
+> Caparra is alpha (0.1.0-alpha), not audited, and tracks BNAP draft-00.
+> Nothing is published to crates.io, every interface in this guide can
+> change without notice, and it is not ready for mainnet money. Open findings are listed in
 > `KNOWN-ISSUES.md` in the repository.
 
 ## What is in this guide

@@ -191,7 +191,7 @@ mod tests {
         let r = Registry::embedded();
         assert_eq!(
             r.digest(),
-            "e133cf496b0463d36ccca71dd78bf3a6c6a21cf67ef31c0497996c0eb1de261c"
+            "06cd086aab52775673424886462f8b4940cb62d28404e4475c15b2b9a755994f"
         );
     }
 

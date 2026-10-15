@@ -4,12 +4,14 @@
 //! paying from the regtest payer node.
 //!
 //! Needs the `regtest` feature, Docker, Python 3.11 and a checkout of the
-//! bnap repository named by `BNAP_CONFORMANCE` (its root); without it the
-//! test does nothing. Reports go to `BNAP_CONFORMANCE_REPORT` (default: a
+//! bnap repository named by `BNAP_CONFORMANCE` (its root). The test is
+//! ignored by default, so a plain run never reports it as passed; run with
+//! `--include-ignored` it fails when `BNAP_CONFORMANCE` is unset. The CI
+//! regtest job checks out bnap `develop` and runs it. Reports go to `BNAP_CONFORMANCE_REPORT` (default: a
 //! temporary directory) as `<profile>-<payer>/report.json`.
 //!
 //! ```text
-//! BNAP_CONFORMANCE=../bnap cargo nextest run -p e2e --features regtest --test conformance
+//! BNAP_CONFORMANCE=../bnap cargo test -p e2e --features regtest --test conformance -- --include-ignored
 //! ```
 //!
 //! The test fails when a MUST or SHOULD case fails or errors; MUST cases the
@@ -27,11 +29,14 @@ use std::process::Command;
 use stack::{Stack, devenv, fixtures};
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs BNAP_CONFORMANCE (a bnap checkout) and about 25 minutes; the CI regtest job runs it"]
 async fn the_conformance_runner_passes_against_the_gate() {
-    let Some(bnap) = std::env::var_os("BNAP_CONFORMANCE").map(PathBuf::from) else {
-        eprintln!("BNAP_CONFORMANCE is not set: the conformance run is skipped");
-        return;
-    };
+    let bnap = std::env::var_os("BNAP_CONFORMANCE")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .expect(
+            "BNAP_CONFORMANCE must name a bnap checkout (its root) to run the conformance test",
+        );
     let s = Stack::start().await;
     let out = std::env::var_os("BNAP_CONFORMANCE_REPORT")
         .map_or_else(|| s.dir.path().join("conformance"), PathBuf::from);

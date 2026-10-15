@@ -474,7 +474,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-carrier-http"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -493,7 +493,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-carrier-mcp"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "axum",
@@ -516,7 +516,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-cli"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "base64 0.23.1",
  "bnap-core",
@@ -532,7 +532,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-core"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -549,7 +549,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-mcp"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "anyhow",
  "axum",
@@ -567,7 +567,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-plug"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "bnap-core",
@@ -577,7 +577,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-rail-fake"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "bnap-core",
@@ -587,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-rail-lnd"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "bnap-core",
@@ -599,7 +599,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-rail-nwc"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "bnap-core",
@@ -611,7 +611,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-rail-phoenixd"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -626,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-scheme-dpop"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -641,7 +641,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-scheme-l402"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -656,7 +656,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-scheme-mpp"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-scheme-notes"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "bitcoin",
@@ -686,7 +686,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-scheme-webbotauth"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -700,7 +700,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-signer-file"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "bitcoin",
@@ -717,7 +717,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-signer-process"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "bnap-core",
@@ -738,7 +738,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-store-postgres"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "bnap-core",
@@ -748,7 +748,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-store-sqlite"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "bnap-core",
@@ -757,7 +757,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-store-tests"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "bnap-core",
@@ -821,7 +821,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "caparra-gate"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -865,7 +865,7 @@ dependencies = [
 
 [[package]]
 name = "caparra-wallet"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "argon2",
  "async-trait",
@@ -1480,7 +1480,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "e2e"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "axum",

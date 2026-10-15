@@ -319,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-carrier-mcp"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -336,7 +336,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-core"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "bitcoin",
@@ -351,7 +351,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-plug"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "bnap-core",
@@ -361,7 +361,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-scheme-dpop"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -376,7 +376,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-scheme-l402"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -390,7 +390,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-scheme-mpp"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-scheme-notes"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "bnap-core",
@@ -416,7 +416,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-scheme-webbotauth"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -430,7 +430,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-signer-file"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "bitcoin",
@@ -446,7 +446,7 @@ dependencies = [
 
 [[package]]
 name = "bnap-signer-process"
-version = "0.0.0"
+version = "0.1.0-alpha"
 dependencies = [
  "async-trait",
  "bnap-core",

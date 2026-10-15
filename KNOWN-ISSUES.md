@@ -1,6 +1,6 @@
 # Known issues
 
-Everything below is open. The project is pre-alpha: none of it blocks
+Everything below is open. The project is alpha (0.1.0-alpha): none of it blocks
 local testing, and all of it should be settled before Caparra handles
 mainnet money. Each entry is ready to file as an issue.
 

@@ -177,7 +177,11 @@ impl Gate {
                 plan,
             })
             .collect();
-        let issuer = issuer_path(&s.origin, plugs.issuer_url.as_deref()).zip(plugs.issuer.clone());
+        let issuer = plugs
+            .issuer_url
+            .as_deref()
+            .and_then(|u| crate::config::issuer_path(&s.origin, u))
+            .zip(plugs.issuer.clone());
         Self(Arc::new(Inner {
             front: s.front,
             origin: s.origin,
@@ -272,16 +276,6 @@ fn native_challenges(f: &OfferFields) -> Vec<NativeChallenge> {
     out
 }
 
-/// The path of the issuer URL when it is on `origin` (bnap:notes 5.1),
-/// without a trailing slash.
-fn issuer_path(origin: &str, url: Option<&str>) -> Option<String> {
-    let rest = url?.strip_prefix(origin)?;
-    if !(rest.is_empty() || rest.starts_with('/')) {
-        return None;
-    }
-    Some(rest.trim_end_matches('/').to_owned())
-}
-
 /// A plain JSON answer for a refusal that is not a socket error.
 fn plain(status: StatusCode, code: &str, message: &str) -> Answer {
     let body =
@@ -317,14 +311,17 @@ struct SocketInput {
 
 impl Inner {
     /// The issuer's NUT-02 `GET /v1/keysets` and NUT-01 `GET /v1/keys` and
-    /// `GET /v1/keys/{id}` (bnap:notes 5.2), under the issuer URL's path:
-    /// public keys only, read from the keyset table. `None` for any other
-    /// path, which then goes on as usual.
+    /// `GET /v1/keys/{id}` (bnap:notes 5.2), and HEAD of each, under the
+    /// issuer URL's path: public keys only, read from the keyset table.
+    /// `path` is matched as routes are (`route_path`), with a trailing
+    /// slash ignored. `None` for any other path, which then goes on as
+    /// usual.
     async fn issuer_keys(&self, path: &str) -> Option<Answer> {
         use bnap_scheme_notes::KeysetState;
         use cashu::nuts::{CurrencyUnit, Id, KeySet, KeySetInfo};
         let (prefix, store) = self.issuer.as_ref()?;
-        let rest = path.strip_prefix(prefix.as_str())?;
+        let path = route_path(path);
+        let rest = path.trim_end_matches('/').strip_prefix(prefix.as_str())?;
         let want = match rest {
             "/v1/keysets" | "/v1/keys" => None,
             r => Some(r.strip_prefix("/v1/keys/")?),
@@ -470,7 +467,7 @@ impl Inner {
         if parts.method == Method::GET && parts.uri.path() == WELL_KNOWN {
             return Admit::Answer(self.auth_status(self.manifest_answer()));
         }
-        if parts.method == Method::GET
+        if (parts.method == Method::GET || parts.method == Method::HEAD)
             && let Some(a) = self.issuer_keys(parts.uri.path()).await
         {
             return Admit::Answer(self.auth_status(a));

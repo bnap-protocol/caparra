@@ -9,9 +9,9 @@ priced and permissioned requests between machines over HTTP and MCP.
 [![Docs](https://img.shields.io/badge/docs-guide-informational.svg)](https://bnap-protocol.github.io/caparra/)
 
 > [!WARNING]
-> Pre-alpha. Caparra tracks BNAP draft-00, nothing is published to
-> crates.io, and every interface can change. Do not use it with mainnet
-> money yet.
+> Alpha (0.1.0-alpha), not audited, for regtest and testing only.
+> Caparra tracks BNAP draft-00, nothing is published to crates.io, and
+> every interface can change. Do not use it with mainnet money yet.
 
 ## What BNAP is
 

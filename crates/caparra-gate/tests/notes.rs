@@ -572,3 +572,86 @@ async fn the_issuer_serves_its_keysets_and_keys() {
     assert_eq!(a.status, 404);
     assert_eq!(w.calls(), 0, "never forwarded to the application");
 }
+
+#[tokio::test]
+async fn the_issuer_endpoints_match_the_normalized_path_and_serve_head() {
+    let w = World::new().await;
+    // Encoded, doubled-slash, dot-segment and trailing-slash variants are
+    // the same endpoints, as the router would see them (L4).
+    for path in [
+        "/cashu/v1/%6Beysets",
+        "/cashu//v1/keysets",
+        "/cashu/x/../v1/keysets",
+        "/cashu/v1/keysets/",
+        "/cashu/v1/keys/",
+    ] {
+        let a = read(w.send("GET", path, "", &[]).await).await;
+        assert_eq!(a.status, 200, "{path}: {}", a.body);
+        let v: serde_json::Value = serde_json::from_str(&a.body).unwrap();
+        assert!(v["keysets"].is_array(), "{path}: {}", a.body);
+    }
+    // HEAD is served like GET, without a body.
+    for path in ["/cashu/v1/keysets", "/cashu/v1/keys"] {
+        let a = read(w.send("HEAD", path, "", &[]).await).await;
+        assert_eq!(a.status, 200, "{path}");
+        assert_eq!(
+            a.headers.get("content-type").unwrap(),
+            "application/json",
+            "{path}"
+        );
+        assert!(a.body.is_empty(), "{path}");
+    }
+    assert_eq!(w.calls(), 0, "never forwarded to the application");
+}
+
+#[tokio::test]
+async fn the_gate_refuses_an_issuer_path_that_is_empty_or_shadowed() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = config_text(dir.path(), "127.0.0.1:9", "");
+    let registry = caparra_gate::registry::Registry::embedded().unwrap();
+    let plan = |text: &str| {
+        caparra_gate::config::Config::parse(text)
+            .unwrap()
+            .plan(&registry)
+    };
+    assert!(plan(&base).is_ok());
+    let fund = "max_fund_sat = 10000";
+    // The issuer URL is the origin itself: its endpoints would take
+    // /v1/keys and /v1/keysets of the whole origin.
+    for url in [ORIGIN.to_owned(), format!("{ORIGIN}/")] {
+        let t = base.replace(fund, &format!("{fund}\nissuer_url = \"{url}\""));
+        assert_ne!(t, base);
+        let e = plan(&t).unwrap_err().to_string();
+        assert!(e.contains("issuer"), "{url}: {e}");
+    }
+    // A route under the issuer's key endpoints would never be reached.
+    for m in [
+        "GET /cashu/v1/keys",
+        "GET /cashu/v1/keys/00ab",
+        "POST /cashu/v1/keysets",
+        "GET /cashu/v1/keys/*",
+    ] {
+        let t = format!(
+            "{base}\n[[route]]\nid = \"shadow\"\nmatch = \"{m}\"\nscope = \"exact\"\nprice = {{ sat = 1 }}\naccept = [\"httpauth:L402\"]\nallow_experimental = true\n"
+        );
+        let e = plan(&t).unwrap_err().to_string();
+        assert!(e.contains("issuer"), "{m}: {e}");
+    }
+    // Routes beside or above them are fine (the issuer answers its own key
+    // endpoints first), and so is an issuer off this origin.
+    for m in [
+        "GET /cashu/v1/mint/quote/bolt11",
+        "GET /cashu/v1/keysetsx",
+        "GET /cashu/*",
+    ] {
+        let t = format!(
+            "{base}\n[[route]]\nid = \"beside\"\nmatch = \"{m}\"\nscope = \"exact\"\nprice = {{ sat = 1 }}\naccept = [\"httpauth:L402\"]\nallow_experimental = true\n"
+        );
+        assert!(plan(&t).is_ok(), "{m}: {:?}", plan(&t).err());
+    }
+    let off = base.replace(
+        fund,
+        &format!("{fund}\nissuer_url = \"https://mint.example\""),
+    );
+    assert!(plan(&off).is_ok());
+}

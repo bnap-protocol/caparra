@@ -162,6 +162,19 @@ jobs:
         with:
           command: check ${{ matrix.checks }}
 
+  dist-plan:
+    name: Release plan (dist)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install || rustup show
+      - name: Install dist 0.33.0
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.33.0/cargo-dist-installer.sh | sh
+      # Fails when .github/workflows/v-release.yml no longer matches
+      # [workspace.metadata.dist], and shows what a v<version> tag would ship.
+      - run: dist plan
+
   book:
     name: Book
     runs-on: ubuntu-latest
@@ -198,7 +211,8 @@ jobs:
     needs: regtest-detect
     if: needs.regtest-detect.outputs.enabled == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The conformance run alone takes about 25 minutes.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       - name: Install the pinned toolchain
@@ -218,6 +232,28 @@ jobs:
       - name: Build the gate, signer and CLI binaries
         run: cargo build --locked --bins -p caparra-gate -p bnap-signer-process -p bnap-cli
       - run: cargo nextest run -p e2e --features regtest --locked
+      # The conformance test (tests/conformance.rs) is ignored by default; run
+      # it here with bnap's conformance runner from bnap develop (Python 3.11
+      # or later, as preinstalled on the runner).
+      - name: Check out bnap (develop) for the conformance runner
+        uses: actions/checkout@v7
+        with:
+          repository: bnap-protocol/bnap
+          ref: develop
+          path: bnap
+          persist-credentials: false
+      - name: Conformance against the gate
+        env:
+          BNAP_CONFORMANCE: ${{ github.workspace }}/bnap
+          BNAP_CONFORMANCE_REPORT: ${{ runner.temp }}/conformance
+        run: cargo test -p e2e --features regtest --locked --test conformance -- --include-ignored
+      - name: Keep the conformance reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: conformance-reports
+          path: ${{ runner.temp }}/conformance
+          if-no-files-found: ignore
       - name: Show the regtest logs
         if: failure()
         run: docker compose -f devenv/regtest/compose.yml logs --no-color

@@ -5,7 +5,7 @@ members = ["crates/*"]
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0-alpha"
 edition = "2024"
 rust-version = "1.94"
 license = "MIT OR Apache-2.0"
@@ -25,28 +25,28 @@ missing_errors_doc = "allow"
 # `name = { workspace = true }` and may add features on top.
 [workspace.dependencies]
 # Internal crates (path + version, so cargo-deny and crates.io accept them).
-bnap-core = { path = "crates/bnap-core", version = "0.0.0" }
-bnap-plug = { path = "crates/bnap-plug", version = "0.0.0" }
-bnap-carrier-http = { path = "crates/bnap-carrier-http", version = "0.0.0" }
-bnap-carrier-mcp = { path = "crates/bnap-carrier-mcp", version = "0.0.0" }
-bnap-cli = { path = "crates/bnap-cli", version = "0.0.0" }
-bnap-mcp = { path = "crates/bnap-mcp", version = "0.0.0" }
-bnap-rail-fake = { path = "crates/bnap-rail-fake", version = "0.0.0" }
-bnap-rail-lnd = { path = "crates/bnap-rail-lnd", version = "0.0.0" }
-bnap-rail-nwc = { path = "crates/bnap-rail-nwc", version = "0.0.0" }
-bnap-rail-phoenixd = { path = "crates/bnap-rail-phoenixd", version = "0.0.0" }
-bnap-scheme-dpop = { path = "crates/bnap-scheme-dpop", version = "0.0.0" }
-bnap-scheme-l402 = { path = "crates/bnap-scheme-l402", version = "0.0.0" }
-bnap-scheme-mpp = { path = "crates/bnap-scheme-mpp", version = "0.0.0" }
-bnap-scheme-notes = { path = "crates/bnap-scheme-notes", version = "0.0.0" }
-bnap-scheme-webbotauth = { path = "crates/bnap-scheme-webbotauth", version = "0.0.0" }
-bnap-signer-file = { path = "crates/bnap-signer-file", version = "0.0.0" }
-bnap-signer-process = { path = "crates/bnap-signer-process", version = "0.0.0" }
-bnap-store-postgres = { path = "crates/bnap-store-postgres", version = "0.0.0" }
-bnap-store-sqlite = { path = "crates/bnap-store-sqlite", version = "0.0.0" }
-bnap-store-tests = { path = "crates/bnap-store-tests", version = "0.0.0" }
-caparra-gate = { path = "crates/caparra-gate", version = "0.0.0" }
-caparra-wallet = { path = "crates/caparra-wallet", version = "0.0.0" }
+bnap-core = { path = "crates/bnap-core", version = "0.1.0-alpha" }
+bnap-plug = { path = "crates/bnap-plug", version = "0.1.0-alpha" }
+bnap-carrier-http = { path = "crates/bnap-carrier-http", version = "0.1.0-alpha" }
+bnap-carrier-mcp = { path = "crates/bnap-carrier-mcp", version = "0.1.0-alpha" }
+bnap-cli = { path = "crates/bnap-cli", version = "0.1.0-alpha" }
+bnap-mcp = { path = "crates/bnap-mcp", version = "0.1.0-alpha" }
+bnap-rail-fake = { path = "crates/bnap-rail-fake", version = "0.1.0-alpha" }
+bnap-rail-lnd = { path = "crates/bnap-rail-lnd", version = "0.1.0-alpha" }
+bnap-rail-nwc = { path = "crates/bnap-rail-nwc", version = "0.1.0-alpha" }
+bnap-rail-phoenixd = { path = "crates/bnap-rail-phoenixd", version = "0.1.0-alpha" }
+bnap-scheme-dpop = { path = "crates/bnap-scheme-dpop", version = "0.1.0-alpha" }
+bnap-scheme-l402 = { path = "crates/bnap-scheme-l402", version = "0.1.0-alpha" }
+bnap-scheme-mpp = { path = "crates/bnap-scheme-mpp", version = "0.1.0-alpha" }
+bnap-scheme-notes = { path = "crates/bnap-scheme-notes", version = "0.1.0-alpha" }
+bnap-scheme-webbotauth = { path = "crates/bnap-scheme-webbotauth", version = "0.1.0-alpha" }
+bnap-signer-file = { path = "crates/bnap-signer-file", version = "0.1.0-alpha" }
+bnap-signer-process = { path = "crates/bnap-signer-process", version = "0.1.0-alpha" }
+bnap-store-postgres = { path = "crates/bnap-store-postgres", version = "0.1.0-alpha" }
+bnap-store-sqlite = { path = "crates/bnap-store-sqlite", version = "0.1.0-alpha" }
+bnap-store-tests = { path = "crates/bnap-store-tests", version = "0.1.0-alpha" }
+caparra-gate = { path = "crates/caparra-gate", version = "0.1.0-alpha" }
+caparra-wallet = { path = "crates/caparra-wallet", version = "0.1.0-alpha" }
 # Bitcoin, ecash and Lightning. secp256k1 is taken through the `bitcoin`
 # re-export (`bitcoin::secp256k1`) so the tree carries a single secp256k1.
 cashu = "0.18.1"
@@ -142,16 +142,16 @@ opt-level = 3
 opt-level = 3
 
 # Binary releases with dist (https://opensource.axo.dev/cargo-dist/).
-# Written by hand for dist 0.33; `dist init` was not run. Releases are
-# owner-gated: .github/workflows/release.yml is a placeholder until the owner
-# replaces it with the output of `dist generate --mode ci` and drops "ci"
-# from allow-dirty.
+# .github/workflows/v-release.yml is generated from this table by
+# `dist generate --mode ci` (dist 0.33); regenerate it after any change here.
+# A pushed v<version> tag builds the binaries and creates the GitHub Release
+# (a prerelease for versions such as 0.1.0-alpha). dist publishes no crate.
 [workspace.metadata.dist]
 cargo-dist-version = "0.33.0"
 ci = "github"
 # Exactly these packages ship binaries: caparra-gate, bnap (from bnap-cli)
-# and bnap-mcp. Every other member is a library and is never distributed.
-packages = ["caparra-gate", "bnap-cli", "bnap-mcp"]
+# and bnap-mcp. dist picks every member with a binary, so the other one,
+# bnap-signer-process, opts out with `[package.metadata.dist] dist = false`.
 targets = [
   "aarch64-apple-darwin",
   "x86_64-unknown-linux-gnu",
@@ -162,10 +162,21 @@ targets = [
 installers = []
 install-path = "CARGO_HOME"
 github-attestations = true
-pr-run-mode = "plan"
-# The release workflow is a hand-written placeholder, so dist must not insist
-# that it matches the generated one.
-allow-dirty = ["ci"]
+# No release run on pull requests: the CI workflow runs `dist plan` instead,
+# so the release workflow has a single trigger.
+pr-run-mode = "skip"
+# Only tags that start with "v" (v0.1.0-alpha) trigger a release, never the
+# per-crate <crate>-v<version> tags of release-plz. dist names the generated
+# workflow after the namespace: v-release.yml.
+tag-namespace = "v"
+
+# fedimint-tonic-lnd (bnap-rail-lnd, in caparra-gate) compiles LND's .proto
+# files in its build script, which needs protoc on the build runners.
+[workspace.metadata.dist.dependencies.apt]
+protobuf-compiler = "*"
+
+[workspace.metadata.dist.dependencies.homebrew]
+protobuf = "*"
 
 # The profile dist builds release binaries with.
 [profile.dist]
