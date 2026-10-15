@@ -45,7 +45,7 @@
       "transport": "an event tag and the relay's OK message; offers published in advance"
     }
   },
-  "digest": "e133cf496b0463d36ccca71dd78bf3a6c6a21cf67ef31c0497996c0eb1de261c",
+  "digest": "06cd086aab52775673424886462f8b4940cb62d28404e4475c15b2b9a755994f",
   "format": 1,
   "generated_by": "registry/validate.py --export",
   "properties": [
@@ -1167,12 +1167,12 @@
       "native": [
         {
           "credential": "the MPP credential, the Authorization: Payment value as received",
-          "embeds": "the challenge's HMAC'd id carries the OfferID",
+          "embeds": "the entry is the Payment challenge exactly as sent in WWW-Authenticate; its opaque parameter carries the OfferID (base64url of the JCS object {\"bnap_offer\": hex OfferID}), and the challenge's HMAC'd id covers opaque, so the gate authenticates it without state (ERRATA row 35)",
           "kind": "mpp-challenge"
         },
         {
           "credential": "the MPP credential, the Authorization: Payment value as received",
-          "embeds": "the invoice description hash is the OfferID",
+          "embeds": "optional for MPP, since the invoice is already inside the challenge (methodDetails.invoice); when sent, the invoice description hash is the OfferID",
           "kind": "bolt11"
         }
       ],
