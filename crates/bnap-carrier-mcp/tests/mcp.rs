@@ -370,9 +370,15 @@ fn native(offer: &Offer, kind: &str) -> String {
     String::from_utf8(n.data.clone()).unwrap()
 }
 
+/// The L402 challenge an offer's `l402-macaroon` and `bolt11` entries make.
+fn l402_challenge(offer: &Offer) -> bnap_scheme_l402::Challenge {
+    let (i, _) = offer.fields().pay_entry("httpauth:L402").unwrap();
+    bnap_scheme_l402::Challenge::of_entries(&offer.fields().native, i as u64).unwrap()
+}
+
 /// Pays the offer's invoice on the fake rail and returns the L402 token.
 fn pay_l402(w: &World, offer: &Offer) -> String {
-    let c = bnap_scheme_l402::Challenge::parse(&native(offer, "l402-macaroon")).unwrap();
+    let c = l402_challenge(offer);
     let mpp = bnap_scheme_mpp::Challenge::parse(&native(offer, "mpp-challenge")).unwrap();
     let hash = ChargeRequest::decode(&mpp.request).unwrap().payment_hash;
     let preimage = w.fake.pay(&hash).unwrap();
@@ -608,7 +614,7 @@ async fn an_unpaid_invoice_never_runs_the_tool() {
     let w = world().await;
     let a = json!({"city": "Bern"});
     let (_, offer) = w.offer("weather", &a).await;
-    let c = bnap_scheme_l402::Challenge::parse(&native(&offer, "l402-macaroon")).unwrap();
+    let c = l402_challenge(&offer);
     let token = Token::new(&c.token, [9; 32]).unwrap().to_string();
     let (code, e) = w
         .call(params(

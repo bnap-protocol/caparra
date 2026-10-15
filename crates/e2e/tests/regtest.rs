@@ -204,8 +204,8 @@ async fn one_regtest_payment_through_l402_and_mpp_admits_one_action() {
         )
         .await
         .expect("issue the offer");
-    // Two challenges with a real regtest invoice fit in the default offer
-    // size limit.
+    // The macaroon, the invoice and the MPP challenge with a real regtest
+    // invoice fit in the default offer size limit.
     assert!(offer.bytes().len() <= bnap_core::limits::MAX_OFFER);
     println!(
         "regtest: offer with both natives is {} bytes (limit {})",
@@ -221,7 +221,11 @@ async fn one_regtest_payment_through_l402_and_mpp_admits_one_action() {
             .unwrap();
         String::from_utf8(n.data.clone()).unwrap()
     };
-    let l402_c = bnap_scheme_l402::Challenge::parse(&native("l402-macaroon")).unwrap();
+    let (i, _) = offer
+        .fields()
+        .pay_entry(bnap_scheme_l402::SCHEME_ID)
+        .unwrap();
+    let l402_c = bnap_scheme_l402::Challenge::of_entries(&offer.fields().native, i as u64).unwrap();
     let mpp_c = bnap_scheme_mpp::Challenge::parse(&native("mpp-challenge")).unwrap();
     assert_eq!(
         ChargeRequest::decode(&mpp_c.request).unwrap().invoice,

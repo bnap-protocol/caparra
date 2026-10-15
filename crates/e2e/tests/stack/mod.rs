@@ -6,7 +6,7 @@
 //!
 //! Payments are made from the payer node with `lncli` (devenv/regtest).
 
-#![allow(dead_code, clippy::missing_panics_doc)]
+#![allow(dead_code, clippy::missing_panics_doc, clippy::too_many_lines)]
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

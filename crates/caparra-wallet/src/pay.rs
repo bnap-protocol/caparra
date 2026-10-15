@@ -658,12 +658,9 @@ impl Wallet {
                     }
                     continue;
                 }
-                // Class O Lightning schemes: the native entry of this pay
-                // entry holds the challenge, signed with the offer.
-                let Some(n) = f.native.iter().find(|n| n.pay_index == ei as u64) else {
-                    continue;
-                };
-                let Ok(text) = String::from_utf8(n.data.clone()) else {
+                // Class O Lightning schemes: the challenge is made of this
+                // pay entry's native entries, signed with the offer.
+                let Some(text) = signed_challenge(&e.scheme, &f.native, ei as u64) else {
                     continue;
                 };
                 let Some(invoice) = lightning_invoice(&e.scheme, &text) else {
@@ -1897,6 +1894,26 @@ fn lightning_invoice_text(scheme: &str, challenge: &str) -> Option<String> {
             let r = bnap_scheme_mpp::lightning::ChargeRequest::decode(&c.request).ok()?;
             Some(r.invoice)
         }
+        _ => None,
+    }
+}
+
+/// The native challenge of the pay entry at `pay_index`, from the offer's
+/// signed native entries (draft-00 4.1, 9.3): L402's from its
+/// `l402-macaroon` and `bolt11` entries, MPP's `mpp-challenge` entry.
+pub(crate) fn signed_challenge(
+    scheme: &str,
+    native: &[bnap_core::offer::NativeEntry],
+    pay_index: u64,
+) -> Option<String> {
+    match scheme {
+        bnap_scheme_l402::SCHEME_ID => {
+            bnap_scheme_l402::Challenge::of_entries(native, pay_index).map(|c| c.to_header())
+        }
+        bnap_scheme_mpp::SCHEME_ID => native
+            .iter()
+            .find(|n| n.pay_index == pay_index && n.kind == bnap_scheme_mpp::NATIVE_KIND)
+            .and_then(|n| String::from_utf8(n.data.clone()).ok()),
         _ => None,
     }
 }

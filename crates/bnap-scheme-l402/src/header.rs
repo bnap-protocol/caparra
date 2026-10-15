@@ -7,6 +7,9 @@
 //! A parser accepts the scheme names `L402` and `LSAT` in any case, and
 //! `token=` or `macaroon=` (equal when both are present).
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
+
 use crate::token::Token;
 
 /// The scheme name a server sends.
@@ -47,8 +50,40 @@ pub struct Challenge {
 }
 
 impl Challenge {
+    /// The challenge of an offer's two native entries for one L402 pay
+    /// entry: the binary macaroon (kind `l402-macaroon`) and the invoice
+    /// (kind `bolt11`). `None` when either is missing or the invoice is not
+    /// text.
+    #[must_use]
+    pub fn from_natives(macaroon: &[u8], invoice: &[u8]) -> Option<Self> {
+        Some(Self {
+            token: STANDARD.encode(macaroon),
+            invoice: std::str::from_utf8(invoice).ok()?.to_owned(),
+        })
+    }
+
+    /// The challenge of the L402 pay entry at `pay_index`, from an offer's
+    /// native entries: its `l402-macaroon` and `bolt11` entries.
+    #[must_use]
+    pub fn of_entries(native: &[bnap_core::offer::NativeEntry], pay_index: u64) -> Option<Self> {
+        let get = |kind: &str| {
+            native
+                .iter()
+                .find(|n| n.pay_index == pay_index && n.kind == kind)
+                .map(|n| n.data.as_slice())
+        };
+        Self::from_natives(get(crate::NATIVE_KIND)?, get(crate::INVOICE_KIND)?)
+    }
+
+    /// The macaroon's binary serialization, as the `l402-macaroon` native
+    /// entry carries it; `None` when `token` is not standard base64.
+    #[must_use]
+    pub fn macaroon(&self) -> Option<Vec<u8>> {
+        STANDARD.decode(&self.token).ok()
+    }
+
     /// The field value: `L402 version="0", token="…", macaroon="…",
-    /// invoice="…"`. A native entry of the offer carries these exact bytes.
+    /// invoice="…"`.
     #[must_use]
     pub fn to_header(&self) -> String {
         format!(
@@ -86,6 +121,11 @@ impl Challenge {
         let invoice = get("invoice").ok_or(HeaderError::Missing("invoice"))?;
         Ok(Self { token, invoice })
     }
+}
+
+/// The binary macaroon of a minted token (standard base64).
+pub(crate) fn macaroon_bytes(token: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    STANDARD.decode(token)
 }
 
 /// The `Authorization` field value for a token: `L402 <token>`.

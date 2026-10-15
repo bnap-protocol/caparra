@@ -75,17 +75,20 @@ impl Fixture {
         let mut f = OfferFields::new(scope, NOW + 300, self.signer.0.public_key(), [nonce; 16]);
         f.pay = vec![PayEntry::new(SCHEME_ID, amount, unit)];
         let id = f.offer_id().unwrap();
-        let native = block_on(self.scheme.native(&NativeCtx {
+        let natives = block_on(self.scheme.natives(&NativeCtx {
             now: NOW,
             offer_id: &id,
             entry: &f.pay[0],
             pay_index: 0,
             expires: f.expires,
         }))
-        .unwrap()
         .unwrap();
-        assert_eq!(native.kind, NATIVE_KIND);
-        f.native = vec![NativeEntry::new(0, native.kind, native.data)];
+        let kinds: Vec<_> = natives.iter().map(|n| n.kind.as_str()).collect();
+        assert_eq!(kinds, [NATIVE_KIND, INVOICE_KIND], "one entry per kind");
+        f.native = natives
+            .into_iter()
+            .map(|n| NativeEntry::new(0, n.kind, n.data))
+            .collect();
         let u = UnsignedOffer::new(&f, Some(&[3; 32])).unwrap();
         let sig = block_on(self.signer.schnorr(u.message())).unwrap();
         let offer = u.finish(&sig).unwrap();
@@ -93,10 +96,10 @@ impl Fixture {
         offer
     }
 
-    /// The challenge an offer carries.
+    /// The challenge an offer's two native entries make.
     fn challenge(offer: &Offer) -> Challenge {
-        let data = &offer.fields().native[0].data;
-        Challenge::parse(std::str::from_utf8(data).unwrap()).unwrap()
+        let n = &offer.fields().native;
+        Challenge::from_natives(&n[0].data, &n[1].data).unwrap()
     }
 
     /// Pays the offer's invoice and builds the token a client sends.
@@ -156,12 +159,19 @@ fn a_paid_token_verifies_to_the_payment_hash_and_its_ln_rail_reference() {
     let fx = fixture();
     let offer = fx.offer(1, 21, "sat");
     let c = Fixture::challenge(&offer);
-    // The challenge's bytes are the offer's native entry, and its macaroon
-    // embeds the OfferID.
+    // The native entries are the artifacts' bytes (4.1): the binary V2
+    // macaroon, which embeds the OfferID, and the invoice; the challenge
+    // carries the same two.
+    let parsed = Challenge::parse(&c.to_header()).unwrap();
     assert_eq!(
-        c.to_header().as_bytes(),
+        parsed.macaroon().unwrap(),
         offer.fields().native[0].data.as_slice()
     );
+    assert_eq!(
+        parsed.invoice.as_bytes(),
+        offer.fields().native[1].data.as_slice()
+    );
+    assert_eq!(offer.fields().native[0].data[0], 2, "a V2 binary macaroon");
     let hash = fx.hash_of(&c);
     let minted = fx
         .scheme

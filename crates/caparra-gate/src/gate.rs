@@ -244,6 +244,34 @@ fn scheme_err(e: &SchemeError) -> ErrorObject {
     e.to_error_object()
 }
 
+/// The native challenges of an offer, one per pay entry with natives, built
+/// from its native entries (9.3): L402's from its `l402-macaroon` and
+/// `bolt11` entries, MPP's `mpp-challenge` entry as it is.
+fn native_challenges(f: &OfferFields) -> Vec<NativeChallenge> {
+    let mut out = Vec::new();
+    for (i, p) in f.pay.iter().enumerate() {
+        let i = i as u64;
+        let value = match p.scheme.as_str() {
+            bnap_scheme_l402::SCHEME_ID => {
+                bnap_scheme_l402::Challenge::of_entries(&f.native, i).map(|c| c.to_header())
+            }
+            bnap_scheme_mpp::SCHEME_ID => f
+                .native
+                .iter()
+                .find(|n| n.pay_index == i && n.kind == bnap_scheme_mpp::NATIVE_KIND)
+                .and_then(|n| String::from_utf8(n.data.clone()).ok()),
+            _ => None,
+        };
+        if let Some(value) = value {
+            out.push(NativeChallenge {
+                scheme: p.scheme.clone(),
+                value,
+            });
+        }
+    }
+    out
+}
+
 /// The path of the issuer URL when it is on `origin` (bnap:notes 5.1),
 /// without a trailing slash.
 fn issuer_path(origin: &str, url: Option<&str>) -> Option<String> {
@@ -797,17 +825,7 @@ impl Inner {
             if let Some(o) = o {
                 if !o.fields().native.is_empty() {
                     self.remember(&o, now);
-                    for n in &o.fields().native {
-                        let scheme = &o.fields().pay
-                            [usize::try_from(n.pay_index).unwrap_or(usize::MAX)]
-                        .scheme;
-                        if let Ok(v) = String::from_utf8(n.data.clone()) {
-                            natives.push(NativeChallenge {
-                                scheme: scheme.clone(),
-                                value: v,
-                            });
-                        }
-                    }
+                    natives.extend(native_challenges(o.fields()));
                 }
                 offers.push(o);
             }
@@ -1011,9 +1029,9 @@ impl Inner {
                 let Some(plug) = self.values.get(&entry.scheme) else {
                     continue;
                 };
-                let native = plug
+                let natives = plug
                     .scheme
-                    .native(&NativeCtx {
+                    .natives(&NativeCtx {
                         now,
                         offer_id: &offer_id,
                         entry,
@@ -1025,7 +1043,7 @@ impl Inner {
                         tracing::error!(scheme = %entry.scheme, "no native challenge: {e}");
                         scheme_err(&e)
                     })?;
-                if let Some(n) = native {
+                for n in natives {
                     f.native.push(NativeEntry::new(i as u64, n.kind, n.data));
                 }
             }

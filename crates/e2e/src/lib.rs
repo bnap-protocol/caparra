@@ -293,8 +293,8 @@ impl Gate {
             let scheme = self
                 .scheme(&entry.scheme)
                 .ok_or(Refused::code(ErrorCode::NotOffered))?;
-            let native = scheme
-                .native(&NativeCtx {
+            let natives = scheme
+                .natives(&NativeCtx {
                     now,
                     offer_id: &offer_id,
                     entry,
@@ -303,7 +303,7 @@ impl Gate {
                 })
                 .await
                 .map_err(|e| Refused::from(e.to_error_object()))?;
-            if let Some(n) = native {
+            for n in natives {
                 f.native.push(NativeEntry::new(i as u64, n.kind, n.data));
             }
         }
