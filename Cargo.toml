@@ -80,7 +80,7 @@ zeroize = "1.9.1"
 # Wallet storage at rest (caparra-wallet): argon2id derives the key from a
 # passphrase, XChaCha20-Poly1305 seals every record. BIP-39 for the seed.
 argon2 = { version = "0.5.3", default-features = false, features = ["alloc"] }
-chacha20poly1305 = "0.10.1"
+chacha20poly1305 = "0.11.0"
 bip39 = "2.2.2"
 
 # Async runtime, HTTP and MCP
