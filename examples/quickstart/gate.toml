@@ -12,6 +12,7 @@ mac_key_file = "mac.key"           # `caparra-gate key new --out mac.key`
 
 [manifest]
 file = "manifest.json"             # made by `caparra-gate manifest sign`
+# root = "<64 hex>"                # pin the root key in production (setup.sh prints none)
 
 [store]
 kind = "sqlite"

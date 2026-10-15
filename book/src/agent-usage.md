@@ -21,8 +21,8 @@ secret. It has exactly three tools:
 | Tool | Arguments | Result |
 | --- | --- | --- |
 | `fetch_paid` | `url`, `method?`, `body?`, `max_sat?` | Status, content type, body (text or base64, at most 256 KiB) and the payment |
-| `budget` | `action` (`get` or `set`), `cap?` (`per-request`, `per-task`, `per-origin`, `daily`), `sat?`, `origin?` | Owner caps, session caps, caps in force, what is left, notes held; `set` only narrows (above the owner's cap is `ABOVE_HARD_CAP`) |
-| `receipts` | `action` (`list` or `verify`), `id?` | Receipt summaries, or a third-party check of them |
+| `budget` | `action?` (`get`, the default, or `set`), `cap?` (`per-request`, `per-task`, `per-origin`, `daily`), `sat?`, `origin?` | Owner caps, session caps, caps in force, what is left, notes held; `set` only narrows (above the owner's cap is `ABOVE_HARD_CAP`) |
+| `receipts` | `action?` (`list`, the default, or `verify`), `id?` | Receipt summaries, or a third-party check of them |
 
 Unknown arguments are refused, so a call that names a scheme fails.
 Refusals come back as tool errors with structured content

@@ -95,4 +95,33 @@ All run in this sandbox on `node/docs` (equal to `develop` plus these docs):
   README carries the mermaid diagram (mdBook does not render mermaid
   without a preprocessor).
 - No Docker here: the regtest steps in the book were not run.
-- Checker results: see below.
+- A partial conformance run (N11 runner, `--profile server`, no payer)
+  against the quickstart gate: 49 passed, 1 SHOULD failed
+  (`OFR-NATIVE-MATCH`, the native-entry reading already recorded in
+  `notes/n9a.md`), the rest skipped; stopped early to free the ports.
+
+## Checker rounds
+
+**Final verdict: PASS (round 1).** No HIGH or MEDIUM findings. The checker
+ran the README quickstart from a clean clone command by command, the tests
+it names, the bnap conformance command against the mock gate (exit 3,
+"incomplete", as documented), both books with the link check, and the
+leak guard; it checked the `bnap-mcp` tools, the `bnap` flags and every
+operator-config key against the code, and KNOWN-ISSUES.md against the
+notes.
+
+### LOW findings
+
+| # | Finding | Status |
+| --- | --- | --- |
+| 1 | The quickstart ends in the wallet's HTTPS refusal, not a paid fake-rail request, and runs the gate from a copy of `examples/quickstart/gate.toml` (paths resolve from the run directory) | Open, owner decision (see Decisions) |
+| 2 | `budget` and `receipts` showed `action` as required; it defaults to `get` and `list` | Fixed |
+| 3 | `uri_env` default `NWC_URI` not stated | Fixed |
+| 4 | Book quickstart said the commands were run on `develop` | Fixed (reworded) |
+| 5 | `examples/README.md` did not list `quickstart/` | Fixed |
+| 6 | This notes file pointed to checker results that were missing | Fixed (this section) |
+| 7 | The quickstart config sets no `[manifest] root` | Fixed: commented `root` line with a production note |
+| 8 | Personal first name in the verbatim bnap spec files | Open, owner decision (see Gaps) |
+
+The checker also saw B5-C9 in practice: the quickstart's `use.db` is
+created `0644` (already in KNOWN-ISSUES.md).

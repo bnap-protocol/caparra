@@ -74,7 +74,7 @@ The PostgreSQL store exists as a crate but is not wired into the gate yet.
 | `invoice_expiry_s` | Invoice lifetime; must not outlive an exact-scope offer |
 | `address`, `cert`, `macaroon` | `lnd`: gRPC address, TLS certificate file, macaroon file |
 | `url`, `password_file` | `phoenixd`: HTTP API URL and the file holding its password |
-| `uri_env` | `nwc`: the environment variable that holds the NWC URI |
+| `uri_env` | `nwc`: the environment variable that holds the NWC URI (default `NWC_URI`) |
 | `registry`, `seed` | `fake`: the registry rail entry it claims to be (required, for example `ln:lnd`) and an optional 64-hex seed |
 
 The fake rail moves no money and logs a warning at start.

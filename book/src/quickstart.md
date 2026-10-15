@@ -2,8 +2,8 @@
 
 This puts `caparra-gate` in front of a local file server with one priced
 path, using the fake rail, which moves no money. It is the same run as the
-quickstart in the repository's README; every command below was run on
-`develop`.
+quickstart in the repository's README, and every command below was run
+as written.
 
 You need Rust (the toolchain is pinned in `rust-toolchain.toml`), `protoc`
 (the LND rail compiles `.proto` files at build time), `curl` and Python 3.

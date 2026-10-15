@@ -192,8 +192,8 @@ has three tools:
 | Tool | Arguments | What it does |
 | --- | --- | --- |
 | `fetch_paid` | `url`, `method?`, `body?`, `max_sat?` | Fetches an `https` URL and pays within the caps if the server asks |
-| `budget` | `action` (`get` or `set`), `cap?`, `sat?`, `origin?` | Shows the caps and what is left; `set` can only narrow a cap |
-| `receipts` | `action` (`list` or `verify`), `id?` | Lists receipts or verifies them as a third party would |
+| `budget` | `action?` (`get`, the default, or `set`), `cap?`, `sat?`, `origin?` | Shows the caps and what is left; `set` can only narrow a cap |
+| `receipts` | `action?` (`list`, the default, or `verify`), `id?` | Lists receipts or verifies them as a third party would |
 
 Make the wallet first (`bnap init`, `bnap budget set ...`,
 `bnap paysource ...`), put the passphrase in a file with mode 0600, then
