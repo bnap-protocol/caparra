@@ -64,7 +64,7 @@ josekit = "0.10.3"
 # OpenSSL. ed25519-dalek stays on the 2.x line that web-bot-auth uses, so the
 # tree carries one copy; sfv matches web-bot-auth's structured-field parser.
 p256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "std"] }
-ed25519-dalek = "2.2.0"
+ed25519-dalek = "3.0.0"
 sfv = "0.13.0"
 
 # Encoding and crypto helpers
