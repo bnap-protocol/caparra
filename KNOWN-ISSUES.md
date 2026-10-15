@@ -19,7 +19,6 @@ client side (`notes/n10.md`). No HIGH or MEDIUM finding is open.
 
 | ID | Crate | Description | Suggested fix |
 | --- | --- | --- | --- |
-| --- | --- | --- | --- |
 | B5-A3 | bnap-carrier-mcp | When the scheme's OK settle fails (a sweep timed the outcome out during the action), `conclude` answers UNAVAILABLE without the FAILED settle and refund. The client gets its refund only by replaying after `pending_timeout` (`crates/bnap-carrier-mcp/src/gate.rs`). (notes/b5-security.md) | On an OK settle error, take `pending.charge(Status::Failed, 0)`, run the FAILED `settle_scheme`, then `outcome::settle`. |
 | B5-A4 | bnap-carrier-mcp | `process` gets `offer.fields()` instead of `bnap_scheme_notes::admission_fields(..)`, so the notes 5.4 admission cutoff is not applied on MCP calls. It only matters with an offer lifetime above `pending_timeout + 120` (`crates/bnap-carrier-mcp/src/gate.rs`). (notes/b5-security.md) | Apply `admission_fields` for a notes pay entry, as `bnap-scheme-notes/tests/common/mod.rs` does. |
 | B5-A5 | caparra-wallet | Notes held are wallet balance, not spending. `max_balance_per_origin` bounds them per origin, but nothing bounds the total held across origins, explicit `bnap fund` included (`pay.rs:643`). (notes/b5-security.md) | Add a global cap on notes held across origins. |
@@ -72,7 +71,6 @@ are decided. Details are in the named note.
 
 | ID | Note | Short summary |
 | --- | --- | --- |
-| --- | --- | --- |
 | N3b-1 | notes/n3-core.md | A credential with no pay is priced at `NO_PAY_BASE` (2^64 - 1) to stop a free-admission bypass; not the literal reading. |
 | N3b-15 | notes/n3-core.md | Value counted is `min(scheme claim, backing)`, not the scheme's claim; section 7 wording. |
 | N3b-16 | notes/n3-core.md | Confirm that schemes MUST make the refund a superset of the change (one running total per `ReplayKey`). |
@@ -90,7 +88,6 @@ Each row answers an ERRATA row marked "owner decision needed". Caparra
 implements the provisional choice.
 
 | Row | Decision | Provisional choice |
-| --- | --- | --- |
 | --- | --- | --- |
 | 13 | Metered route in the manifest | Manifest carries the price ceiling only; the per-unit rate travels in the offer's pay entry parameters. No new manifest member. |
 | 21 | Timeout defaults | `pending_timeout` defaults to 300 s and `replay_window` to 86,400 s when the manifest omits them. |
