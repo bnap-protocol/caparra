@@ -90,7 +90,7 @@ The fake rail moves no money and logs a warning at start.
 | `realm` | origin's host | MPP: the challenge realm |
 | `network` | `mainnet` | MPP: `mainnet`, `signet` or `regtest` |
 | `max_fund_sat` | | `bnap:notes`: funding inside the 402 up to this many sat |
-| `issuer_url` | `<origin>/cashu` | `bnap:notes`: the issuer's Cashu API base |
+| `issuer_url` | `<origin>/cashu` | `bnap:notes`: the issuer's Cashu API base. On the gate's origin, the gate answers `GET` and `HEAD` of `{issuer}/v1/keysets`, `{issuer}/v1/keys` and `{issuer}/v1/keys/{id}` itself; it refuses to start when this is the origin's root or a route lies under those paths |
 
 ## `[[attest]]`
 
