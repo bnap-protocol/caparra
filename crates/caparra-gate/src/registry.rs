@@ -22,7 +22,7 @@ pub const REGISTRY_JSON: &str = include_str!("../registry/registry.json");
 /// The digest the export must carry and hash to. Pinned here so that
 /// swapping the file needs a code change too.
 pub const REGISTRY_DIGEST: &str =
-    "e133cf496b0463d36ccca71dd78bf3a6c6a21cf67ef31c0497996c0eb1de261c";
+    "06cd086aab52775673424886462f8b4940cb62d28404e4475c15b2b9a755994f";
 
 /// Rail kinds that move bitcoin. Every other kind (`evm`, `card`) is a
 /// non-Bitcoin rail and stays off unless a route turns it on.

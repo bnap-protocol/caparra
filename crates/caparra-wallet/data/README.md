@@ -2,8 +2,8 @@
 
 `registry.json` is the registry export of the spec repository
 (`bnap/registry/generated/registry.json`, made by `registry/validate.py
---export`), copied byte for byte at bnap commit `00d0d24` (2026-10-13), export
-digest `e133cf496b0463d36ccca71dd78bf3a6c6a21cf67ef31c0497996c0eb1de261c`.
+--export`), copied byte for byte at bnap commit `ce73bc8` (`node/release`, 2026-10-15), export
+digest `06cd086aab52775673424886462f8b4940cb62d28404e4475c15b2b9a755994f`.
 
 The wallet reads every scheme's binding class, use model, refund property and
 property vector from it, never from a server or a plug. Replace the file with a
