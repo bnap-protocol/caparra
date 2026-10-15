@@ -1,0 +1,54 @@
+name: Bug report
+description: Something in Caparra does not work as documented or as the spec says.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems go through private vulnerability reporting, not here (see SECURITY.md).
+        Do not paste keys, macaroons, mnemonics, NWC URIs, passphrases or wallet files.
+  - type: input
+    id: crates
+    attributes:
+      label: Crate or binary
+      description: For example caparra-gate, bnap, bnap-mcp, caparra-wallet, bnap-core.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit
+      description: The output of `git rev-parse --short HEAD`, or the version shown by `--version`.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The smallest set of commands, configuration (secrets removed) or a failing test.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and output
+      description: Relevant output, with secrets removed.
+      render: text
+  - type: input
+    id: spec
+    attributes:
+      label: Spec reference
+      description: The section of socket-draft-00 or another spec file that the behavior contradicts, if any.
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture and Rust version (`rustc --version`).

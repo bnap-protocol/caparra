@@ -425,6 +425,20 @@ fn the_example_configuration_resolves() {
     assert_eq!(plans[0].manifest.pay.len(), 3);
 }
 
+#[test]
+fn the_quickstart_configuration_resolves() {
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/quickstart/gate.toml"
+    ))
+    .unwrap();
+    let cfg = caparra_gate::config::Config::parse(&text).unwrap();
+    let registry = caparra_gate::registry::Registry::embedded().unwrap();
+    let plans = cfg.plan(&registry).unwrap();
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].manifest.pay.len(), 2);
+}
+
 #[tokio::test]
 async fn invoices_are_minted_under_a_per_address_limit() {
     let w = World::with_extra("\n[limits]\nmints_per_minute = 1\n").await;

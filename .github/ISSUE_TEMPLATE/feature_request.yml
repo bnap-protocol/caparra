@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose a new plug, option or behavior for Caparra.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Changes to the protocol itself (wire formats, new schemes in the registry) start in the bnap repository.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do and why the current code does not cover it.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What you would like to see. Name the crates it touches.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: input
+    id: spec
+    attributes:
+      label: Spec reference
+      description: The spec section, registry entry or roadmap item this relates to, if any.

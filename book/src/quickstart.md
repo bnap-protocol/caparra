@@ -1,53 +1,108 @@
 # Quickstart
 
-> **TODO:** every step below is a placeholder. Each one is written for real by
-> the change that makes it work, and this note goes away when the last step
-> runs end to end.
+This puts `caparra-gate` in front of a local file server with one priced
+path, using the fake rail, which moves no money. It is the same run as the
+quickstart in the repository's README, and every command below was run
+as written.
 
-The goal: protect a local HTTP service with `caparra-gate`, then pay for a
-request with the `bnap` CLI, first against the in-memory fake rail and then
-against a local regtest Lightning setup.
+You need Rust (the toolchain is pinned in `rust-toolchain.toml`), `protoc`
+(the LND rail compiles `.proto` files at build time), `curl` and Python 3.
 
-## 1. Install the binaries
+## 1. Build the binaries
 
-Release archives for `caparra-gate`, `bnap` and `bnap-mcp` will be published
-on GitHub Releases for macOS on Apple silicon and for Linux on x86-64 and
-arm64. Until then, build them from a checkout of the repository:
+Binary releases are not published yet. Build from a checkout:
 
 ```sh
-cargo install --locked --path crates/caparra-gate
-cargo install --locked --path crates/bnap-cli
-cargo install --locked --path crates/bnap-mcp
+git clone https://github.com/bnap-protocol/caparra.git
+cd caparra
+cargo build --locked -p caparra-gate -p bnap-cli -p bnap-mcp
+export PATH="$PWD/target/debug:$PATH"
 ```
 
-> **TODO:** replace with the release download once binary releases are
-> enabled.
+This builds `caparra-gate`, `bnap` and `bnap-mcp`. The first build takes a
+few minutes.
 
-## 2. Start a service to protect
+## 2. Configure the gate and sign its manifest
 
-Any HTTP service works. For a first try, run a trivial local one:
+`examples/quickstart/gate.toml` protects `GET /hello.txt` at 21 sat, payable
+with `httpauth:L402` or `payment:lightning/charge` over the fake rail, with a
+file signer and a SQLite use store. Paths in it are relative to the
+directory the gate runs in.
 
 ```sh
-python3 -m http.server 8080
+mkdir -p target/quickstart/www && cd target/quickstart
+cp ../../examples/quickstart/gate.toml .
+sh ../../examples/quickstart/setup.sh
+caparra-gate check --config gate.toml
 ```
 
-## 3. Put the gate in front of it
+`setup.sh` makes the root and backup keys, `K_mac`, the L402 and MPP
+secrets (each with `caparra-gate key new`), a signer key file `keys.toml`
+with an offer key and a receipt key valid for 7 days, and then signs the
+manifest:
 
-> **TODO:** a minimal config with one priced route, the fake rail and the
-> SQLite store, and the command that starts `caparra-gate` with it. See the
-> [operator config reference](operator-config.md) for the planned shape.
+```sh
+caparra-gate manifest sign --config gate.toml --root-key root.key \
+  --backup "$(cat backup.pub)" --seq 1 --keys-from keys.toml --out manifest.json
+```
 
-## 4. Pay for a request
+`caparra-gate check` runs every start-up check and prints
+`ok: caparra-gate would start with gate.toml`. It warns that the fake rail
+is in use. In production the root key never touches the gate's host; see
+`examples/llm-proxy/README.md`.
 
-> **TODO:** use `bnap` to fetch the gate's manifest, request the priced
-> route, receive the offer, pay it and print the receipt.
+## 3. Start a service and the gate
 
-## 5. Let an agent pay
+```sh
+echo 'hello, paid world' > www/hello.txt
+python3 -m http.server 9000 --bind 127.0.0.1 --directory www &
+caparra-gate run --config gate.toml &
+```
 
-> **TODO:** register `bnap-mcp` with an MCP host and let an agent make the
-> same paid request. See [agent usage](agent-usage.md).
+## 4. See what a client gets
 
-## 6. Run against regtest
+```sh
+curl -s http://127.0.0.1:8080/.well-known/bnap   # the manifest, byte for byte as signed
+curl -si http://127.0.0.1:8080/hello.txt          # 402 Payment Required
+curl -s http://127.0.0.1:8080/                    # no route: forwarded unpaid
+```
+
+The 402 carries three `WWW-Authenticate` challenges (a `BNAP offer=...`, the
+L402 challenge and the `Payment` challenge, which share one invoice), the
+field `BNAP-Error` with the code `REQUIRED`, and `Cache-Control: private,
+no-store`.
+
+## 5. Make a wallet and try to pay
+
+```sh
+export BNAP_WALLET="$PWD/wallet.db" BNAP_PASSPHRASE='use a long passphrase'
+bnap init
+bnap budget set --allow-experimental true --per-request 100
+bnap budget show
+bnap get http://127.0.0.1:8080/hello.txt
+```
+
+`bnap init` shows the 12-word mnemonic once. A new wallet pays nothing
+until `--allow-experimental true`, because every scheme in the registry is
+still experimental. The last command fails with
+`error[BAD_INPUT]: Paid requests go over https only.`: the wallet pays only
+over HTTPS, and the gate does not terminate TLS. The fake rail's invoices can
+also be paid only from inside the process that holds it. The paid round
+trip on the fake rail (402, payment, admission, replay, `SPENT`, receipt,
+notes with change) therefore runs in the tests:
+
+```sh
+cargo test --locked -p caparra-gate --test gate --test notes
+cargo test --locked -p caparra-wallet --test flows
+```
+
+To pay for real, serve the gate on a public HTTPS origin behind a TLS
+proxy, use an `lnd`, `phoenixd` or `nwc` rail, and give the wallet a pay
+source with `bnap paysource nwc` (or `BNAP_NWC_URI`) or
+`bnap paysource command ...`. Agents use the same wallet through
+`bnap-mcp`; see [agent usage](agent-usage.md).
+
+## 6. Run the Lightning rails on regtest
 
 `devenv/regtest/` is a small Lightning network in Docker: one bitcoind and two
 LND nodes, `payer` and `payee`. The payee is the operator's node; the
@@ -69,5 +124,8 @@ payer with `lncli`, check that the rail reports it final with its amount, and
 present the one payment through L402 and `payment:lightning/charge`: one
 action is admitted, the other credential is `SPENT`.
 
-> **TODO:** switch the gate to the LND rail (the address, cert and macaroon
-> above) and repeat step 4.
+To point a gate at that node, change its `[[rail]]` to `kind = "lnd"` with
+`address`, `cert` and `macaroon` (see the
+[operator config reference](operator-config.md)). The wallet still needs an
+HTTPS origin, so a full client run also needs a TLS proxy in front of the
+gate.
