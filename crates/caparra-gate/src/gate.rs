@@ -1512,7 +1512,10 @@ impl SettleState {
             )
             .await;
         guard.close();
-        r.map_err(|e| scheme_err(&e))
+        r.map_err(|e| {
+            tracing::warn!("scheme settle failed: {e}");
+            scheme_err(&e)
+        })
     }
 
     /// The refund of a timed-out outcome: the scheme's FAILED settle under

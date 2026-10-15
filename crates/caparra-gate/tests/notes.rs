@@ -477,3 +477,50 @@ async fn a_dpop_waive_admits_without_payment_and_context_must_match() {
     let r = read(w.send("GET", "/v1/status", "", &[cred_header(&c2)]).await).await;
     assert_eq!(r.error(), Some(ErrorCode::Underpaid), "{}", r.body);
 }
+
+/// With the process signer (`bnap-signer --store` on the gate's use
+/// store) the gate reads the keyset table from the signer process, so
+/// `bnap:notes` starts, funds inside the 402 and spends with change. Before
+/// the signer served its keysets the gate refused to start.
+#[tokio::test]
+async fn notes_work_with_the_process_signer_and_its_store() {
+    let w = World::with_process_signer().await;
+    let mut wallet = Wallet::new();
+    let notes = fund(&w, &mut wallet, 5000, 7).await;
+    assert_eq!(notes.iter().map(|n| n.amount).sum::<u64>(), 2900);
+
+    let a = read(w.send("POST", CHAT, CHAT_BODY, &[]).await).await;
+    let route = a.route_offer();
+    let paid = pay(
+        &mut wallet,
+        &route,
+        true,
+        &notes,
+        None,
+        false,
+        "POST",
+        CHAT,
+        CHAT_BODY,
+    );
+    let r = read(
+        w.send("POST", CHAT, CHAT_BODY, &[cred_header(&paid.credential)])
+            .await,
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.body);
+    let f = r.receipt().unwrap().fields().clone();
+    assert_eq!(f.charged, 425);
+    let change = client::recover_change(
+        &paid.outputs,
+        client::key_lookup(&wallet.keys),
+        paid.value,
+        f.charged,
+        f.scheme_result.as_deref(),
+    )
+    .unwrap();
+    assert!(change.matches_rule);
+    assert_eq!(
+        change.notes.iter().map(|n| n.amount).sum::<u64>(),
+        paid.value - 425
+    );
+}

@@ -11,9 +11,12 @@
 //!          {"v":1,"req":{"verify_unblinded":{"keyset":"..","unit":"sat","amount":8,"secret":"..","c":".."}}}
 //!          {"v":1,"req":{"blind_sign":{"keyset":"..","outputs":[{"amount":8,"blinded":".."}],
 //!                                      "limit":{"replay_key":"..","status":"ok","unit":"sat","cap":43,"keep_until":..}}}}
+//!          {"v":1,"req":{"keysets":{}}}
 //! reply    {"v":1,"reply":{"signature":{"sig":".."}}}
 //!          {"v":1,"reply":{"unblinded":{"y":".." or null}}}
 //!          {"v":1,"reply":{"blind_signatures":{"sigs":[{"amount":8,"c":"..","e":"..","s":".."}]}}}
+//!          {"v":1,"reply":{"keysets":{"sets":[{"keys":[{"amount":1,"public":".."}],
+//!                                       "input_fee_ppk":100,"final_expiry":..,"active":true}]}}}
 //!          {"v":1,"reply":{"error":{"kind":"over_cap"|"refused"|"unavailable","message":"..","sum":..,"cap":..}}}
 //! ```
 //!
@@ -218,6 +221,32 @@ pub struct WireSignature {
     pub s: [u8; 32],
 }
 
+/// One public key of a keyset.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WireKey {
+    /// The amount it signs.
+    pub amount: u64,
+    /// `A`, compressed.
+    #[serde(with = "hex_array")]
+    pub public: [u8; 33],
+}
+
+/// The public half of one notes keyset: what an issuer publishes (NUT-01,
+/// NUT-02), never its seed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WireKeyset {
+    /// The public keys, by amount.
+    pub keys: Vec<WireKey>,
+    /// The NUT-02 input fee, parts per thousand.
+    pub input_fee_ppk: u64,
+    /// The NUT-02 final expiry, Unix seconds.
+    pub final_expiry: u64,
+    /// Whether the keyset signs outputs.
+    pub active: bool,
+}
+
 /// What the client asks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -265,6 +294,9 @@ pub enum Request {
         /// The settlement.
         limit: WireLimit,
     },
+    /// List the public halves of the notes keysets the signer holds, so a
+    /// gate can publish them without reading the key file.
+    Keysets {},
 }
 
 impl Request {
@@ -275,6 +307,7 @@ impl Request {
             Self::Schnorr { .. } => "schnorr",
             Self::VerifyUnblinded { .. } => "verify_unblinded",
             Self::BlindSign { .. } => "blind_sign",
+            Self::Keysets {} => "keysets",
         }
     }
 }
@@ -311,6 +344,11 @@ pub enum Reply {
     BlindSignatures {
         /// The signatures.
         sigs: Vec<WireSignature>,
+    },
+    /// The keysets the signer holds, in the key file's order.
+    Keysets {
+        /// Their public halves.
+        sets: Vec<WireKeyset>,
     },
     /// A refusal.
     Error {
