@@ -1,99 +1,155 @@
 # Operator config reference
 
-> **TODO:** this page is a stub. The reference is filled in, key by key, as
-> `caparra-gate` gains its configuration types. Until then everything below is
-> the target shape taken from the BNAP v0.5 overview, not a working config.
+`caparra-gate` reads one TOML file, given with `--config` (or the
+`CAPARRA_CONFIG` environment variable). Unknown keys are an error. Relative
+paths are resolved from the directory the gate runs in. Secrets never sit
+in the file itself: keys name files that hold them, or, for NWC, an
+environment variable.
 
-`caparra-gate` reads one TOML file. The file says which origin the gate
-protects, how its manifest is signed, where uses are stored, which key signs
-offers and receipts, and which schemes, rails and attestations a client may
-use.
+`caparra-gate check --config gate.toml` runs every start-up check and
+exits 0 when the gate would start. Two complete examples are in the
+repository: `examples/quickstart/gate.toml` (fake rail, local) and
+`examples/llm-proxy/gate.toml` (phoenixd, process signer, a metered
+OpenAI-compatible route).
 
-## Sections
+## `[gate]`
 
-| Section | Purpose | Status |
+| Key | Default | Meaning |
 | --- | --- | --- |
-| `[gate]` | Protected origin, how the gate is fronted, replay and pending timeouts | TODO |
-| `[manifest]` | Root and backup keys, maximum age, the `bnap-required` flag | TODO |
-| `[store]` | Use store: `postgres` or `sqlite`, durability | TODO |
-| `[signer]` | Offer and receipt signer: `file` or `process` | TODO |
-| `[[rail]]` | One entry per settlement rail: `phoenixd`, `nwc`, `lnd`, `fake` | TODO |
-| `[[scheme]]` | One entry per credential scheme and the rails it may use | TODO |
-| `[[attest]]` | Attestation schemes, such as Web Bot Auth | TODO |
-| `[pricing]` | How prices are computed, for example from a table file | TODO |
-| `[judge]` | Admission decisions beyond price | TODO |
+| `origin` | required | The origin the manifest is issued for, as an RFC 6454 serialization (`https://api.example`) |
+| `listen` | `127.0.0.1:8080` | The address to serve on |
+| `front` | `proxy` | `proxy` (reverse proxy to `upstream`), `forward_auth` (Caddy), `auth_request` (nginx); `envoy_ext_authz` is refused at start |
+| `upstream` | none | The application, `http://host:port` with no path; plain HTTP only; `proxy` front only |
+| `replay_window_s` | 86400 | Must equal the manifest's value (`manifest sign` writes it) |
+| `pending_timeout_s` | 300 | Must exceed the longest action; must equal the manifest's value |
+| `offer_lifetime_s` | 300 | Lifetime of exact-scope offers, at least 60 |
+| `route_offer_lifetime_s` | 3600 | Lifetime of route-scope offers, at least 60 |
+| `mac_key_file` | required | File holding `K_mac`, 64 hex (`caparra-gate key new`) |
+| `retired_mac_key_files` | `[]` | Retired `K_mac` files, kept until every offer made under them has expired |
+| `max_request_bytes` | 1048576 | Largest request content the gate buffers |
+| `max_response_bytes` | 16777216 | Largest application answer the gate buffers |
+| `keep_response_bytes` | 65536 | Answers up to this size are kept for replays; 0 keeps the receipt only |
+| `trust_forwarded_for` | `false` | Take the client address from the rightmost `X-Forwarded-For` hop; set it only behind a trusted front; always on behind an auth front |
 
-## Values that refer to secrets
+## `[manifest]`
 
-Secrets never sit in the config file itself. A value can point elsewhere:
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `file` | required | The manifest made offline by `caparra-gate manifest sign`, served byte for byte at `/.well-known/bnap` |
+| `root` | none | The root public key (64 hex) the manifest must be signed by; recommended |
+| `required` | `false` | The `required` flag `manifest sign` writes: clients then pay this origin only through BNAP offers |
+| `max_age_s` | 604800 | The manifest's `max_age`, at most 30 days |
 
-- `env:NAME` reads the value from the environment variable `NAME`.
-- `file:/path` reads it from a file.
+The gate refuses to start when the manifest's signature, root, origin,
+routes, limits or keys do not match the configuration, when it has expired,
+or when the signer cannot sign with its offer and receipt keys.
 
-## Defaults
+## `[store]`
 
-These follow BNAP draft-00 and the provisional decisions recorded in the
-specification repository (`spec/DECISIONS.md`):
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `kind` | `sqlite` | `sqlite`, or `memory` (a temporary SQLite file, for tests, logged loudly) |
+| `path` | none | The SQLite file of the use store |
+| `issuer_path` | `path` + `.issuer` | The SQLite file of the `bnap:notes` issuer tables |
+
+The PostgreSQL store exists as a crate but is not wired into the gate yet.
+
+## `[signer]`
+
+| Key | Meaning |
+| --- | --- |
+| `kind` | `file` or `process` |
+| `keys` | `file`: the signer key file (mode 0600; see `crates/bnap-signer-file`) |
+| `socket` | `process`: the Unix socket of `bnap-signer` |
+| `signer_uid` | `process`: the user `bnap-signer` runs as; the gate checks the peer |
+
+`bnap:notes` needs the `file` signer for now.
+
+## `[[rail]]`
+
+| Key | Meaning |
+| --- | --- |
+| `id` | The name schemes refer to |
+| `kind` | `lnd`, `phoenixd`, `nwc` or `fake` |
+| `invoice_expiry_s` | Invoice lifetime; must not outlive an exact-scope offer |
+| `address`, `cert`, `macaroon` | `lnd`: gRPC address, TLS certificate file, macaroon file |
+| `url`, `password_file` | `phoenixd`: HTTP API URL and the file holding its password |
+| `uri_env` | `nwc`: the environment variable that holds the NWC URI |
+| `registry`, `seed` | `fake`: the registry rail entry it claims to be (required, for example `ln:lnd`) and an optional 64-hex seed |
+
+The fake rail moves no money and logs a warning at start.
+
+## `[[scheme]]`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `id` | required | `bnap:notes`, `httpauth:L402` or `payment:lightning/charge` |
+| `rail` / `rails` | | The rail or rails it settles over |
+| `enabled` | `true` | |
+| `secret_file` | | L402 and MPP: file holding the scheme's secret, 64 hex |
+| `realm` | origin's host | MPP: the challenge realm |
+| `network` | `mainnet` | MPP: `mainnet`, `signet` or `regtest` |
+| `max_fund_sat` | | `bnap:notes`: funding inside the 402 up to this many sat |
+| `issuer_url` | `<origin>/cashu` | `bnap:notes`: the issuer's Cashu API base |
+
+## `[[attest]]`
+
+| Key | Meaning |
+| --- | --- |
+| `id` | `httpauth:DPoP`, `httpauth:Bearer` or `httpsig:web-bot-auth` |
+| `enabled` | Default `true` |
+| `keys` | DPoP and Bearer: base64url JWK thumbprints of registered keys |
+| `tokens` | DPoP and Bearer: access tokens, `{ token = "...", jkt = "..." }`; with `jkt` the token is bound to that key |
+| `agents` | Web Bot Auth: `{ url = "...", key = "<64 hex Ed25519 public key>" }` entries |
+
+Keys and agents are static lists; there is no token introspection or key
+directory fetching yet.
+
+## `[[route]]`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `id` | required | The route ID, part of the route scope |
+| `match` | required | A method, a space and a path, such as `POST /v1/chat/completions`; `/*` matches every path below |
+| `scope` | `route` | `route` (one shared offer) or `exact` (an offer per request, bound to its content) |
+| `price` | | `{ sat = N }`: the price per call, or the ceiling on a metered route |
+| `metered` | `false` | The charge is set at settlement by the meter |
+| `meter` | | The meter's name, such as `tokens` |
+| `meter_path` | `/usage/total_tokens` for `tokens` | JSON pointer to the count in the answer |
+| `rate` | | Price per 1,000 meter units, sent in the offer |
+| `require` | `{}` | Required scheme properties, such as `{ use = "single" }` |
+| `accept` | `[]` | Value schemes, in preference order |
+| `attest` | `[]` | `{ scheme, effect, value?, epoch? }` with `effect` one of `required`, `waive`, `discount` (value in basis points) or `quota` |
+| `headers` | `[]` | Request fields hashed into the scope, lower case |
+| `allow_experimental` | `false` | Needed for every Lightning scheme and `bnap:notes`, which the registry marks experimental |
+| `allow_non_bitcoin` | `false` | Needed for schemes on non-Bitcoin rails or units |
+| `upstream` | `http` | `http`, or `openai` for OpenAI-compatible APIs (metering by tokens; `"stream": true` refused on metered routes) |
+
+A route that its enabled schemes cannot satisfy refuses to start.
+
+## `[pricing]`
+
+| Key | Meaning |
+| --- | --- |
+| `kind` | `table` |
+| `table` | `{ <route id> = { sat = N } }`: overrides a route's price |
+
+## `[limits]`
+
+Per client address, per minute (draft-00 section 12, DECISIONS row 24).
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `mints_per_minute` | 20 | Offers that mint an invoice, and fund quotes |
+| `verifies_per_minute` | 600 | Credentials that reach a scheme plug |
+| `verifies_per_offer_per_minute` | 6000 | The same, per offer (route offers are shared) |
+| `max_change_outputs` | 64 | Most change outputs one outcome may have signed |
+
+## Defaults from the specification
 
 | Setting | Default | Source |
 | --- | --- | --- |
-| `pending_timeout` | 300 s | Decision for ERRATA 21. Must exceed the longest action on a route, streams included (draft-00 6.4) |
-| `replay_window` | 86,400 s | Decision for ERRATA 21 |
+| `pending_timeout` | 300 s | Provisional decision for ERRATA row 21 |
+| `replay_window` | 86,400 s | Provisional decision for ERRATA row 21 |
 | Manifest `max_age` | at most 2,592,000 s (30 days) | draft-00 9.1 |
-| Credential size on HTTP | at most 9,216 bytes; larger is refused with `TOO_LARGE` | Decision for ERRATA 30 |
-
-The two timeouts are published in the manifest under `limits`, so clients see
-the same values the gate enforces.
-
-## Example
-
-A sketch of a gate in front of one API, paid with ecash notes or L402 over a
-phoenixd node. Key names will change as the configuration types are written.
-
-```toml
-[gate]
-origin = "https://api.example"
-front = "standalone"
-replay_window_s = 86400
-pending_timeout_s = 300
-
-[manifest]
-root_key = "file:/etc/caparra/root.pub"
-backup_key = "file:/etc/caparra/backup.pub"
-max_age_s = 604800
-bnap_required = true
-
-[store]
-kind = "postgres"
-url = "env:DATABASE_URL"
-durability = "sync"
-
-[signer]
-kind = "process"
-socket = "unix:///run/caparra-signer.sock"
-
-[[rail]]
-id = "ln"
-kind = "phoenixd"
-url = "http://127.0.0.1:9740"
-
-[[scheme]]
-id = "bnap:notes"
-rails = ["ln"]
-max_fund_sat = 10000
-
-[[scheme]]
-id = "httpauth:L402"
-rail = "ln"
-
-[[attest]]
-id = "httpsig:web-bot-auth"
-
-[pricing]
-kind = "table"
-file = "prices.toml"
-```
-
-> **TODO:** document every key with its type, default and validation rule,
-> generated from the `caparra-gate` config types so that this page cannot
-> drift from the code.
+| Credential size on HTTP | at most 9,216 bytes; larger is `TOO_LARGE` | Provisional decision for ERRATA row 30 |
