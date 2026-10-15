@@ -15,8 +15,8 @@ use tokio::sync::Semaphore;
 
 use crate::trust::{DirInfo, parent_dir, peer_allowed};
 use crate::wire::{
-    FrameError, Reply, Request, WireSignature, decode_request, encode_reply, read_frame,
-    write_frame,
+    FrameError, Reply, Request, WireKey, WireKeyset, WireSignature, decode_request, encode_reply,
+    read_frame, write_frame,
 };
 
 /// How the server treats its connections.
@@ -572,6 +572,23 @@ impl Server {
                     Err(e) => (&e).into(),
                 }
             }
+            Request::Keysets {} => Reply::Keysets {
+                sets: self
+                    .signer
+                    .keysets()
+                    .iter()
+                    .map(|k| WireKeyset {
+                        keys: k
+                            .public_keys()
+                            .into_iter()
+                            .map(|(amount, public)| WireKey { amount, public })
+                            .collect(),
+                        input_fee_ppk: k.input_fee_ppk(),
+                        final_expiry: k.final_expiry(),
+                        active: k.active(),
+                    })
+                    .collect(),
+            },
         }
     }
 }

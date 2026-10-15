@@ -1079,9 +1079,9 @@ impl Gate {
             let Some(cfg) = self.cfg.schemes.get(&entry.scheme) else {
                 continue;
             };
-            let native = cfg
+            let natives = cfg
                 .plug
-                .native(&NativeCtx {
+                .natives(&NativeCtx {
                     now,
                     offer_id: &offer_id,
                     entry,
@@ -1090,7 +1090,7 @@ impl Gate {
                 })
                 .await
                 .map_err(|e| unavailable(&e))?;
-            if let Some(n) = native {
+            for n in natives {
                 f.native.push(NativeEntry::new(i as u64, n.kind, n.data));
             }
         }

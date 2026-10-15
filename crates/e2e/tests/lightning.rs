@@ -88,7 +88,12 @@ impl World {
                 .unwrap();
             String::from_utf8(n.data.clone()).unwrap()
         };
-        let l402 = bnap_scheme_l402::Challenge::parse(&data("l402-macaroon")).unwrap();
+        let (i, _) = offer
+            .fields()
+            .pay_entry(bnap_scheme_l402::SCHEME_ID)
+            .unwrap();
+        let l402 =
+            bnap_scheme_l402::Challenge::of_entries(&offer.fields().native, i as u64).unwrap();
         let mpp = bnap_scheme_mpp::Challenge::parse(&data("mpp-challenge")).unwrap();
         let req = ChargeRequest::decode(&mpp.request).unwrap();
         // One invoice answers both challenges.

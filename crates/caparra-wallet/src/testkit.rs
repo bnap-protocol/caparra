@@ -741,8 +741,8 @@ impl TestServer {
         if !route_scope {
             for (i, entry) in f.pay.clone().iter().enumerate() {
                 let scheme = self.scheme(&entry.scheme).unwrap();
-                if let Some(n) = scheme
-                    .native(&NativeCtx {
+                for n in scheme
+                    .natives(&NativeCtx {
                         now,
                         offer_id: &offer_id,
                         entry,
@@ -870,11 +870,8 @@ impl TestServer {
             }
         }
         for o in &offers {
-            for n in &o.fields().native {
-                headers.push((
-                    "WWW-Authenticate".into(),
-                    String::from_utf8_lossy(&n.data).into_owned(),
-                ));
+            for v in challenges(o.fields()) {
+                headers.push(("WWW-Authenticate".into(), v));
             }
         }
         headers.push((
@@ -952,16 +949,9 @@ impl TestServer {
                 Ok(o) => o,
                 Err(e) => return self.error(&e),
             };
-            let headers = o
-                .fields()
-                .native
-                .iter()
-                .map(|n| {
-                    (
-                        "WWW-Authenticate".to_owned(),
-                        String::from_utf8_lossy(&n.data).into_owned(),
-                    )
-                })
+            let headers = challenges(o.fields())
+                .into_iter()
+                .map(|v| ("WWW-Authenticate".to_owned(), v))
                 .collect();
             return resp(402, headers, Vec::new());
         };
@@ -1491,4 +1481,15 @@ pub async fn wallet(kit: &Kit, dir: &std::path::Path, task: &str) -> crate::wall
     .await
     .unwrap();
     w
+}
+
+/// The native challenges of an offer, built from its native entries as a
+/// gate builds them: L402's from its `l402-macaroon` and `bolt11` entries,
+/// MPP's `mpp-challenge` entry as it is.
+fn challenges(f: &OfferFields) -> Vec<String> {
+    f.pay
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| crate::pay::signed_challenge(&p.scheme, &f.native, i as u64))
+        .collect()
 }

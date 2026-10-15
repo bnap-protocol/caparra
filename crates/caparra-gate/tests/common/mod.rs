@@ -309,8 +309,68 @@ impl World {
         Self::with_text(move |dir, up| config_text(dir, up, &extra)).await
     }
 
+    /// A world whose gate uses the process signer: `bnap-signer`'s server,
+    /// run in this process on a socket in the world's directory with the
+    /// gate's SQLite use store (`bnap-signer --store`).
+    pub async fn with_process_signer() -> Self {
+        Self::with_hook(
+            |dir, up| {
+                config_text(dir, up, "").replace(
+                    &format!("kind = \"file\"\nkeys = \"{}/keys.toml\"", dir.display()),
+                    &format!(
+                        "kind = \"process\"\nsocket = \"{}/signer/s.sock\"",
+                        dir.display()
+                    ),
+                )
+            },
+            |dir| {
+                let dir = dir.to_owned();
+                async move {
+                    // The signer's clock is the world's start time, as the
+                    // gate's is.
+                    let signer = bnap_signer_file::FileSigner::load(dir.join("keys.toml"))
+                        .unwrap()
+                        .with_clock(|| NOW);
+                    let store = bnap_store_sqlite::SqliteStore::open(dir.join("use.db"))
+                        .await
+                        .unwrap();
+                    std::fs::create_dir(dir.join("signer")).unwrap();
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt as _;
+                        std::fs::set_permissions(
+                            dir.join("signer"),
+                            std::fs::Permissions::from_mode(0o700),
+                        )
+                        .unwrap();
+                    }
+                    let socket =
+                        bnap_signer_process::SignerSocket::bind(dir.join("signer/s.sock")).unwrap();
+                    let server = Arc::new(bnap_signer_process::Server::new(
+                        Arc::new(signer),
+                        bnap_signer_process::ServeOptions {
+                            store: Some(Arc::new(store)),
+                            ..Default::default()
+                        },
+                    ));
+                    tokio::spawn(server.serve(socket, std::future::pending()));
+                }
+            },
+        )
+        .await
+    }
+
     /// A world whose configuration `text(dir, upstream)` writes.
     pub async fn with_text(text: impl FnOnce(&std::path::Path, &str) -> String) -> Self {
+        Self::with_hook(text, |_| async {}).await
+    }
+
+    /// As [`World::with_text`], running `before(dir)` once the keys and
+    /// the manifest are written and before the gate starts.
+    pub async fn with_hook<F: Future<Output = ()>>(
+        text: impl FnOnce(&std::path::Path, &str) -> String,
+        before: impl FnOnce(&std::path::Path) -> F,
+    ) -> Self {
         let _ = tracing_subscriber::fmt()
             .with_test_writer()
             .with_env_filter(
@@ -323,6 +383,7 @@ impl World {
         let up = upstream(seen.clone()).await;
         let cfg = Config::parse(&text(dir.path(), &up)).unwrap();
         write_material(dir.path(), &cfg, NOW);
+        before(dir.path()).await;
         let clock = Arc::new(AtomicU64::new(NOW));
         let c = clock.clone();
         let clk: Clock = Arc::new(move || c.load(Ordering::SeqCst));

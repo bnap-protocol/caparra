@@ -274,6 +274,16 @@ pub trait CredentialScheme: Send + Sync {
         Ok(None)
     }
 
+    /// Every native artifact for the entry, one native entry each (4.1:
+    /// `kind` from the registry entry, `data` the artifact's bytes), in the
+    /// order they go into the offer. A scheme whose registry entry lists
+    /// several kinds, such as L402's `l402-macaroon` and `bolt11`, returns
+    /// one artifact of each. The default is [`CredentialScheme::native`]'s
+    /// one artifact, or none.
+    async fn natives(&self, cx: &NativeCtx<'_>) -> Result<Vec<NativeArtifact>, SchemeError> {
+        Ok(self.native(cx).await?.into_iter().collect())
+    }
+
     /// Checks the scheme's part of a credential and returns its local IDs,
     /// rail references and value.
     async fn verify(&self, part: &SchemePart, cx: &VerifyCtx<'_>) -> Result<Verified, SchemeError>;

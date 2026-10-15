@@ -33,13 +33,16 @@
 //! draft-00 5.4 with `bnap_core::credential::native_context` and
 //! `native_digest` over the same token bytes.
 //!
-//! The native artifact this scheme adds to an offer is the whole challenge
-//! (kind `l402-macaroon`), so a client compares the `WWW-Authenticate`
-//! value it got with the signed offer byte for byte (draft-00 9.3). The
-//! invoice inside it comes from the gate's Lightning rail with the
-//! `OfferID` as its description hash; give the scheme an
-//! [`OfferInvoices`] so L402 and `payment:lightning/charge` share one
-//! invoice per offer.
+//! The scheme adds two native entries to an offer, one per kind its
+//! registry entry lists (draft-00 4.1, "the artifact's bytes"): the
+//! macaroon (kind `l402-macaroon`, its binary V2 serialization) and the
+//! invoice (kind `bolt11`, the BOLT 11 string). A carrier builds the
+//! `WWW-Authenticate` challenge from the two ([`Challenge::from_natives`]),
+//! and a client compares the macaroon and invoice of the challenge it got
+//! with the signed entries (draft-00 9.3). The invoice comes from the
+//! gate's Lightning rail with the `OfferID` as its description hash; give
+//! the scheme an [`OfferInvoices`] so L402 and `payment:lightning/charge`
+//! share one invoice per offer.
 
 pub mod header;
 pub mod invoices;
@@ -62,8 +65,10 @@ pub use token::{Identifier, MacaroonKeys, Minted, Token, TokenError};
 
 /// The registered scheme ID.
 pub const SCHEME_ID: &str = "httpauth:L402";
-/// The registry's label for this scheme's native artifact.
+/// The registry's label for this scheme's macaroon artifact.
 pub const NATIVE_KIND: &str = "l402-macaroon";
+/// The registry's label for the invoice artifact.
+pub const INVOICE_KIND: &str = "bolt11";
 /// The only unit the scheme takes (registry `units`).
 pub const UNIT: &str = "sat";
 
@@ -134,13 +139,19 @@ impl CredentialScheme for L402 {
         }
     }
 
+    /// The macaroon artifact: the first of [`CredentialScheme::natives`].
+    async fn native(&self, cx: &NativeCtx<'_>) -> Result<Option<NativeArtifact>, SchemeError> {
+        Ok(self.natives(cx).await?.into_iter().next())
+    }
+
     /// Mints the invoice (description hash = `OfferID`) and the macaroon,
-    /// and returns the challenge as the `l402-macaroon` artifact. Refuses
+    /// and returns them as the `l402-macaroon` artifact (the binary
+    /// macaroon) and the `bolt11` artifact (the invoice). Refuses
     /// ([`SchemeError::Unavailable`]) an invoice that stays payable after
     /// the offer or the entry's quote expires (plus the 60 s skew): a
     /// client only sees the invoice's expiry, and a payment the gate then
     /// refuses STALE is not refunded.
-    async fn native(&self, cx: &NativeCtx<'_>) -> Result<Option<NativeArtifact>, SchemeError> {
+    async fn natives(&self, cx: &NativeCtx<'_>) -> Result<Vec<NativeArtifact>, SchemeError> {
         if cx.entry.unit != UNIT {
             return Err(SchemeError::Unsupported);
         }
@@ -173,14 +184,17 @@ impl CredentialScheme for L402 {
             .keys
             .mint(cx.offer_id, &hash, cx.expires)
             .map_err(|e| unavailable(&e))?;
-        let challenge = Challenge {
-            token,
-            invoice: req.request,
-        };
-        Ok(Some(NativeArtifact {
-            kind: NATIVE_KIND.to_owned(),
-            data: challenge.to_header().into_bytes(),
-        }))
+        let macaroon = header::macaroon_bytes(&token).map_err(|e| unavailable(&e))?;
+        Ok(vec![
+            NativeArtifact {
+                kind: NATIVE_KIND.to_owned(),
+                data: macaroon,
+            },
+            NativeArtifact {
+                kind: INVOICE_KIND.to_owned(),
+                data: req.request.into_bytes(),
+            },
+        ])
     }
 
     async fn verify(&self, part: &SchemePart, cx: &VerifyCtx<'_>) -> Result<Verified, SchemeError> {

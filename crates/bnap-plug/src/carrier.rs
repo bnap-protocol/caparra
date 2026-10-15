@@ -30,8 +30,10 @@ pub struct NativeChallenge {
     /// Scheme ID.
     pub scheme: String,
     /// The challenge as the scheme writes it, such as an L402
-    /// `WWW-Authenticate` value. Its bytes equal a native entry of an offer
-    /// in the same challenge (9.3).
+    /// `WWW-Authenticate` value, made from the native entries of one pay
+    /// entry of an offer in the same challenge (9.3): an MPP challenge is
+    /// its `mpp-challenge` entry byte for byte, an L402 challenge carries
+    /// its `l402-macaroon` and `bolt11` entries.
     pub value: String,
 }
 

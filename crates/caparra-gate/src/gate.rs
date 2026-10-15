@@ -84,6 +84,9 @@ pub struct Inner {
     values: std::collections::BTreeMap<String, ValuePlug>,
     attests: std::collections::BTreeMap<String, Arc<dyn CredentialScheme>>,
     notes: Option<Arc<NotesScheme>>,
+    /// The issuer's keyset table and the path its NUT-01 and NUT-02
+    /// endpoints live under, when the issuer URL is on this origin.
+    issuer: Option<(String, Arc<crate::issuer::GateIssuerStore>)>,
     mac_keys: Vec<[u8; 32]>,
     offer_key: ManifestKey,
     receipt_key: ManifestKey,
@@ -174,6 +177,7 @@ impl Gate {
                 plan,
             })
             .collect();
+        let issuer = issuer_path(&s.origin, plugs.issuer_url.as_deref()).zip(plugs.issuer.clone());
         Self(Arc::new(Inner {
             front: s.front,
             origin: s.origin,
@@ -185,6 +189,7 @@ impl Gate {
             values: plugs.values.clone(),
             attests: plugs.attests.clone(),
             notes: plugs.notes.clone(),
+            issuer,
             mac_keys: plugs.mac_keys.clone(),
             offer_key: s.manifest.offer_key.clone(),
             receipt_key: s.manifest.receipt_key.clone(),
@@ -239,6 +244,44 @@ fn scheme_err(e: &SchemeError) -> ErrorObject {
     e.to_error_object()
 }
 
+/// The native challenges of an offer, one per pay entry with natives, built
+/// from its native entries (9.3): L402's from its `l402-macaroon` and
+/// `bolt11` entries, MPP's `mpp-challenge` entry as it is.
+fn native_challenges(f: &OfferFields) -> Vec<NativeChallenge> {
+    let mut out = Vec::new();
+    for (i, p) in f.pay.iter().enumerate() {
+        let i = i as u64;
+        let value = match p.scheme.as_str() {
+            bnap_scheme_l402::SCHEME_ID => {
+                bnap_scheme_l402::Challenge::of_entries(&f.native, i).map(|c| c.to_header())
+            }
+            bnap_scheme_mpp::SCHEME_ID => f
+                .native
+                .iter()
+                .find(|n| n.pay_index == i && n.kind == bnap_scheme_mpp::NATIVE_KIND)
+                .and_then(|n| String::from_utf8(n.data.clone()).ok()),
+            _ => None,
+        };
+        if let Some(value) = value {
+            out.push(NativeChallenge {
+                scheme: p.scheme.clone(),
+                value,
+            });
+        }
+    }
+    out
+}
+
+/// The path of the issuer URL when it is on `origin` (bnap:notes 5.1),
+/// without a trailing slash.
+fn issuer_path(origin: &str, url: Option<&str>) -> Option<String> {
+    let rest = url?.strip_prefix(origin)?;
+    if !(rest.is_empty() || rest.starts_with('/')) {
+        return None;
+    }
+    Some(rest.trim_end_matches('/').to_owned())
+}
+
 /// A plain JSON answer for a refusal that is not a socket error.
 fn plain(status: StatusCode, code: &str, message: &str) -> Answer {
     let body =
@@ -273,6 +316,79 @@ struct SocketInput {
 }
 
 impl Inner {
+    /// The issuer's NUT-02 `GET /v1/keysets` and NUT-01 `GET /v1/keys` and
+    /// `GET /v1/keys/{id}` (bnap:notes 5.2), under the issuer URL's path:
+    /// public keys only, read from the keyset table. `None` for any other
+    /// path, which then goes on as usual.
+    async fn issuer_keys(&self, path: &str) -> Option<Answer> {
+        use bnap_scheme_notes::KeysetState;
+        use cashu::nuts::{CurrencyUnit, Id, KeySet, KeySetInfo};
+        let (prefix, store) = self.issuer.as_ref()?;
+        let rest = path.strip_prefix(prefix.as_str())?;
+        let want = match rest {
+            "/v1/keysets" | "/v1/keys" => None,
+            r => Some(r.strip_prefix("/v1/keys/")?),
+        };
+        let json = |v: serde_json::Value| {
+            let mut r = Response::new(Bytes::from(v.to_string()));
+            r.headers_mut()
+                .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+            r
+        };
+        let table = match bnap_scheme_notes::IssuerStore::keysets(&**store).await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("issuer keyset table: {}", e.0);
+                return Some(plain(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "UNAVAILABLE",
+                    "The issuer's keyset table cannot be read.",
+                ));
+            }
+        };
+        // Only keysets a wallet may hold notes of: standby keysets are not
+        // published yet, retired ones no longer accepted.
+        let published = table
+            .iter()
+            .filter(|k| matches!(k.state, KeysetState::Active | KeysetState::InputsOnly));
+        if rest == "/v1/keysets" {
+            let infos: Vec<KeySetInfo> = published
+                .filter_map(|k| {
+                    Some(KeySetInfo {
+                        id: Id::from_bytes(&k.id).ok()?,
+                        unit: CurrencyUnit::Sat,
+                        active: k.state == KeysetState::Active,
+                        input_fee_ppk: k.input_fee_ppk,
+                        final_expiry: Some(k.final_expiry),
+                    })
+                })
+                .collect();
+            return Some(json(serde_json::json!({ "keysets": infos })));
+        }
+        let sets: Vec<KeySet> = published
+            .filter(|k| want.is_none_or(|w| hex::encode(k.id) == w))
+            .filter(|k| want.is_some() || k.state == KeysetState::Active)
+            .filter_map(|k| {
+                Some(KeySet {
+                    id: Id::from_bytes(&k.id).ok()?,
+                    unit: CurrencyUnit::Sat,
+                    active: Some(k.state == KeysetState::Active),
+                    keys: k.cashu_keys().ok()?,
+                    input_fee_ppk: k.input_fee_ppk,
+                    final_expiry: Some(k.final_expiry),
+                })
+            })
+            .collect();
+        if want.is_some() && sets.is_empty() {
+            return Some(plain(
+                StatusCode::NOT_FOUND,
+                "UNKNOWN_KEYSET",
+                "No keyset with this ID.",
+            ));
+        }
+        Some(json(serde_json::json!({ "keysets": sets })))
+    }
+
     /// The socket limits from the manifest.
     #[must_use]
     pub fn limits(&self) -> &Limits {
@@ -353,6 +469,11 @@ impl Inner {
         }
         if parts.method == Method::GET && parts.uri.path() == WELL_KNOWN {
             return Admit::Answer(self.auth_status(self.manifest_answer()));
+        }
+        if parts.method == Method::GET
+            && let Some(a) = self.issuer_keys(parts.uri.path()).await
+        {
+            return Admit::Answer(self.auth_status(a));
         }
         // Routes match the path as an application would route it
         // (percent-decoded, dot-segments removed, empty segments
@@ -704,17 +825,7 @@ impl Inner {
             if let Some(o) = o {
                 if !o.fields().native.is_empty() {
                     self.remember(&o, now);
-                    for n in &o.fields().native {
-                        let scheme = &o.fields().pay
-                            [usize::try_from(n.pay_index).unwrap_or(usize::MAX)]
-                        .scheme;
-                        if let Ok(v) = String::from_utf8(n.data.clone()) {
-                            natives.push(NativeChallenge {
-                                scheme: scheme.clone(),
-                                value: v,
-                            });
-                        }
-                    }
+                    natives.extend(native_challenges(o.fields()));
                 }
                 offers.push(o);
             }
@@ -736,12 +847,15 @@ impl Inner {
                 .await
                 .map_err(|e| scheme_err(&e))?;
             if let Some(q) = q {
+                // Metered on a metered route, as the route offer is: notes
+                // refund atomically, and only other schemes get offers at
+                // the ceiling (draft-00 7).
                 let o = self
                     .build_offer_with(
                         ri,
                         action_scope,
                         false,
-                        false,
+                        entry.rate.is_some(),
                         &[entry],
                         Some((&q, nonce)),
                         now,
@@ -915,9 +1029,9 @@ impl Inner {
                 let Some(plug) = self.values.get(&entry.scheme) else {
                     continue;
                 };
-                let native = plug
+                let natives = plug
                     .scheme
-                    .native(&NativeCtx {
+                    .natives(&NativeCtx {
                         now,
                         offer_id: &offer_id,
                         entry,
@@ -929,7 +1043,7 @@ impl Inner {
                         tracing::error!(scheme = %entry.scheme, "no native challenge: {e}");
                         scheme_err(&e)
                     })?;
-                if let Some(n) = native {
+                for n in natives {
                     f.native.push(NativeEntry::new(i as u64, n.kind, n.data));
                 }
             }
@@ -1512,7 +1626,10 @@ impl SettleState {
             )
             .await;
         guard.close();
-        r.map_err(|e| scheme_err(&e))
+        r.map_err(|e| {
+            tracing::warn!("scheme settle failed: {e}");
+            scheme_err(&e)
+        })
     }
 
     /// The refund of a timed-out outcome: the scheme's FAILED settle under

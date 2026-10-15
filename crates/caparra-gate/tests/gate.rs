@@ -87,12 +87,31 @@ async fn a_402_carries_offers_natives_and_required() {
         !exact.fields().metered,
         "priced at the ceiling, not metered"
     );
-    assert_eq!(exact.fields().native.len(), 2);
+    // One native entry per artifact (4.1): L402's binary macaroon and its
+    // invoice, MPP's challenge.
+    let kinds: Vec<_> = exact
+        .fields()
+        .native
+        .iter()
+        .map(|n| (n.pay_index, n.kind.as_str()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [(0, "l402-macaroon"), (0, "bolt11"), (1, "mpp-challenge")]
+    );
     assert_eq!(exact.fields().scope, scope("POST", CHAT, CHAT_BODY));
-    // Each native challenge is a native entry of the exact offer, byte for byte.
-    for n in a.natives() {
-        assert!(exact.fields().native.iter().any(|e| e.data == n.as_bytes()));
-    }
+    // Each native challenge is made of native entries of the exact offer,
+    // byte for byte (9.3).
+    let l402 = l402_challenge(&a);
+    let n = &exact.fields().native;
+    assert_eq!(l402.macaroon().unwrap(), n[0].data);
+    assert_eq!(l402.invoice.as_bytes(), n[1].data.as_slice());
+    let mpp = a
+        .natives()
+        .into_iter()
+        .find(|v| v.starts_with("Payment"))
+        .unwrap();
+    assert_eq!(mpp.as_bytes(), n[2].data.as_slice());
     // Both natives share one invoice.
     assert_eq!(w.fake().invoice_count(), 1);
     // The route offer is the same for everyone within its interval.

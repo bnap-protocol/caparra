@@ -14,8 +14,8 @@ use tokio::net::UnixStream;
 
 use crate::trust::{DirInfo, parent_dir};
 use crate::wire::{
-    FrameError, Reply, Request, WireLimit, WireOutput, decode_reply, encode_request, read_frame,
-    write_frame,
+    FrameError, Reply, Request, WireKeyset, WireLimit, WireOutput, decode_reply, encode_request,
+    read_frame, write_frame,
 };
 
 /// How long a call may take, connection included, unless set otherwise.
@@ -89,6 +89,19 @@ impl ProcessSigner {
     #[must_use]
     pub fn socket(&self) -> &Path {
         &self.socket
+    }
+
+    /// The public halves of the notes keysets the signer process holds, in
+    /// its key file's order. A gate builds its keyset table from them, so
+    /// it never reads the key file. The keys are not trusted beyond that:
+    /// a keyset's ID is recomputed from them, and every blind signature's
+    /// DLEQ proof is checked against them.
+    pub async fn keysets(&self) -> Result<Vec<WireKeyset>, SignerError> {
+        let reply = self.call(Request::Keysets {}).await?;
+        let Reply::Keysets { sets } = reply else {
+            return Err(unexpected());
+        };
+        Ok(sets)
     }
 
     /// Connects to the socket, once its directory is one only trusted

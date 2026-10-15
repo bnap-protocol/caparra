@@ -842,6 +842,7 @@ dependencies = [
  "bnap-signer-process",
  "bnap-store-sqlite",
  "bytes",
+ "cashu",
  "clap",
  "hex",
  "http",
@@ -1482,15 +1483,25 @@ name = "e2e"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "axum",
+ "bnap-carrier-http",
  "bnap-core",
  "bnap-plug",
  "bnap-rail-fake",
  "bnap-rail-lnd",
  "bnap-scheme-l402",
  "bnap-scheme-mpp",
+ "bnap-scheme-notes",
+ "bnap-signer-file",
  "hex",
+ "http",
+ "rand 0.10.3",
+ "reqwest",
+ "rustls",
  "serde_json",
+ "tempfile",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]

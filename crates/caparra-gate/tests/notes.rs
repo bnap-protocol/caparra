@@ -195,9 +195,11 @@ async fn fund(w: &World, wallet: &mut Wallet, amount: u64, tag: u8) -> Vec<Note>
     let receipt = r.receipt().unwrap();
     receipt.verify_ack().unwrap();
     let f = receipt.fields();
+    assert!(offer.fields().metered, "metered, as the route offer is");
+    assert_eq!(f.metered_units, Some(850));
     assert_eq!(
-        f.charged, 2100,
-        "a fund offer is exact scope, priced at the ceiling"
+        f.charged, 425,
+        "a fund offer on a metered route is metered, not priced at the ceiling"
     );
     let got = client::recover_change(
         &paid.outputs,
@@ -210,7 +212,7 @@ async fn fund(w: &World, wallet: &mut Wallet, amount: u64, tag: u8) -> Vec<Note>
     assert!(got.matches_rule);
     assert_eq!(
         got.notes.iter().map(|n| n.amount).sum::<u64>(),
-        amount - 2100
+        amount - 425
     );
     got.notes
 }
@@ -476,4 +478,97 @@ async fn a_dpop_waive_admits_without_payment_and_context_must_match() {
     c2.attest[0].body = bnap_scheme_dpop::client::body(&p2, None);
     let r = read(w.send("GET", "/v1/status", "", &[cred_header(&c2)]).await).await;
     assert_eq!(r.error(), Some(ErrorCode::Underpaid), "{}", r.body);
+}
+
+/// With the process signer (`bnap-signer --store` on the gate's use
+/// store) the gate reads the keyset table from the signer process, so
+/// `bnap:notes` starts, funds inside the 402 and spends with change. Before
+/// the signer served its keysets the gate refused to start.
+#[tokio::test]
+async fn notes_work_with_the_process_signer_and_its_store() {
+    let w = World::with_process_signer().await;
+    let mut wallet = Wallet::new();
+    let notes = fund(&w, &mut wallet, 5000, 7).await;
+    assert_eq!(notes.iter().map(|n| n.amount).sum::<u64>(), 4575);
+
+    let a = read(w.send("POST", CHAT, CHAT_BODY, &[]).await).await;
+    let route = a.route_offer();
+    let paid = pay(
+        &mut wallet,
+        &route,
+        true,
+        &notes,
+        None,
+        false,
+        "POST",
+        CHAT,
+        CHAT_BODY,
+    );
+    let r = read(
+        w.send("POST", CHAT, CHAT_BODY, &[cred_header(&paid.credential)])
+            .await,
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.body);
+    let f = r.receipt().unwrap().fields().clone();
+    assert_eq!(f.charged, 425);
+    let change = client::recover_change(
+        &paid.outputs,
+        client::key_lookup(&wallet.keys),
+        paid.value,
+        f.charged,
+        f.scheme_result.as_deref(),
+    )
+    .unwrap();
+    assert!(change.matches_rule);
+    assert_eq!(
+        change.notes.iter().map(|n| n.amount).sum::<u64>(),
+        paid.value - 425
+    );
+}
+
+/// The issuer's NUT-02 keysets and NUT-01 keys are served under the
+/// issuer URL (`{origin}/cashu` by default): a wallet that funds inside the
+/// 402 fetches the keyset's keys there to unblind its change. Before, the
+/// gate forwarded these paths to the application.
+#[tokio::test]
+async fn the_issuer_serves_its_keysets_and_keys() {
+    let w = World::new().await;
+    let wallet = Wallet::new();
+    let id = hex::encode(wallet.keyset);
+    let a = read(w.send("GET", "/cashu/v1/keysets", "", &[]).await).await;
+    assert_eq!(a.status, 200, "{}", a.body);
+    let v: serde_json::Value = serde_json::from_str(&a.body).unwrap();
+    assert_eq!(v["keysets"][0]["id"], id);
+    assert_eq!(v["keysets"][0]["unit"], "sat");
+    assert_eq!(v["keysets"][0]["active"], true);
+    assert_eq!(v["keysets"][0]["input_fee_ppk"], 100);
+
+    let a = read(
+        w.send("GET", &format!("/cashu/v1/keys/{id}"), "", &[])
+            .await,
+    )
+    .await;
+    assert_eq!(a.status, 200, "{}", a.body);
+    let v: serde_json::Value = serde_json::from_str(&a.body).unwrap();
+    let keys = v["keysets"][0]["keys"].as_object().unwrap();
+    let want = &wallet.keys[&wallet.keyset];
+    assert_eq!(keys.len(), want.len());
+    for (amount, k) in want {
+        assert_eq!(keys[&amount.to_string()], hex::encode(k));
+    }
+    let a = read(w.send("GET", "/cashu/v1/keys", "", &[]).await).await;
+    assert_eq!(a.status, 200);
+    let a = read(
+        w.send(
+            "GET",
+            &format!("/cashu/v1/keys/01{}", "00".repeat(32)),
+            "",
+            &[],
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(a.status, 404);
+    assert_eq!(w.calls(), 0, "never forwarded to the application");
 }

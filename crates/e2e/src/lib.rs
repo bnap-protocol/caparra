@@ -16,7 +16,9 @@
 //! `tests/lightning.rs` runs one Lightning payment through L402 and
 //! `payment:lightning/charge` against the fake rail. With the `regtest`
 //! feature, `tests/regtest.rs` runs the LND rail against the network of
-//! `devenv/regtest`.
+//! `devenv/regtest`, and `tests/gate.rs` runs the real binaries end to end:
+//! `caparra-gate run` (LND rail, SQLite store, process signer),
+//! `bnap-signer --store`, and the `bnap` CLI behind a TLS front.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -291,8 +293,8 @@ impl Gate {
             let scheme = self
                 .scheme(&entry.scheme)
                 .ok_or(Refused::code(ErrorCode::NotOffered))?;
-            let native = scheme
-                .native(&NativeCtx {
+            let natives = scheme
+                .natives(&NativeCtx {
                     now,
                     offer_id: &offer_id,
                     entry,
@@ -301,7 +303,7 @@ impl Gate {
                 })
                 .await
                 .map_err(|e| Refused::from(e.to_error_object()))?;
-            if let Some(n) = native {
+            for n in natives {
                 f.native.push(NativeEntry::new(i as u64, n.kind, n.data));
             }
         }

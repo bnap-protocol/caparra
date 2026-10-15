@@ -302,3 +302,39 @@ async fn keep_until_is_bounded() {
         "dropped despite u64::MAX"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_signer_serves_the_public_halves_of_its_keysets() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.sock");
+    let socket = SignerSocket::bind(&path).unwrap();
+    let file = FileSigner::from_toml(KEY_FILE).unwrap();
+    let want: Vec<_> = file
+        .keysets()
+        .iter()
+        .map(|k| {
+            (
+                k.public_keys(),
+                k.input_fee_ppk(),
+                k.final_expiry(),
+                k.active(),
+            )
+        })
+        .collect();
+    let server = Arc::new(Server::new(Arc::new(file), ServeOptions::default()));
+    tokio::spawn(server.serve(socket, std::future::pending()));
+    let got = ProcessSigner::new(path).keysets().await.unwrap();
+    assert_ne!(got.len(), 0);
+    let got: Vec<_> = got
+        .into_iter()
+        .map(|k| {
+            (
+                k.keys.into_iter().map(|k| (k.amount, k.public)).collect(),
+                k.input_fee_ppk,
+                k.final_expiry,
+                k.active,
+            )
+        })
+        .collect();
+    assert_eq!(got, want);
+}

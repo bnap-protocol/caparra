@@ -93,6 +93,8 @@ pub struct Plugs {
     pub notes: Option<Arc<NotesScheme>>,
     /// The notes issuer tables, when notes are enabled.
     pub issuer: Option<Arc<GateIssuerStore>>,
+    /// The notes issuer's URL, as offers name it.
+    pub issuer_url: Option<String>,
     /// Current `K_mac` first, then the retired ones.
     pub mac_keys: Vec<[u8; 32]>,
     /// Held so a memory store's files live as long as the gate.
@@ -124,6 +126,7 @@ pub async fn build(
 
     // Signer.
     let mut file_signer: Option<Arc<FileSigner>> = None;
+    let mut process: Option<ProcessKeysets> = None;
     let signer: Arc<dyn Signer> = match cfg.signer.kind.as_str() {
         "file" => {
             let path = cfg
@@ -140,7 +143,11 @@ pub async fn build(
             file_signer = Some(s.clone());
             s
         }
-        "process" => process_signer(cfg)?,
+        "process" => {
+            let (signer, keysets) = process_signer(cfg)?;
+            process = Some(keysets);
+            signer
+        }
         k => return Err(perr(format!("signer.kind {k:?}: use file or process"))),
     };
 
@@ -294,6 +301,7 @@ pub async fn build(
     let mut values = BTreeMap::new();
     let mut notes = None;
     let mut issuer = None;
+    let mut issuer_url = None;
     for s in cfg
         .schemes
         .iter()
@@ -337,20 +345,35 @@ pub async fn build(
                 )
             }
             bnap_scheme_notes::SCHEME_ID => {
-                let fs = file_signer.as_ref().ok_or_else(|| {
-                    perr("bnap:notes needs signer.kind = \"file\" in this build: the gate reads the keyset table from the key file")
-                })?;
                 let store = Arc::new(
                     GateIssuerStore::open(&issuer_path)
                         .await
                         .map_err(|e| perr(e.0))?,
                 );
                 let now = clock();
-                for k in fs.keysets() {
-                    let mut info =
-                        KeysetInfo::new(k.public_keys(), k.input_fee_ppk(), k.final_expiry(), now)
-                            .map_err(|e| perr(format!("keyset: {e}")))?;
-                    info.state = if k.active() {
+                let keysets = match (&file_signer, &process) {
+                    (Some(fs), _) => fs
+                        .keysets()
+                        .iter()
+                        .map(|k| PublicKeyset {
+                            keys: k.public_keys(),
+                            input_fee_ppk: k.input_fee_ppk(),
+                            final_expiry: k.final_expiry(),
+                            active: k.active(),
+                        })
+                        .collect(),
+                    (None, Some(p)) => p.keysets().await?,
+                    (None, None) => {
+                        return Err(perr("bnap:notes needs a signer that holds notes keysets"));
+                    }
+                };
+                if keysets.is_empty() {
+                    return Err(perr("bnap:notes: the signer holds no notes keyset"));
+                }
+                for k in keysets {
+                    let mut info = KeysetInfo::new(k.keys, k.input_fee_ppk, k.final_expiry, now)
+                        .map_err(|e| perr(format!("keyset: {e}")))?;
+                    info.state = if k.active {
                         info.activated_at = Some(now);
                         KeysetState::Active
                     } else {
@@ -358,11 +381,12 @@ pub async fn build(
                     };
                     store.put_keyset(&info).await.map_err(|e| perr(e.0))?;
                 }
-                let mut nc = NotesConfig::new(
-                    s.issuer_url
-                        .clone()
-                        .unwrap_or_else(|| format!("{}/cashu", cfg.gate.origin)),
-                );
+                let url = s
+                    .issuer_url
+                    .clone()
+                    .unwrap_or_else(|| format!("{}/cashu", cfg.gate.origin));
+                issuer_url = Some(url.clone());
+                let mut nc = NotesConfig::new(url);
                 nc.max_fund = s.max_fund_sat;
                 nc.pending_timeout = pending_timeout;
                 for p in plans {
@@ -456,13 +480,58 @@ pub async fn build(
         attests,
         notes,
         issuer,
+        issuer_url,
         mac_keys,
         temp,
     })
 }
 
+/// The public half of a notes keyset, from whichever signer holds it.
+struct PublicKeyset {
+    keys: std::collections::BTreeMap<u64, [u8; 33]>,
+    input_fee_ppk: u64,
+    final_expiry: u64,
+    active: bool,
+}
+
+/// Asks the signer process for its keysets (only when `bnap:notes` is
+/// configured, so a gate without notes works with an older signer).
 #[cfg(unix)]
-fn process_signer(cfg: &Config) -> Result<Arc<dyn Signer>, PlugError> {
+struct ProcessKeysets(Arc<bnap_signer_process::ProcessSigner>);
+
+#[cfg(unix)]
+impl ProcessKeysets {
+    async fn keysets(&self) -> Result<Vec<PublicKeyset>, PlugError> {
+        let sets = self
+            .0
+            .keysets()
+            .await
+            .map_err(|e| perr(format!("the signer process's keysets: {e}")))?;
+        Ok(sets
+            .into_iter()
+            .map(|k| PublicKeyset {
+                keys: k.keys.into_iter().map(|k| (k.amount, k.public)).collect(),
+                input_fee_ppk: k.input_fee_ppk,
+                final_expiry: k.final_expiry,
+                active: k.active,
+            })
+            .collect())
+    }
+}
+
+#[cfg(not(unix))]
+struct ProcessKeysets;
+
+#[cfg(not(unix))]
+impl ProcessKeysets {
+    #[allow(clippy::unused_async)]
+    async fn keysets(&self) -> Result<Vec<PublicKeyset>, PlugError> {
+        Err(perr("signer.kind = \"process\" needs a Unix system"))
+    }
+}
+
+#[cfg(unix)]
+fn process_signer(cfg: &Config) -> Result<(Arc<dyn Signer>, ProcessKeysets), PlugError> {
     let socket = cfg
         .signer
         .socket
@@ -472,11 +541,12 @@ fn process_signer(cfg: &Config) -> Result<Arc<dyn Signer>, PlugError> {
     if let Some(uid) = cfg.signer.signer_uid {
         s = s.with_signer_uid(uid);
     }
-    Ok(Arc::new(s))
+    let s = Arc::new(s);
+    Ok((s.clone(), ProcessKeysets(s)))
 }
 
 #[cfg(not(unix))]
-fn process_signer(_cfg: &Config) -> Result<Arc<dyn Signer>, PlugError> {
+fn process_signer(_cfg: &Config) -> Result<(Arc<dyn Signer>, ProcessKeysets), PlugError> {
     Err(perr("signer.kind = \"process\" needs a Unix system"))
 }
 
