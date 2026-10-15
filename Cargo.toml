@@ -171,12 +171,10 @@ pr-run-mode = "skip"
 tag-namespace = "v"
 
 # fedimint-tonic-lnd (bnap-rail-lnd, in caparra-gate) compiles LND's .proto
-# files in its build script, which needs protoc on the build runners.
-[workspace.metadata.dist.dependencies.apt]
-protobuf-compiler = "*"
-
-[workspace.metadata.dist.dependencies.homebrew]
-protobuf = "*"
+# files in its build script, which needs protoc 3.15 or newer (proto3
+# optional fields). The apt package on ubuntu-22.04 is 3.12, so every build
+# job installs a pinned protoc release instead (.github/build-setup.yml).
+github-build-setup = "../build-setup.yml"
 
 # The profile dist builds release binaries with.
 [profile.dist]
