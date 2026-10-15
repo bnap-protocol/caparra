@@ -59,7 +59,7 @@ async fn the_conformance_runner_passes_against_the_gate() {
                         "cmd:{}",
                         bnap.join("conformance/payers/lncli-payer.sh").display()
                     ))
-                    .args(["--max-spend-sat", "200"]);
+                    .args(["--max-spend-sat", "20000"]);
             }
             let o = cmd.output().expect("run conformance/run.py");
             let text = String::from_utf8_lossy(&o.stdout).into_owned();
