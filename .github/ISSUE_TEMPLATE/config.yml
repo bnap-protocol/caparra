@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/bnap-protocol/caparra/security/advisories/new
+    about: Please report vulnerabilities privately through GitHub private vulnerability reporting, never in a public issue. See SECURITY.md.
+  - name: Question about the BNAP specification
+    url: https://github.com/bnap-protocol/bnap/issues/new/choose
+    about: Questions and proposals about the protocol itself belong in the bnap repository.
