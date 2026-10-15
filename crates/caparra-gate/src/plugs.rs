@@ -93,6 +93,8 @@ pub struct Plugs {
     pub notes: Option<Arc<NotesScheme>>,
     /// The notes issuer tables, when notes are enabled.
     pub issuer: Option<Arc<GateIssuerStore>>,
+    /// The notes issuer's URL, as offers name it.
+    pub issuer_url: Option<String>,
     /// Current `K_mac` first, then the retired ones.
     pub mac_keys: Vec<[u8; 32]>,
     /// Held so a memory store's files live as long as the gate.
@@ -299,6 +301,7 @@ pub async fn build(
     let mut values = BTreeMap::new();
     let mut notes = None;
     let mut issuer = None;
+    let mut issuer_url = None;
     for s in cfg
         .schemes
         .iter()
@@ -378,11 +381,12 @@ pub async fn build(
                     };
                     store.put_keyset(&info).await.map_err(|e| perr(e.0))?;
                 }
-                let mut nc = NotesConfig::new(
-                    s.issuer_url
-                        .clone()
-                        .unwrap_or_else(|| format!("{}/cashu", cfg.gate.origin)),
-                );
+                let url = s
+                    .issuer_url
+                    .clone()
+                    .unwrap_or_else(|| format!("{}/cashu", cfg.gate.origin));
+                issuer_url = Some(url.clone());
+                let mut nc = NotesConfig::new(url);
                 nc.max_fund = s.max_fund_sat;
                 nc.pending_timeout = pending_timeout;
                 for p in plans {
@@ -476,6 +480,7 @@ pub async fn build(
         attests,
         notes,
         issuer,
+        issuer_url,
         mac_keys,
         temp,
     })
