@@ -65,7 +65,7 @@ josekit = "0.10.3"
 # tree carries one copy; sfv matches web-bot-auth's structured-field parser.
 p256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "std"] }
 ed25519-dalek = "2.2.0"
-sfv = "0.13.0"
+sfv = "0.15.0"
 
 # Encoding and crypto helpers
 serde = { version = "1.0.229", features = ["derive"] }

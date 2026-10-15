@@ -693,7 +693,7 @@ dependencies = [
  "bnap-core",
  "bnap-plug",
  "ed25519-dalek",
- "sfv",
+ "sfv 0.15.0",
  "thiserror 2.0.21",
  "web-bot-auth",
 ]
@@ -4003,6 +4003,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sfv"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "890ef0e5532daf21fdaa3dbaf991417187f3a87ab69231fe69be942495746480"
+dependencies = [
+ "base64 0.22.1",
+ "indexmap 2.14.2",
+ "ref-cast",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5109,7 +5120,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "sfv",
+ "sfv 0.13.0",
  "sha2 0.10.9",
  "time",
 ]
