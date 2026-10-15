@@ -37,7 +37,8 @@ use bnap_scheme_notes::wire::{FundQuote, KeysetIdBytes, Params};
 use stack::{Answer, CHAT, CHAT_BODY, Stack, cred_header, now, payer_pays};
 
 /// A notes wallet built from the N6 client module: the keyset's keys come
-/// from the key file (the gate serves no NUT-01 keys yet).
+/// from the key file (the `bnap` CLI test fetches them from the gate's
+/// NUT-01 endpoint instead).
 struct Wallet {
     seed: [u8; 64],
     next: u64,

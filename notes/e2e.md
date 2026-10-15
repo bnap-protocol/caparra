@@ -180,4 +180,40 @@ the keyset a year. The manifest is signed with `caparra-gate manifest sign
 
 ## Checker
 
-CHECKER_RESULTS
+**Final verdict: PASS (round 1, at `ae3a481`).** The checker ran
+everything again from fresh clones and got the same results: fmt and clippy
+clean; workspace nextest 674 passed, 1 skipped; regtest e2e 16 passed;
+conformance server/none 59/0/0/36, server/lncli 65/0/0/30, gateway/none
+58/0/0/39, gateway/lncli 64/0/0/33 (pass/fail/error/skip); bnap runner
+unit tests 66 OK; `mock_gate.py selftest` OK. It also mutated the mock
+gate (a wrong OfferID in `opaque`, a sent challenge that differs from its
+entry) and confirmed that `OFR-NATIVE-EMBED` and `OFR-NATIVE-MATCH` catch
+both. No HIGH or MEDIUM findings, so no second round ran.
+
+Other checks run here: `cargo +1.94 check --workspace --all-targets
+--locked` (and `-p e2e --features regtest`) clean; `cargo deny
+--all-features check bans licenses sources` ok; leak guard clean in both
+repos.
+
+### LOW findings kept open
+
+- L1: the registry's `mpp-challenge` `embeds` text ("the challenge's HMAC'd
+  id carries the OfferID") and draft-00 4.2 ("an MPP `id`") do not say that
+  the OfferID goes in `opaque` under the HMAC id. A gate that puts it in
+  `id` itself now fails `OFR-NATIVE-EMBED`. Needs an ERRATA row and new
+  registry wording, which should also say that a `bolt11` entry is optional
+  for MPP.
+- L2: the mock gate's selftest has no fault for the new MPP shape. Add
+  `mpp-opaque-wrong` (caught by `OFR-NATIVE-EMBED`) and
+  `mpp-header-differs` (caught by `OFR-NATIVE-MATCH`).
+- L3: `tests/conformance.rs` passes without doing anything when
+  `BNAP_CONFORMANCE` is unset, as in CI. Either check out bnap in the
+  regtest job (once `node/e2e-conformance` merges), or make the test
+  ignored.
+- L4: the gate's issuer endpoints are matched on the raw path before
+  routing. So an empty issuer prefix, or a route under
+  `{issuer}/v1/keys*`, gets shadowed. Encoded or trailing-slash variants
+  fall through to routing, and HEAD is not served. None of this bypasses
+  payment. Fix: refuse such configurations, and match on the normalized
+  route path.
+- L5 (fixed after the round): a stale comment on the e2e test wallet.
