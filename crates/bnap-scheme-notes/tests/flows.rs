@@ -634,6 +634,42 @@ fn mint_env(g: &Gate, now: u64) -> MintEnv<'static> {
     }
 }
 
+/// B5 A1: the production rails report a paid amount in msat. A quote paid
+/// in full mints; one paid a millisatoshi short does not.
+#[test]
+fn a_quote_paid_on_an_msat_rail_mints() {
+    let g = Gate::new();
+    g.rail.msat.store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut w = Wallet::new("mint msat");
+    let quote_key = sha256(b"wallet quote key msat");
+    let pubkey = client::quote_pubkey(&quote_key).unwrap();
+    let q = block_on(g.scheme.create_fund_quote(
+        &bnap_scheme_notes::FundRequest {
+            amount: 100,
+            pubkey,
+        },
+        "chat",
+        &nonce(7),
+        NOW,
+    ))
+    .unwrap()
+    .unwrap();
+    let outs = w.outputs(&a(), &[64, 32, 4]);
+    let outputs: Vec<Output> = outs.iter().map(|p| p.output).collect();
+    let req = client::mint_request(&q.quote, &outputs, &quote_key).unwrap();
+    let env = mint_env(&g, NOW);
+    g.rail.pay(&client::invoice_payment_hash(&q).unwrap());
+    // 99 sat reported as 99,000 msat: short.
+    *g.rail.report.lock().unwrap() = Some(99);
+    assert_eq!(block_on(g.scheme.mint(&env, &req)), Err(MintError::Unpaid));
+    *g.rail.report.lock().unwrap() = None;
+    let sigs = block_on(g.scheme.mint(&env, &req)).unwrap();
+    let keys = g.keys();
+    let notes = client::unblind_mint(&outs, &sigs, client::key_lookup(&keys)).unwrap();
+    assert_eq!(total(&notes), 100);
+    assert_eq!(g.signer.minted(), 100);
+}
+
 #[test]
 fn a_paid_quote_mints_through_nut_04_once() {
     let g = Gate::new();

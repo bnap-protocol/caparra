@@ -242,3 +242,27 @@ async fn a_minted_quote_counts_only_its_fee() {
     w.fund(ORIGIN, 200, None).await.unwrap();
     assert_eq!(counted(&w.ledger().await.unwrap()), 1, "the routing fee");
 }
+
+/// B5 A2: notes an operator hands back (change or a refund) for a request
+/// funded over Lightning inside the 402 are its own IOUs. The sats that
+/// went out count against the caps in full; the notes give no cap room
+/// back.
+#[tokio::test]
+async fn refund_notes_from_a_funded_402_give_no_cap_room_back() {
+    let kit = Kit::new();
+    let dir = tempfile::tempdir().unwrap();
+    let w = testkit::wallet(&kit, dir.path(), "t").await;
+    // The chat route takes notes only; the wallet holds none, so it funds.
+    kit.server.knobs.lock().unwrap().action_fails = true;
+    let r = w
+        .fetch(FetchRequest::post(url("/v1/chat"), b"x".to_vec()))
+        .await
+        .unwrap();
+    let p = r.payment.unwrap();
+    assert!(!p.ok);
+    assert!(kit.pay.total() > 0);
+    // The value came back as notes, yet the Lightning payment still counts.
+    assert!(w.balances().await.unwrap()[ORIGIN] > 0);
+    assert_eq!(counted(&w.ledger().await.unwrap()), kit.pay.total());
+    assert_eq!(p.cost_sat, kit.pay.total());
+}

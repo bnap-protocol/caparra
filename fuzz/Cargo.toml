@@ -1,0 +1,115 @@
+[package]
+name = "caparra-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "cargo-fuzz targets for the parsers that take untrusted bytes (nightly only)"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Kept out of the main workspace: the targets need nightly and libFuzzer.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4.10"
+bnap-core = { path = "../crates/bnap-core" }
+bnap-scheme-notes = { path = "../crates/bnap-scheme-notes" }
+bnap-scheme-l402 = { path = "../crates/bnap-scheme-l402" }
+bnap-scheme-mpp = { path = "../crates/bnap-scheme-mpp" }
+bnap-scheme-dpop = { path = "../crates/bnap-scheme-dpop" }
+bnap-scheme-webbotauth = { path = "../crates/bnap-scheme-webbotauth" }
+bnap-carrier-mcp = { path = "../crates/bnap-carrier-mcp" }
+bnap-signer-process = { path = "../crates/bnap-signer-process" }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "time", "io-util"] }
+
+[profile.release]
+debug = 1
+
+
+[[bin]]
+name = "tlv_bigsize"
+path = "fuzz_targets/tlv_bigsize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "offer"
+path = "fuzz_targets/offer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "credential"
+path = "fuzz_targets/credential.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "response"
+path = "fuzz_targets/response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest"
+path = "fuzz_targets/manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "notes_wire"
+path = "fuzz_targets/notes_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "l402_token"
+path = "fuzz_targets/l402_token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mpp_credential"
+path = "fuzz_targets/mpp_credential.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpop_jwt"
+path = "fuzz_targets/dpop_jwt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webbotauth_input"
+path = "fuzz_targets/webbotauth_input.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_meta"
+path = "fuzz_targets/mcp_meta.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signer_ipc"
+path = "fuzz_targets/signer_ipc.rs"
+test = false
+doc = false
+bench = false

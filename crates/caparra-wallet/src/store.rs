@@ -175,8 +175,11 @@ impl Store {
             return Err(Refusal::bad_input("The passphrase must not be empty."));
         }
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-            std::fs::create_dir_all(dir).map_err(Refusal::storage)?;
+            create_private_dir(dir).map_err(Refusal::storage)?;
         }
+        // The file exists, private, before SQLite opens it: SQLite gives
+        // the WAL and shared-memory files the main file's mode.
+        create_private_file(path).map_err(Refusal::storage)?;
         let pool = connect(path, true).await?;
         restrict(path);
         let mut salt = [0u8; 16];
@@ -215,7 +218,9 @@ impl Store {
                 ),
             ));
         }
+        restrict(path);
         let pool = connect(path, false).await?;
+        restrict(path);
         let meta = |k: &'static str| {
             let pool = pool.clone();
             async move {
@@ -373,18 +378,106 @@ impl Tx {
     }
 }
 
+/// Makes the wallet file and its WAL and shared-memory files, when there,
+/// readable by the owner only.
 #[cfg(unix)]
 fn restrict(path: &Path) {
     use std::os::unix::fs::PermissionsExt as _;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    let mut wal = path.as_os_str().to_owned();
+    wal.push("-wal");
+    let mut shm = path.as_os_str().to_owned();
+    shm.push("-shm");
+    for p in [path.as_os_str(), &wal, &shm] {
+        let p = Path::new(p);
+        if p.exists() {
+            let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600));
+        }
+    }
 }
 
 #[cfg(not(unix))]
 fn restrict(_: &Path) {}
 
+/// Creates `dir` and its missing parents; the directories it creates are
+/// the owner's only.
+#[cfg(unix)]
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+}
+
+#[cfg(not(unix))]
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)
+}
+
+/// Creates a new, empty file that only its owner can read, with no window
+/// in which it has the umask's mode.
+#[cfg(unix)]
+fn create_private_file(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map(drop)
+}
+
+#[cfg(not(unix))]
+fn create_private_file(path: &Path) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map(drop)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// B5 C1: the wallet file, its WAL and shared-memory files and a new
+    /// directory are private from the start, whatever the umask.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_wallet_and_its_wal_are_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let path = home.join("w.db");
+        let s = Store::create(&path, "pw", KdfParams::insecure_for_tests())
+            .await
+            .unwrap();
+        s.put("pin", "a", &"b").await.unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        for ext in ["db", "db-wal", "db-shm"] {
+            let p = path.with_extension(ext);
+            assert!(p.exists(), "{ext}");
+            assert_eq!(mode(&p) & 0o077, 0, "{ext} is readable by others");
+        }
+        assert_eq!(mode(&home), 0o700);
+        // A WAL left readable by an older version is closed on open.
+        s.close().await;
+        let s = Store::open(&path, "pw").await.unwrap();
+        std::fs::set_permissions(
+            path.with_extension("db-wal"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        s.close().await;
+        let s = Store::open(&path, "pw").await.unwrap();
+        for ext in ["db", "db-wal", "db-shm"] {
+            let p = path.with_extension(ext);
+            if p.exists() {
+                assert_eq!(mode(&p) & 0o077, 0, "{ext} is readable by others");
+            }
+        }
+        s.close().await;
+    }
 
     #[tokio::test]
     async fn records_are_sealed_and_need_the_passphrase() {

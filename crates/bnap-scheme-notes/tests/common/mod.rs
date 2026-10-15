@@ -98,6 +98,8 @@ pub struct FakeLn {
     node: SecretKey,
     /// Reported amount override, for an under-paying rail.
     pub report: Mutex<Option<u64>>,
+    /// Report amounts in msat, as the production rails do.
+    pub msat: AtomicBool,
 }
 
 impl FakeLn {
@@ -108,6 +110,17 @@ impl FakeLn {
             down: AtomicBool::new(false),
             node: SecretKey::from_slice(&sha256(b"bnap notes test ln node")).unwrap(),
             report: Mutex::new(None),
+            msat: AtomicBool::new(false),
+        }
+    }
+
+    /// The amount `confirm` reports for an invoice of `amount` sat.
+    fn reported(&self, amount: u64) -> u64 {
+        let sat = self.report.lock().unwrap().unwrap_or(amount);
+        if self.msat.load(Ordering::SeqCst) {
+            sat * 1000
+        } else {
+            sat
         }
     }
 
@@ -221,8 +234,13 @@ impl FundingRail for FakeLn {
             } else {
                 PayState::Pending
             },
-            amount: self.report.lock().unwrap().unwrap_or(inv.amount),
-            unit: "sat".into(),
+            amount: self.reported(inv.amount),
+            unit: if self.msat.load(Ordering::SeqCst) {
+                "msat"
+            } else {
+                "sat"
+            }
+            .into(),
         })
     }
 }
