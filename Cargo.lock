@@ -899,9 +899,9 @@ dependencies = [
 
 [[package]]
 name = "cashu"
-version = "0.18.1"
+version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68d1f489732446b458badb2aebe702238a34b88f7a3506dcfde704b34a3334de"
+checksum = "f7236d6f132d4bc41cb71c32c7109aca5b271cf6733292ea3d5f381d18253f39"
 dependencies = [
  "bitcoin",
  "cbor-diag",
@@ -4433,7 +4433,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
